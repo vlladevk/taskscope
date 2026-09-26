@@ -22,7 +22,10 @@ use crate::system::wide;
 /// Их не останавливаем без явного «принудительно»: System Informer тоже предупреждает.
 const CRITICAL: &[&str] = &[
     "rpcss", "rpceptmapper", "dcomlaunch", "lsm", "brokerinfrastructure", "samss", "plugplay", "power",
-    "coremessagingregistrar", "systemeventsbroker", "profsvc", "gpsvc", "eventlog", "winlogon", "lsass",
+    "coremessagingregistrar", "systemeventsbroker", "profsvc", "gpsvc", "eventlog", "usermanager", "staterepository",
+    "winmgmt", "cryptsvc", "keyiso", "audioendpointbuilder", "audiosrv", "lanmanworkstation", "bfe", "mpssvc", "nsi",
+    "dhcp", "dnscache", "schedule", "sens", "themes", "wscsvc", "windefend", "wdnissvc", "sgrmbroker", "vaultsvc",
+    "tokenbroker", "cdpsvc", "wlansvc", "netprofm", "nlasvc", "eventsystem", "fontcache", "shellhwdetection",
 ];
 
 #[derive(Clone, Debug, Serialize)]
@@ -210,14 +213,6 @@ pub fn list(details: bool) -> io::Result<Vec<ServiceInfo>> {
     Ok(out)
 }
 
-/// Запущенные службы по PID процесса: у svchost.exe — какие именно службы внутри.
-pub fn by_pid() -> HashMap<u32, Vec<ServiceInfo>> {
-    let mut m: HashMap<u32, Vec<ServiceInfo>> = HashMap::new();
-    for s in list(false).unwrap_or_default().into_iter().filter(|s| s.pid != 0) {
-        m.entry(s.pid).or_default().push(s);
-    }
-    m
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -248,6 +243,24 @@ fn wait_state(h: &Sc, want: u32, limit: Duration) -> bool {
 
 /// Запуск, остановка или перезапуск службы. Системные (`CRITICAL`) останавливаются только с `force`.
 /// Возвращает итоговое состояние.
+/// Проверка «на сухую»: почему действие не выйдет — до того, как его пробовать.
+pub fn precheck(s: &ServiceInfo, what: Control, force: bool) -> Result<(), String> {
+    if what != Control::Start && s.critical && !force {
+        return Err("системная служба: без неё Windows перестанет работать как надо — нужен --force".into());
+    }
+    match what {
+        Control::Stop | Control::Restart if s.state == "stopped" && what == Control::Stop => return Err("уже остановлена".into()),
+        Control::Stop | Control::Restart if s.state != "stopped" && !s.can_stop => return Err("служба не принимает команду остановки".into()),
+        Control::Start if s.state == "running" => return Err("уже работает".into()),
+        Control::Start | Control::Restart if s.start == "disabled" => return Err("тип запуска «Отключена» — сначала включите её в «Службах» Windows".into()),
+        _ => {}
+    }
+    if !crate::system::is_elevated() {
+        return Err("нужны права администратора".into());
+    }
+    Ok(())
+}
+
 pub fn control(name: &str, what: Control, force: bool) -> io::Result<&'static str> {
     if what != Control::Start && is_critical(name) && !force {
         return Err(io::Error::new(

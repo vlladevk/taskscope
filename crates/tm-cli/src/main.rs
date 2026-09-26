@@ -47,9 +47,10 @@ tm — диспетчер задач для терминала и ИИ-аген�
                                --by cpu|mem|io|read|write|gpu   -n N
   daemon start|stop|status   Фоновый движок: замер раз в секунду, история за 24 ч,
                                канал \\\\.\\pipe\\tm-<SID>-<сеанс>. `daemon run` — то же, но в этом окне
-  svc [фильтр]               Службы Windows: состояние, тип запуска, процесс (--all — и остановленные)
+  svc [фильтр]               Службы Windows: состояние, тип запуска, процесс. Без фильтра — только
+                               работающие (--all — все); с фильтром — все подходящие
   svc start|stop|restart <имя>  Запустить, остановить, перезапустить службу (нужны права администратора;
-                               системные — только с --force)
+                               системные — только с --force; --dry-run — проверить, выйдет ли)
   conns [цель]               Сетевые подключения и открытые порты (--listen — только ожидающие)
   who <путь>                 Кто держит файл или файлы в папке открытыми
   docker [действие имя]      Контейнеры Docker: ЦП, память, сеть, диск.
@@ -1352,21 +1353,28 @@ fn svc_start_ru(s: &str) -> &'static str {
 fn cmd_svc(args: &Args) -> Res<bool> {
     use tm_core::services::{self, Control};
     let first = args.pos.first().map(String::as_str);
-    if let Some(what) = first.and_then(|a| match a {
+    // «tm svc stop» без имени — это поиск по слову, а не действие
+    let action = if args.pos.len() >= 2 { first } else { None };
+    if let Some(what) = action.and_then(|a| match a {
         "start" => Some(Control::Start),
         "stop" => Some(Control::Stop),
         "restart" => Some(Control::Restart),
         _ => None,
     }) {
-        let Some(name) = args.pos.get(1) else { return usage("укажите службу: tm svc stop <имя>") };
-        let list = services::list(false).map_err(io_err)?;
+        let name = &args.pos[1];
+        let list = services::list(true).map_err(io_err)?;
         let Some(s) = list.iter().find(|s| s.name.eq_ignore_ascii_case(name)) else {
             return Err(Fail::Error(format!("служба «{name}» не найдена (tm svc — список)")));
         };
         if args.has("dry-run") {
-            let note = if what != Control::Start && s.critical && !args.has("force") { " — системная служба, нужен --force" } else { "" };
-            println!("· {} ({}) — сейчас {}{note}", s.name, s.display, svc_state_ru(s.state));
-            return Ok(note.is_empty());
+            let check = services::precheck(s, what, args.has("force"));
+            if args.has("json") {
+                print_json(&json!({ "name": s.name, "display": s.display, "state": s.state, "ok": check.is_ok(), "reason": check.as_ref().err() }));
+            } else {
+                let note = check.as_ref().err().map(|e| format!(" — не выйдет: {e}")).unwrap_or_else(|| " — можно".into());
+                println!("· {} ({}) — сейчас {}{note}", s.name, s.display, svc_state_ru(s.state));
+            }
+            return Ok(check.is_ok());
         }
         let r = services::control(&s.name, what, args.has("force"));
         if args.has("json") {
@@ -1444,19 +1452,23 @@ fn cmd_conns(args: &Args) -> Res<bool> {
 /// `tm who <путь>` — кто держит файл (или файлы в папке).
 fn cmd_who(args: &Args) -> Res<bool> {
     let Some(path) = args.pos.first() else { return usage("укажите файл или папку: tm who <путь>") };
-    let list = tm_core::locks::holders(path).map_err(|e| Fail::Error(e.to_string()))?;
+    let r = tm_core::locks::holders(path).map_err(|e| Fail::Error(e.to_string()))?;
     if args.has("json") {
-        print_json(&json!({ "path": path, "holders": list }));
+        print_json(&json!({ "path": path, "holders": r.holders, "files": r.files, "truncated": r.truncated, "skipped": r.skipped }));
         return Ok(true);
     }
-    if list.is_empty() {
-        println!("Никто не держит «{path}» открытым.");
-        return Ok(true);
+    let partial = if r.truncated { format!(" (проверено только {} файлов папки — остальные не смотрели)", r.files) } else { String::new() };
+    if r.holders.is_empty() {
+        println!("Никто не держит «{path}» открытым{partial}.");
+    } else {
+        println!("«{path}» держат открытым{partial}:");
+        for h in &r.holders {
+            let svc = h.service.as_deref().map(|s| format!(" · служба {s}")).unwrap_or_default();
+            println!("  {:>7}  {}{svc}   (tm kill {}:{})", h.pid, h.app, h.pid, h.create_time);
+        }
     }
-    println!("«{path}» держат открытым:");
-    for h in &list {
-        let svc = h.service.as_deref().map(|s| format!(" · служба {s}")).unwrap_or_default();
-        println!("  {:>7}  {}{svc}   (tm kill {}:{})", h.pid, h.app, h.pid, h.create_time);
+    if r.skipped > 0 {
+        println!("Пропущено файлов без доступа: {} (проверить их — от администратора).", r.skipped);
     }
     Ok(true)
 }

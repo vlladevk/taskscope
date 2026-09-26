@@ -71,8 +71,15 @@ fn v4(v: u32) -> String {
     Ipv4Addr::from(v.to_ne_bytes()).to_string()
 }
 
-fn v6(b: &[u8]) -> String {
-    Ipv6Addr::from(<[u8; 16]>::try_from(b).unwrap()).to_string()
+/// IPv6 с номером зоны у локальных адресов канала (fe80::…%12): без него адреса разных
+/// сетевых адаптеров не различить.
+fn v6(b: &[u8], scope: u32) -> String {
+    let a = Ipv6Addr::from(<[u8; 16]>::try_from(b).unwrap());
+    if scope != 0 && a.segments()[0] & 0xffc0 == 0xfe80 {
+        format!("{a}%{scope}")
+    } else {
+        a.to_string()
+    }
 }
 
 /// Строки таблицы: в начале число записей (u32), затем записи фиксированного размера.
@@ -107,9 +114,9 @@ pub fn list() -> Vec<Conn> {
         let listen = state == "listen";
         out.push(Conn {
             proto: "tcp",
-            local: v6(&r[0..16]),
+            local: v6(&r[0..16], u32_at(r, 16)),
             local_port: port(u32_at(r, 20)),
-            remote: if listen { String::new() } else { v6(&r[24..40]) },
+            remote: if listen { String::new() } else { v6(&r[24..40], u32_at(r, 40)) },
             remote_port: if listen { 0 } else { port(u32_at(r, 44)) },
             state,
             pid: u32_at(r, 52),
@@ -121,7 +128,7 @@ pub fn list() -> Vec<Conn> {
     }
     // MIB_UDP6ROW_OWNER_PID: local addr[16], scope, port, pid — 28 байт
     for r in rows(&udp(AF_INET6), 28) {
-        out.push(Conn { proto: "udp", local: v6(&r[0..16]), local_port: port(u32_at(r, 20)), remote: String::new(), remote_port: 0, state: "", pid: u32_at(r, 24) });
+        out.push(Conn { proto: "udp", local: v6(&r[0..16], u32_at(r, 16)), local_port: port(u32_at(r, 20)), remote: String::new(), remote_port: 0, state: "", pid: u32_at(r, 24) });
     }
     out
 }

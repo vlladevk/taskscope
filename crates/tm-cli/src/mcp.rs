@@ -100,7 +100,7 @@ fn tools(allow_actions: bool) -> Value {
         },
         {
             "name": "services",
-            "description": "Службы Windows: состояние, тип запуска, PID процесса (у svchost.exe — какие службы внутри), описание. По умолчанию только работающие.",
+            "description": "Службы Windows: состояние, тип запуска, PID процесса (у svchost.exe — какие службы внутри), описание. Без filter — только работающие; с filter — все подходящие.",
             "inputSchema": { "type": "object", "properties": {
                 "filter": { "type": "string", "description": "часть имени или названия службы" },
                 "all": { "type": "boolean", "description": "и остановленные" }

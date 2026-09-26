@@ -2,8 +2,10 @@
 //! (тот же механизм, которым установщики выясняют, что мешает заменить файл). Прав
 //! администратора не требует; видит и службы.
 
+use std::collections::VecDeque;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use windows_sys::Win32::System::RestartManager::{RmEndSession, RmGetList, RmRegisterResources, RmStartSession, RM_PROCESS_INFO};
@@ -11,7 +13,11 @@ use windows_sys::Win32::System::RestartManager::{RmEndSession, RmGetList, RmRegi
 use crate::system::wide;
 
 /// Больше файлов из папки не регистрируем: Restart Manager на тысячах файлов думает долго.
-const MAX_FILES: usize = 3000;
+const MAX_FILES: usize = 1000;
+/// И не обходим папку дольше этого: огромные деревья (AppData, диск целиком) — частично.
+const WALK_BUDGET: Duration = Duration::from_secs(2);
+/* Restart Manager на тысячах файлов отвечает десятками секунд: вся проверка — не дольше этого */
+const QUERY_BUDGET: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Holder {
@@ -27,6 +33,17 @@ pub struct Holder {
     pub kind: &'static str,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct Holders {
+    pub holders: Vec<Holder>,
+    /// Сколько файлов проверено (для папки).
+    pub files: usize,
+    /// Папка проверена не целиком (слишком много файлов или долго) — «никто» тогда не окончательно.
+    pub truncated: bool,
+    /// Файлы, которые Restart Manager не принял (нет доступа, заняты системой) — пропущены.
+    pub skipped: usize,
+}
+
 struct Session(u32);
 
 impl Drop for Session {
@@ -35,54 +52,139 @@ impl Drop for Session {
     }
 }
 
-fn files_of(path: &Path) -> Vec<PathBuf> {
+/// Файлы папки в ширину: сначала верхние уровни — при обрезке проверено самое близкое к папке.
+fn files_of(path: &Path) -> (Vec<PathBuf>, bool) {
     if !path.is_dir() {
-        return vec![path.to_path_buf()];
+        return (vec![path.to_path_buf()], false);
     }
+    let started = Instant::now();
     let mut out = Vec::new();
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(d) = stack.pop() {
+    let mut queue = VecDeque::from([path.to_path_buf()]);
+    while let Some(d) = queue.pop_front() {
+        if started.elapsed() > WALK_BUDGET {
+            return (out, true);
+        }
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             let Ok(t) = e.file_type() else { continue };
             // ссылки на другие папки не обходим: можно уйти в цикл
             if t.is_dir() && !t.is_symlink() {
-                stack.push(e.path());
+                queue.push_back(e.path());
             } else if t.is_file() {
                 out.push(e.path());
                 if out.len() >= MAX_FILES {
-                    return out;
+                    return (out, true);
                 }
             }
         }
     }
-    out
+    (out, false)
 }
 
 fn wstr(s: &[u16]) -> String {
     String::from_utf16_lossy(&s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())])
 }
 
+/// Сетевые пути не принимаем: обращение к \\сервер\… отправило бы серверу учётные данные
+/// пользователя (NTLM), а путь может прийти от ИИ-агента или веб-страницы.
+fn is_remote(p: &Path) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    let s = p.to_string_lossy().replace('/', "\\");
+    if s.starts_with(r"\\") && !s.starts_with(r"\\?\") && !s.starts_with(r"\\.\") {
+        return true;
+    }
+    if s.to_ascii_uppercase().starts_with(r"\\?\UNC\") {
+        return true;
+    }
+    // подключённый сетевой диск (Z:) — тот же сервер
+    let root: String = s.chars().take(2).collect();
+    if root.len() == 2 && root.ends_with(':') {
+        const DRIVE_REMOTE: u32 = 4;
+        return unsafe { GetDriveTypeW(wide(&format!("{root}\\")).as_ptr()) } == DRIVE_REMOTE;
+    }
+    false
+}
+
+fn rm_err(code: u32) -> io::Error {
+    match code {
+        5 => io::Error::new(io::ErrorKind::PermissionDenied, "нет доступа — файл держит служба или система, нужны права администратора"),
+        32 => io::Error::other("файл занят системой (например, файл подкачки или журнал) — Restart Manager его не проверяет"),
+        c => io::Error::from_raw_os_error(c as i32),
+    }
+}
+
 /// Процессы, которые держат файл (или любой файл внутри папки).
-pub fn holders(path: &str) -> io::Result<Vec<Holder>> {
+pub fn holders(path: &str) -> io::Result<Holders> {
     let p = Path::new(path.trim().trim_matches('"'));
+    if is_remote(p) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "сетевые пути не проверяются — только локальные диски"));
+    }
     if !p.exists() {
         return Err(io::Error::new(io::ErrorKind::NotFound, format!("нет такого файла или папки: {}", p.display())));
     }
-    let files = files_of(p);
+    let (files, truncated) = files_of(p);
+    let wides: Vec<Vec<u16>> = files.iter().map(|f| wide(&f.to_string_lossy())).collect();
+    let all: Vec<&[u16]> = wides.iter().map(Vec::as_slice).collect();
+    if all.len() == 1 {
+        return Ok(finish(query(&all).map_err(rm_err)?, 1, false, 0));
+    }
+    // папка: один «трудный» файл (нет доступа, занят системой, исчез на ходу) срывает весь запрос —
+    // тогда делим пачку пополам и проверяем части; трудные файлы пропускаем
+    let mut st = Split { list: Vec::new(), checked: 0, skipped: 0, queries: 0, truncated, until: Instant::now() + QUERY_BUDGET };
+    split(&all, &mut st);
+    Ok(finish(st.list, st.checked, st.truncated, st.skipped))
+}
+
+/// Не больше стольких обращений к Restart Manager за одну проверку папки.
+const MAX_QUERIES: usize = 40;
+
+struct Split {
+    list: Vec<RM_PROCESS_INFO>,
+    checked: usize,
+    skipped: usize,
+    queries: usize,
+    truncated: bool,
+    until: Instant,
+}
+
+fn split(files: &[&[u16]], st: &mut Split) {
+    if files.is_empty() {
+        return;
+    }
+    if st.queries >= MAX_QUERIES || Instant::now() > st.until {
+        // не проверены (кончилось время) — это «частично», а не «нет доступа»
+        st.truncated = true;
+        return;
+    }
+    st.queries += 1;
+    match query(files) {
+        Ok(l) => {
+            st.list.extend(l);
+            st.checked += files.len();
+        }
+        Err(_) if files.len() == 1 => st.skipped += 1,
+        Err(_) => {
+            let (a, b) = files.split_at(files.len() / 2);
+            split(a, st);
+            split(b, st);
+        }
+    }
+}
+
+/// Один сеанс Restart Manager: регистрируем файлы и спрашиваем, кто их держит.
+fn query(files: &[&[u16]]) -> Result<Vec<RM_PROCESS_INFO>, u32> {
     let mut key = [0u16; 64]; // CCH_RM_SESSION_KEY + 1
     let mut h = 0u32;
     let r = unsafe { RmStartSession(&mut h, 0, key.as_mut_ptr()) };
     if r != 0 {
-        return Err(io::Error::from_raw_os_error(r as i32));
+        return Err(r);
     }
     let session = Session(h);
-    let wides: Vec<Vec<u16>> = files.iter().map(|f| wide(&f.to_string_lossy())).collect();
-    for chunk in wides.chunks(500) {
+    for chunk in files.chunks(500) {
         let ptrs: Vec<*const u16> = chunk.iter().map(|w| w.as_ptr()).collect();
         let r = unsafe { RmRegisterResources(session.0, ptrs.len() as u32, ptrs.as_ptr(), 0, std::ptr::null(), 0, std::ptr::null()) };
         if r != 0 {
-            return Err(io::Error::from_raw_os_error(r as i32));
+            return Err(r);
         }
     }
     let mut list: Vec<RM_PROCESS_INFO> = Vec::new();
@@ -92,14 +194,25 @@ pub fn holders(path: &str) -> io::Result<Vec<Holder>> {
         match r {
             0 => {
                 list.truncate(n as usize);
-                break;
+                return Ok(list);
             }
             234 => list = vec![unsafe { std::mem::zeroed() }; need as usize + 4], // ERROR_MORE_DATA
-            _ => return Err(io::Error::from_raw_os_error(r as i32)),
+            _ => return Err(r),
         }
     }
-    Ok(list
+    // список всё время меняется — считаем отказом этой пачки
+    Err(234)
+}
+
+fn finish(list: Vec<RM_PROCESS_INFO>, files: usize, truncated: bool, skipped: usize) -> Holders {
+    let me = std::process::id();
+    let mut seen = std::collections::HashSet::new();
+    let holders = list
         .iter()
+        // из разных пачек один процесс приходит несколько раз
+        .filter(|i| seen.insert((i.Process.dwProcessId, i.Process.ProcessStartTime.dwLowDateTime, i.Process.ProcessStartTime.dwHighDateTime)))
+        // себя не показываем: проверка открывает файлы сама
+        .filter(|i| i.Process.dwProcessId != me && i.Process.dwProcessId != 0)
         .map(|i| {
             let ft = i.Process.ProcessStartTime;
             let service = wstr(&i.strServiceShortName);
@@ -119,5 +232,6 @@ pub fn holders(path: &str) -> io::Result<Vec<Holder>> {
                 },
             }
         })
-        .collect())
+        .collect();
+    Holders { holders, files, truncated, skipped }
 }

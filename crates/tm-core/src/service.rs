@@ -243,7 +243,10 @@ impl Service {
                     "restart" => crate::services::Control::Restart,
                     o => return Err(format!("неизвестное действие со службой «{o}»")),
                 };
-                let state = crate::services::control(&p.name, what, p.force).map_err(|e| e.to_string())?;
+                let state = crate::services::control(&p.name, what, p.force).map_err(|e| {
+                    self.engine.log("warn", format!("Служба {}: {} не выполнено — {e}", p.name, p.action), None);
+                    e.to_string()
+                })?;
                 self.engine.log("info", format!("Служба {}: {} → {state}", p.name, p.action), None);
                 Ok(json!({ "ok": true, "state": state }))
             }
@@ -256,7 +259,7 @@ impl Service {
             // кто держит файл или файлы в папке (Restart Manager)
             "file_holders" => {
                 let path = params.get("path").and_then(Value::as_str).ok_or("нужен path")?;
-                Ok(json!({ "holders": crate::locks::holders(path).map_err(|e| e.to_string())? }))
+                Ok(json!(crate::locks::holders(path).map_err(|e| e.to_string())?))
             }
             "docker_act" => {
                 #[derive(Deserialize)]
