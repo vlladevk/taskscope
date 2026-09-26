@@ -199,7 +199,7 @@ const RANGES=[
 const S={
   range:RANGES[0],res:'cpu',sel:null,multi:new Set(),hoverT:null,hl:null,
   procMode:'tree',incl:true,sort:'cpu',dir:-1,q:'',open:new Set(),freeze:false,order:null,
-  map:{color:'cat',root:null},chartMode:'apps',rail:true,main:true,right:true,bottom:true,btab:'chart',more:false,bh:300,rw:360,
+  map:{color:'exe',root:null},chartMode:'apps',rail:true,main:true,right:true,bottom:true,btab:'chart',more:false,bh:300,rw:360,
 };
 try{const r=RANGES.find(r=>r.key===localStorage.getItem('tm-range'));if(r)S.range=r;}catch(e){}
 try{const u=JSON.parse(localStorage.getItem('tm-ui')||'{}');for(const k of ['chartMode','rail','main','right','bottom','btab','res','bh','rw','more','procMode','incl'])if(k in u)S[k]=u[k];}catch(e){}
@@ -783,19 +783,22 @@ function ownAvg(n,m){
 function mapFmt(v){const m=mapMetric();return m==='net'?fmtMbit(v):m==='mem'?fmtMem(v):m==='dsk'?fmtMBs(v):fmtPct(v);}
 function mountMap(el){
   el.innerHTML=`<div class="ph"><div class="crumbs m-crumbs" style="padding:0"></div><span class="caption m-desc"></span><div class="spacer"></div>
-     <span class="lbl">Цвет</span><div class="seg m-color"><button data-c="cat">По типу</button><button data-c="cpu">По нагрузке ЦП</button></div></div>
-    <div class="map-wrap"><canvas></canvas></div><div class="maplegend m-leg"></div>`;
-  const cv=$('canvas',el),tip=$('#tip');
+     <span class="lbl">Цвет</span><div class="seg m-color"><button data-c="exe">По программе</button><button data-c="cat">По типу</button><button data-c="cpu">По нагрузке ЦП</button></div></div>
+    <div class="map-wrap"><canvas></canvas></div><div class="mapstat m-stat"></div><div class="maplegend m-leg"></div>`;
+  const cv=$('canvas',el);
   $('.m-color',el).addEventListener('click',e=>{const b=e.target.closest('button');if(b){S.map.color=b.dataset.c;renderMap(true);}});
   $('.m-crumbs',el).addEventListener('click',e=>{const a=e.target.closest('[data-z]');if(a){S.map.root=a.dataset.z==='root'?null:a.dataset.z;renderMap(true);}});
-  cv.addEventListener('mousemove',e=>{const h=hitMap(cv,e);if(!h){tip.style.display='none';return;}
-    const n=h.node;
-    tip.innerHTML=`<div class="pth">${esc(h.path)}</div><b>${esc(h.label)}</b><div>${mapFmt(h.v)}${n&&mapMetric()!=='cpu'?` · ЦП ${fmtPct(cur(n,'cpu',true))}`:''}${h.self?' · сам процесс, без дочерних':''}</div><div class="caption">клик — выбрать · двойной клик — приблизить</div>`;
-    tip.style.display='block';tip.style.left=Math.min(e.clientX+14,innerWidth-tip.offsetWidth-8)+'px';tip.style.top=Math.min(e.clientY+14,innerHeight-tip.offsetHeight-8)+'px';});
-  cv.addEventListener('mouseleave',()=>tip.style.display='none');
+  /* как в WizTree: путь и размер плитки под курсором — строкой под картой, плитка обведена */
+  cv.addEventListener('mousemove',e=>{const h=hitMap(cv,e);mapHover(h&&h.id);
+    const st=$('.m-stat',el);if(!h){st.textContent=MAP_HINT;return;}const n=h.node;
+    setHTML(st,`<b>${esc(h.path)}${h.self?' (сам процесс, без дочерних)':''}</b> — ${mapFmt(h.v)}${n&&mapMetric()!=='cpu'?` · ЦП ${fmtPct(cur(n,'cpu',true))}`:''}${n?` · ${esc(n.exe)} · PID ${n.pid}`:''}`);});
+  cv.addEventListener('mouseleave',()=>{mapHover(null);$('.m-stat',el).textContent=MAP_HINT;});
+  $('.m-stat',el).textContent=MAP_HINT;
   cv.addEventListener('click',e=>{const h=hitMap(cv,e);if(h&&h.node)select(h.node.id,true);});
   cv.addEventListener('dblclick',e=>{const h=hitMap(cv,e);if(h&&h.zoom){S.map.root=h.zoom;renderMap(true);}});
 }
+const MAP_HINT='Наведите на плитку — здесь будет путь и размер · клик — выбрать · двойной клик — приблизить';
+function mapHover(id){if(MAP.hover===id)return;MAP.hover=id;const el=PANEL_EL.map;if(el&&MAP.nodes&&!MAP.from)mapCompose($('canvas',el),MAP.nodes,i=>MAP.nodes[i].r);}
 function hitMap(cv,e){const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;const L=cv._rects||[];for(let i=L.length-1;i>=0;i--){const q=L[i];if(x>=q.x&&x<q.x+q.w&&y>=q.y&&y<q.y+q.h)return q;}return null;}
 /* plan — разбиение на ряды из прошлой раскладки: [[сколько плиток, вдоль ли ширины], …].
    С ним небольшое изменение значений только слегка меняет размеры, а не перекидывает плитки
@@ -852,6 +855,25 @@ function mapTree(){
   }
   return {key:'root',label:'Всё',v:apps.reduce((s,a)=>s+a.v,0),kids:apps};
 }
+/* «По программе» — как типы файлов в WizTree: у каждой программы (exe) свой яркий цвет,
+   поэтому и внутри приближенного приложения видно, где браузер, где node, где conhost.
+   Цвета получают самые крупные программы и держат их, пока не сменится вид; остальные — оттенки серого. */
+const EXE_PAL=['#2e9e3a','#1e7fd8','#e07b00','#b7b000','#d0258f','#8f44c4','#d83a2e','#0aa39a','#6fae2a','#4052c0','#e0457b','#a86b1c','#2bb3d6','#c9a400'];
+/* программа + роль: у Electron/Chromium все процессы — один exe, а рендерер, GPU-процесс
+   и, например, Claude Code — разные вещи; им нужны разные цвета */
+const roleKind=n=>{const i=INFO.get(n.id);return i&&i.role?i.role.replace(/\s*\(.*$/,'').trim():'';};
+const mapExe=m=>{if(!m.node)return 'k:'+m.key;const r=roleKind(m.node);return m.node.exe.toLowerCase()+(r?'|'+r:'');};
+const exeTitle=k=>{if(k.startsWith('k:'))return k.slice(3);const [e,r]=k.split('|');const b=e.replace(/\.exe$/,'');return r?`${b} · ${r}`:b;};
+const hashN=s=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return Math.abs(h);};
+function exeRGB(k){const i=MAP.exeCol&&MAP.exeCol.get(k);if(i!=null&&i>=0)return hexRGB(EXE_PAL[i]);const g=96+hashN(k)%44;return [g,g,g+4];}
+function assignExeColors(nodes){
+  const tot=new Map();for(const n of nodes)if(!n.head){const k=mapExe(n.m);tot.set(k,(tot.get(k)||0)+(n.m.raw||0));}
+  const col=MAP.exeCol||(MAP.exeCol=new Map()),used=new Set([...col.values()].filter(i=>i>=0));
+  [...tot].sort((p,q)=>q[1]-p[1]).forEach(([k],rank)=>{if(col.has(k))return;
+    const free=rank<EXE_PAL.length*2?EXE_PAL.findIndex((c,i)=>!used.has(i)):-1;col.set(k,free);if(free>=0)used.add(free);});
+  MAP.exeTot=tot;
+}
+const mapId=n=>n.key+(n.head?'#':'');
 const heatRGB=c=>{const t=clamp(c/12,0,1);const a=[58,74,92],b=[201,162,39],d=[224,83,61];return t<.5?a.map((v,i)=>v+(b[i]-v)*t*2):b.map((v,i)=>v+(d[i]-v)*(t-.5)*2);};
 const heat=c=>`rgb(${heatRGB(c).map(Math.round).join(',')})`;
 const hexRGB=h=>{const n=parseInt(h.slice(1),16);return [n>>16,n>>8&255,n&255];};
@@ -887,7 +909,7 @@ function mapLayout(w,h){
      плитка появляется от ~12×12 пикселей, а пропадает, только став меньше ~8×8 */
   const shown=new Set(),was=MAP.shown||new Set();
   const visible=(items,area)=>{const tot=items.reduce((s,k)=>s+k.v,0);if(!tot)return items;const f=area/tot;
-    return items.filter(k=>{const a=k.v*f;return a>=150||(was.has(k.key)&&a>=60);});};
+    return items.filter(k=>{const a=k.v*f;return a>=40||(was.has(k.key)&&a>=16);});};
   /* те же плитки в том же порядке — то же разбиение на ряды, пока плитки не станут слишком вытянутыми */
   const plans=new Map(),oldPlans=MAP.plans||new Map();
   const aspect=q=>Math.max(q.w/Math.max(q.h,1e-9),q.h/Math.max(q.w,1e-9));
@@ -970,6 +992,7 @@ function mapCompose(cv,nodes,rect){
     x.fillText(m.self?`${m.label} (сам)`:m.label,r.x+6,r.y+12);x.fillStyle='rgba(255,255,255,.8)';x.fillText(mapFmt(m.raw),r.x+6,r.y+27);x.restore();
   }
   if(sel){x.strokeStyle='#fff';x.lineWidth=2;x.strokeRect(sel.x+1,sel.y+1,sel.w-2,sel.h-2);}
+  if(MAP.hover){const i=nodes.findIndex(n=>mapId(n)===MAP.hover);if(i>=0){const r=rect(i);x.strokeStyle='rgba(255,255,255,.95)';x.lineWidth=1;x.strokeRect(r.x+.5,r.y+.5,r.w-1,(nodes[i].head?Math.min(MAP_HDR,r.h):r.h)-1);}}
 }
 function mapAnimate(){
   cancelAnimationFrame(MAP.raf);
@@ -989,12 +1012,13 @@ function renderMap(force){
   $('.m-color',el).querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.c===S.map.color));
   $('.m-desc',el).textContent=mapDesc();
   const sig=[S.res,S.map.color,S.map.root,S.range.ms,w,h,devicePixelRatio].join('|'),fresh=sig!==MAP.sig;
-  if(fresh){MAP.sig=sig;MAP.sm=new Map();MAP.order=new Map();MAP.shown=null;MAP.plans=null;MAP.nodes=null;MAP.from=null;cancelAnimationFrame(MAP.raf);}
+  if(fresh){MAP.sig=sig;MAP.exeCol=null;MAP.hover=null;MAP.sm=new Map();MAP.order=new Map();MAP.shown=null;MAP.plans=null;MAP.nodes=null;MAP.from=null;cancelAnimationFrame(MAP.raf);}
   if(fresh||force===true||MAP.seq!==SEQ){
     MAP.seq=SEQ;
     const prev=MAP.nodes,prevRect=prev&&mapRectFn(prev);
     const nodes=mapLayout(w,h);
-    const baseRGB=m=>S.map.color==='cpu'?heatRGB(m.node&&alive(m.node)?(m.self?m.node.cpu:cur(m.node,'cpu',true)):0):hexRGB((CATS[m.cat]||CATS.other).c);
+    if(S.map.color==='exe')assignExeColors(nodes);
+    const baseRGB=m=>S.map.color==='exe'?exeRGB(mapExe(m)):S.map.color==='cpu'?heatRGB(m.node&&alive(m.node)?(m.self?m.node.cpu:cur(m.node,'cpu',true)):0):hexRGB((CATS[m.cat]||CATS.other).c);
     for(const n of nodes)if(!n.head)n.rgb=baseRGB(n.m).map(Math.round);
     const id=n=>n.key+(n.head?'#':'');
     let move=Infinity,recolor=true,from=null,same=false;
@@ -1020,12 +1044,15 @@ function renderMap(force){
       if(MAP.from){MAP.t0=performance.now();MAP.last=0;mapAnimate();}
       else{cancelAnimationFrame(MAP.raf);mapPaint(cv,nodes,r,1);mapCompose(cv,nodes,r);}
     }
-    cv._rects=show.map(n=>{const m=n.m,q=n.r;return n.head?{x:q.x,y:q.y,w:q.w,h:MAP_HDR,node:m.node,label:m.label,v:m.raw,path:n.path,zoom:m.node?m.node.id:m.zoomId}
-      :{x:q.x,y:q.y,w:q.w,h:q.h,node:m.node,label:m.label,v:m.raw,path:n.path,self:m.self,zoom:m.kids&&m.node?m.node.id:(m.node&&m.node.parent?m.node.parent.id:null)};});
+    cv._rects=show.map(n=>{const m=n.m,q=n.r;return n.head?{id:mapId(n),x:q.x,y:q.y,w:q.w,h:MAP_HDR,node:m.node,label:m.label,v:m.raw,path:n.path,zoom:m.node?m.node.id:m.zoomId}
+      :{id:mapId(n),x:q.x,y:q.y,w:q.w,h:q.h,node:m.node,label:m.label,v:m.raw,path:n.path,self:m.self,zoom:m.kids&&m.node?m.node.id:(m.node&&m.node.parent?m.node.parent.id:null)};});
   }else if(MAP.nodes&&!MAP.from)mapCompose(cv,MAP.nodes,i=>MAP.nodes[i].r); // выбор, наведение — только верхний слой
   const zr=S.map.root&&NODES.get(S.map.root),r0=curRes();
   setHTML($('.m-crumbs',el),`<a data-z="root">${esc(r0.name)} · всё</a>`+(zr?ancestors(zr).concat([zr]).map((a,i,arr)=>`<span class="sep">›</span>${i===arr.length-1?`<span class="cur">${esc(nameOf(a))}</span>`:`<a data-z="${esc(a.id)}">${esc(nameOf(a))}</a>`}`).join(''):''));
-  setHTML($('.m-leg',el),S.map.color==='cat'?Object.values(CATS).map(c=>`<span><i style="background:${c.c}"></i>${c.n}</span>`).join(''):
+  const exeLeg=()=>{const t=MAP.exeTot||new Map(),col=MAP.exeCol||new Map();
+    const top=[...t].filter(([k])=>col.get(k)>=0).sort((p,q)=>q[1]-p[1]).slice(0,12);
+    return top.map(([k,v])=>`<span><i style="background:${EXE_PAL[col.get(k)]}"></i>${esc(exeTitle(k))} <span class="num">${mapFmt(v)}</span></span>`).join('')+'<span><i style="background:#777"></i>остальные</span>';};
+  setHTML($('.m-leg',el),S.map.color==='exe'?exeLeg():S.map.color==='cat'?Object.values(CATS).map(c=>`<span><i style="background:${c.c}"></i>${c.n}</span>`).join(''):
     `<span><i style="background:${heat(0)}"></i>простаивает</span><span><i style="background:${heat(6)}"></i>~6 % ЦП</span><span><i style="background:${heat(12)}"></i>12 % и выше</span>`);
 }
 
