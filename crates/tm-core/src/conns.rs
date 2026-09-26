@@ -1,7 +1,7 @@
 //! Сетевые подключения и открытые порты процессов: таблицы TCP и UDP (IPv4 и IPv6)
 //! с владельцем — GetExtendedTcpTable / GetExtendedUdpTable, без прав администратора.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
 
 use serde::Serialize;
 use windows_sys::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, GetExtendedUdpTable, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID};
@@ -131,6 +131,19 @@ pub fn list() -> Vec<Conn> {
         out.push(Conn { proto: "udp", local: v6(&r[0..16], u32_at(r, 16)), local_port: port(u32_at(r, 20)), remote: String::new(), remote_port: 0, state: "", pid: u32_at(r, 24) });
     }
     out
+}
+
+/// Процесс, открывший TCP-подключение `local` → `remote` (IPv4): у локальных подключений в
+/// таблице есть обе стороны, строка клиента — та, где его адрес локальный.
+pub fn tcp_owner(local: SocketAddrV4, remote: SocketAddrV4) -> Option<u32> {
+    let tcp = table(|p, s| unsafe { GetExtendedTcpTable(p.cast(), s, 0, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0) });
+    let ip = |v: u32| Ipv4Addr::from(v.to_ne_bytes());
+    let pid = rows(&tcp, 24)
+        .find(|r| {
+            ip(u32_at(r, 4)) == *local.ip() && port(u32_at(r, 8)) == local.port() && ip(u32_at(r, 12)) == *remote.ip() && port(u32_at(r, 16)) == remote.port()
+        })
+        .map(|r| u32_at(r, 20));
+    pid
 }
 
 #[cfg(test)]

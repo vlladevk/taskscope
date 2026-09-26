@@ -1,7 +1,10 @@
 //! `tm serve` — режим разработки: отдаёт интерфейс из папки `ui` и принимает
 //! `POST /rpc {method, params}` → `Service::call`. Только 127.0.0.1.
-//! Действия над процессами выключены, пока не передан `--allow-actions`,
-//! а запросы с чужих страниц (другой Origin) отклоняются. Движок здесь — второй экземпляр только
+//! Действия над процессами выключены, пока не передан `--allow-actions`.
+//! `/rpc` отвечает только странице самого сервера (Origin и Host — наши: чужие сайты и подмена
+//! DNS отпадают) и только процессам того же пользователя Windows: владельца подключения
+//! находим по таблице TCP — порт на 127.0.0.1 открыт всем пользователям компьютера, а заголовки
+//! любая программа подставит какие угодно. Движок здесь — второй экземпляр только
 //! для чтения: историю на диск не пишет и сеанс ETW не запускает (он общий с приложением).
 //! Файлы отдаются только из папки ui.
 
@@ -31,7 +34,7 @@ fn handle(mut conn: TcpStream, service: &Service, root: &Path, port: u16, allow_
     reader.read_line(&mut line)?;
     let mut parts = line.split_whitespace();
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or("/"));
-    let (mut len, mut origin) = (0usize, None::<String>);
+    let (mut len, mut origin, mut host) = (0usize, None::<String>, None::<String>);
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h)? == 0 || h.trim().is_empty() {
@@ -41,23 +44,33 @@ fn handle(mut conn: TcpStream, service: &Service, root: &Path, port: u16, allow_
         match k.trim().to_ascii_lowercase().as_str() {
             "content-length" => len = v.trim().parse().unwrap_or(0),
             "origin" => origin = Some(v.trim().to_string()),
+            "host" => host = Some(v.trim().to_string()),
             _ => {}
         }
     }
+    let ours = |v: &Option<String>, scheme: &str| {
+        v.as_deref().is_some_and(|o| o == format!("{scheme}127.0.0.1:{port}") || o == format!("{scheme}localhost:{port}"))
+    };
+    // Host — от подмены DNS: страница evil.example, которая «стала» 127.0.0.1, пришлёт свой Host
+    if !ours(&host, "") {
+        return reply(&mut conn, 421, "text/plain", b"wrong host");
+    }
     if method == "POST" && path == "/rpc" {
-        let ok_origin = origin.as_deref().map_or(true, |o| o == format!("http://127.0.0.1:{port}") || o == format!("http://localhost:{port}"));
         let mut body = vec![0u8; len.min(4 << 20)];
         reader.read_exact(&mut body)?;
-        let resp = if !ok_origin {
-            json!({ "error": "запрос с чужой страницы отклонён" })
+        // браузер присылает Origin с каждым POST; без него — это не наша страница
+        let resp = if !ours(&origin, "http://") {
+            json!({ "error": "запрос не со страницы tm serve отклонён" })
+        } else if !same_user(&conn) {
+            json!({ "error": "запрос от процесса другого пользователя отклонён" })
         } else {
             match serde_json::from_slice::<Value>(&body) {
                 Ok(req) => {
                     let m = req["method"].as_str().unwrap_or("");
                     // пробный прогон ничего не меняет — окно подтверждения работает и в режиме чтения
                     let dry = m == "act" && req["params"]["dry_run"] == true;
-                    // сервер от администратора не отдаёт окружение и дескрипторы чужих процессов
-                    // тому, кто постучался на порт (запрос без Origin от любой программы)
+                    // сервер от администратора не отдаёт окружение и дескрипторы чужих процессов:
+                    // спросить его может любая программа пользователя, и без прав администратора
                     if tm_core::service::is_local_only(m) && !tm_core::service::is_mutating(m) && tm_core::system::is_elevated() {
                         json!({ "error": "tm serve запущен от администратора — просмотр процессов изнутри выключен" })
                     } else if tm_core::service::is_mutating(m) && !allow_actions && !dry {
@@ -107,9 +120,31 @@ fn handle(mut conn: TcpStream, service: &Service, root: &Path, port: u16, allow_
     }
 }
 
+/// Подключился процесс того же пользователя Windows, что и сервер.
+fn same_user(conn: &TcpStream) -> bool {
+    use std::net::SocketAddr;
+    let (Ok(SocketAddr::V4(peer)), Ok(SocketAddr::V4(me))) = (conn.peer_addr(), conn.local_addr()) else { return false };
+    let Some(pid) = tm_core::conns::tcp_owner(peer, me) else { return false };
+    if pid == std::process::id() {
+        return true;
+    }
+    const QUERY_LIMITED: u32 = 0x1000; // PROCESS_QUERY_LIMITED_INFORMATION
+    let Ok(h) = tm_core::handle::ProcHandle::open(pid, QUERY_LIMITED, None) else { return false };
+    let (theirs, mine) = (tm_core::system::process_user_sid(h.raw()), tm_core::system::current_user_sid());
+    theirs.is_some() && theirs == mine
+}
+
 fn reply(conn: &mut TcpStream, code: u16, ct: &str, body: &[u8]) -> std::io::Result<()> {
+    let reason = match code {
+        200 => "OK",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        421 => "Misdirected Request",
+        _ => "Error",
+    };
     let head = format!(
-        "HTTP/1.1 {code} OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
     // одной записью и без алгоритма Нейгла: иначе Windows придерживает ответ на ~200–300 мс
