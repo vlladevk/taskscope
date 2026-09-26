@@ -222,7 +222,9 @@ fn run(inner: &Inner) {
     let mut sampler = Sampler::new();
     let mut nets = NetSampler::default();
     let mut gpu = GpuSampler::new();
-    let etw = crate::net_etw::NetEtw::start();
+    // сеанс ETW общий для всей системы: второй экземпляр (режим разработки) его не трогает,
+    // иначе он перехватил бы или остановил сеанс основного приложения
+    let etw = if inner.persist { crate::net_etw::NetEtw::start() } else { None };
     let mut sysmem = crate::sysmem::MemSampler::new();
     let mut info = InfoCache::default();
     let mut lineage = apps::Lineage::default();

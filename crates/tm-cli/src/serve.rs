@@ -1,7 +1,9 @@
 //! `tm serve` — режим разработки: отдаёт интерфейс из папки `ui` и принимает
 //! `POST /rpc {method, params}` → `Service::call`. Только 127.0.0.1.
 //! Действия над процессами выключены, пока не передан `--allow-actions`,
-//! а запросы с чужих страниц (другой Origin) отклоняются.
+//! а запросы с чужих страниц (другой Origin) отклоняются. Движок здесь — второй экземпляр только
+//! для чтения: историю на диск не пишет и сеанс ETW не запускает (он общий с приложением).
+//! Файлы отдаются только из папки ui.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -52,7 +54,9 @@ fn handle(mut conn: TcpStream, service: &Service, root: &Path, port: u16, allow_
             match serde_json::from_slice::<Value>(&body) {
                 Ok(req) => {
                     let m = req["method"].as_str().unwrap_or("");
-                    if tm_core::service::is_mutating(m) && !allow_actions {
+                    // пробный прогон ничего не меняет — окно подтверждения работает и в режиме чтения
+                    let dry = m == "act" && req["params"]["dry_run"] == true;
+                    if tm_core::service::is_mutating(m) && !allow_actions && !dry {
                         json!({ "error": "в режиме разработки действия выключены (tm serve --allow-actions)" })
                     } else {
                         match service.call(m, &req["params"]) {
@@ -71,10 +75,18 @@ fn handle(mut conn: TcpStream, service: &Service, root: &Path, port: u16, allow_
     }
     let rel = path.split('?').next().unwrap_or("/").trim_start_matches('/');
     let rel = if rel.is_empty() { "index.html" } else { rel };
-    if rel.split(['/', '\\']).any(|s| s == "..") {
-        return reply(&mut conn, 403, "text/plain", b"forbidden");
+    // только обычные имена внутри папки ui: без «..», дисков («C:»), корня и UNC-путей
+    let normal = Path::new(rel).components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    let file = root.join(rel);
+    // и после разрешения ссылок файл всё ещё внутри папки
+    let inside = match (file.canonicalize(), root.canonicalize()) {
+        (Ok(f), Ok(r)) => f.starts_with(r),
+        _ => false,
+    };
+    if !normal || rel.contains(':') || !inside {
+        return reply(&mut conn, if normal && !rel.contains(':') { 404 } else { 403 }, "text/plain", b"forbidden or not found");
     }
-    match std::fs::read(root.join(rel)) {
+    match std::fs::read(&file) {
         Ok(data) => {
             let ct = match rel.rsplit('.').next().unwrap_or("") {
                 "html" => "text/html; charset=utf-8",
