@@ -836,6 +836,7 @@ function mapStatus(){
   /* плитка «ещё N» — что в ней; плитка-группа — что PID только у главного процесса, размер — вместе с дочерними */
   const cnt=h.rest&&[...h.rest.reduce((m,s)=>m.set(s,(m.get(s)||0)+1),new Map())].map(([s,c])=>c>1?`${s} ×${c}`:s); // «svchost ×12», а не двенадцать раз
   const what=h.short?` · запускает ${esc(h.short.join(', ')||'процессы')} — каждый живёт меньше секунды, поэтому в списке их нет`
+    :h.done?' · процессы этого приложения, которые за период уже завершились, и короткие запуски'
     :h.unseen?' · прерывания, драйверы и процессы, завершившиеся до замера':h.rest?` · ${esc(cnt.slice(0,6).join(', '))}${cnt.length>6?'…':''}`
     :h.procs>1?(h.own?` · ${esc(n.exe)} · PID ${n.pid} и ещё ${h.procs-1} ${plural(h.procs-1,'дочерний','дочерних','дочерних')}`:` · ${h.procs} ${plural(h.procs,'процесс','процесса','процессов')}`)
     :n?` · ${esc(n.exe)} · PID ${n.pid}`:'';
@@ -872,7 +873,12 @@ function mapTree(){
   /* для длинных периодов — сколько приложение потратило за период (из истории) */
   let appAvg=null;
   if(long){const h=H('apps',BY[m],1000);if(h){appAvg=new Map();for(const s of h.series)appAvg.set(s.key,conv(m)(s.avg));}}
-  const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?n.net:ownAvg(n,m);
+  /* ЦП процесса за длинный период — сколько времени процессора он потратил за это время: запущенный
+     минуту назад java — это минута работы, а не «последние 5 минут × 3 часа» (раньше свежий процесс
+     сразу раздувался на полприложения, а его завершение перекраивало всю группу) */
+  const rangeS=S.range.ms/1000;
+  const rangeCpu=n=>{const age=(NOW-(n.ct/1e4-11644473600000))/1000,tot=(n.cpuMs||0)/10/(rangeS*CPUS);return age<=rangeS?tot:Math.min(tot,ownAvg(n,m));};
+  const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?n.net:m==='cpu'&&long?rangeCpu(n):ownAvg(n,m);
   /* приблизить можно процесс (id «pid:время») или группу-приложение («a…», «mWIN»). Внутри —
      ровно то, что было в группе на общей карте: процессы того же приложения. Программы, запущенные
      из него, — свои группы (раньше «Проводник» 100 МБ приближался в дерево на 3 ГБ из чужих программ) */
@@ -890,9 +896,15 @@ function mapTree(){
   const scaleTree=(t,f)=>{t.v*=f;if(t.kids)t.kids.forEach(k=>scaleTree(k,f));};
   let apps=[...groups.entries()].map(([k,tops])=>{
     const kids=tops.map(mk).filter(x=>x.v>eps||appAvg);let v=kids.reduce((s,x)=>s+x.v,0);
-    if(appAvg){const target=appAvg.get(k)||0;if(v>0){const f=target/v;kids.forEach(x=>scaleTree(x,f));}else if(target>0&&kids.length){kids.forEach(x=>scaleTree(x,0));kids[0].v=target;}v=target;}
     const a=APPS.get(k),root=tops.find(t=>a&&t.pid===a.rootPid)||tops[0];
+    let gone=0;
+    if(appAvg){const target=appAvg.get(k)||0;
+      /* ЦП: что приложение потратило за период сверх живых процессов — уже завершившиеся и короткие
+         процессы, своей плиткой. Растягивать на это живые процессы — значит врать об их доле */
+      if(m==='cpu'&&v<=target)gone=target-v;
+      else if(v>0){const f=target/v;kids.forEach(x=>scaleTree(x,f));}else if(target>0&&kids.length){kids.forEach(x=>scaleTree(x,0));kids[0].v=target;}v=target;}
     const flat=kids.filter(x=>x.v>eps);
+    if(gone>eps)flat.push({key:'z'+k,label:'завершившиеся и короткие процессы',v:gone,rep:root,cat:root?catOf(root):'other',done:1});
     if(m==='cpu'&&!long){const sv=shortAvg(k,mapSecs());if(sv>eps){const sa=APPS.get(k);flat.push({key:'x'+k,label:'короткие процессы',v:sv,rep:root,cat:root?catOf(root):'other',short:sa?sa.spawnNames:[]});v+=sv;}}
     return {key:'a'+k,label:mapLabel(a?a.title:k),v,kids:flat,node:flat.length===1?flat[0].node:null,rep:root,cat:root?catOf(root):'other',zoomId:'a'+k};
   });
@@ -1019,7 +1031,9 @@ const MAP_ANIM=450,MAP_TAU=3000,MAP_HDR=18,MAP_DEAD=4;
 const easeOut=t=>1-Math.pow(1-t,3);
 function mapLayout(w,h){
   const root=mapTree(),now=performance.now(),first=!MAP.sm.size;
-  const a=first?1:1-Math.exp(-Math.max(0,now-MAP.at)/(mapMetric()==='mem'?MAP_TAU:2*MAP_TAU)); // нагрузка скачет сильнее памятиMAP.at=now;
+  /* нагрузка скачет сильнее памяти — сглаживаем дольше; средняя за часы и вовсе не должна «дышать» каждую секунду */
+  const tau=mapMetric()==='mem'?MAP_TAU:S.range.ms>SPARKN*1000?20000:2*MAP_TAU;
+  const a=first?1:1-Math.exp(-Math.max(0,now-MAP.at)/tau);MAP.at=now;
   const sm=new Map(),byKey=new Map(),par=new Map();
   const smooth=(m,pk)=>{const p=MAP.sm.has(m.key)?MAP.sm.get(m.key):m.self?MAP.sm.get('p'+m.key.slice(1)):undefined;m.raw=m.v;m.v=p!=null?p+(m.v-p)*a:first?m.v:m.v*a;
     sm.set(m.key,m.v);byKey.set(m.key,m);if(pk)par.set(m.key,pk);if(m.kids)m.kids.forEach(k=>smooth(k,m.key));};
@@ -1039,7 +1053,7 @@ function mapLayout(w,h){
     for(let i=1;i<l.length;i++)for(let j=i;j>0;j--){
       const known=idx.has(l[j].key)&&idx.has(l[j-1].key);
       if(l[j].ghost||l[j-1].ghost)break; // сжимающийся «призрак» не обгоняют — иначе перекладывалась вся группа
-      if(l[j].v>l[j-1].v*(known?1.4:1)){const t=l[j];l[j]=l[j-1];l[j-1]=t;}else break;
+      if(l[j].v>l[j-1].v*(known?(S.range.ms>SPARKN*1000&&mapMetric()!=="mem"?2:1.4):1)){ /* средняя за часы: соседи меняются местами, только если один вдвое больше */const t=l[j];l[j]=l[j-1];l[j-1]=t;}else break;
     }
     order.set(pk,l.map(k=>k.key));return l;
   };
@@ -1067,8 +1081,8 @@ function mapLayout(w,h){
     const ks=items.map(k=>k.key),keys=ks.join('\n'),old=oldPlans.get(pk);
     const plan=old?(old.keys===keys?old.plan:adapt(old,ks)):null;
     let out=plan?squarify(items,x,y,W,H,plan):null;
-    /* старый план не годится, если дал сильно вытянутую плитку или полоску */
-    if(!out||out.some(q=>aspect(q)>6&&q.w*q.h>400||(q.w<3||q.h<3)&&!q.rest))out=squarify(items,x,y,W,H);
+    /* старый план не годится, только если дал очень вытянутую плитку (1:12) или полоску: перекладка с нуля двигала всю группу на сотни пикселей */
+    if(!out||out.some(q=>aspect(q)>12&&q.w*q.h>400||(q.w<3||q.h<3)&&!q.rest))out=squarify(items,x,y,W,H);
     plans.set(pk,{keys,plan:out.plan||[]});return out;
   };
   /* полоска тоньше 3 px (иногда меньше пикселя) давала двойную линию сетки — такие плитки уходят
@@ -1219,7 +1233,9 @@ function mapAnimate(){
     const el=PANEL_EL.map,nodes=MAP.nodes;if(!vis(el)||!nodes||!MAP.from){MAP.from=null;return;}
     const cv=$('canvas',el);
     if(now-MAP.t0>=MAP_ANIM){MAP.from=null;const r=i=>nodes[i].r;mapPaint(cv,nodes,r,1);mapCompose(cv,nodes,r);return;}
-    if(now-MAP.last>=30){MAP.last=now;const r=mapRectFn(nodes);mapPaint(cv,nodes,r,1,true);mapCompose(cv,nodes,r);}
+    /* кадры — с подушками, как и неподвижная карта: плоские кадры на 0,45 с «гасили» тени при каждом сдвиге
+       (≈ 8 мс на кадр при 1300×700) */
+    if(now-MAP.last>=30){MAP.last=now;const r=mapRectFn(nodes);mapPaint(cv,nodes,r,1);mapCompose(cv,nodes,r);}
     MAP.raf=requestAnimationFrame(step);
   };
   MAP.raf=requestAnimationFrame(step);
@@ -1317,7 +1333,7 @@ function renderMap(force){
     const procs=m=>m.ghost?0:m.rest?m.items.reduce((s,k)=>s+procs(k),0):m.kids?m.kids.reduce((s,k)=>s+procs(k),0):m.node?1:0;
     const zoomOf=n=>{let z=zOf(n.m);if(z&&z!==S.map.root)return z;for(let p=n.parent;p>=0;p=show[p].parent){z=zOf(show[p].m);if(z&&z!==S.map.root)return z;}return null;};
     cv._rects=show.map(n=>{const m=n.m,q=n.r,z=zoomOf(n);return {id:mapId(n),x:q.x,y:q.y,w:q.w,h:n.head?MAP_HDR:q.h,node:m.node||m.rep||null,label:m.label,v:m.raw,path:n.path,
-      self:m.self,own:!!m.node,procs:procs(m),cpu:cpuOf(m),rest:m.rest?m.items.map(k=>k.label):null,short:m.short||null,unseen:m.key==='mUNSEEN',zoom:z};});
+      self:m.self,own:!!m.node,procs:procs(m),cpu:cpuOf(m),rest:m.rest?m.items.map(k=>k.label):null,short:m.short||null,done:!!m.done,unseen:m.key==='mUNSEEN',zoom:z};});
     if(MAP.mouse){const h=hitMap(cv,MAP.mouse);mapHover(h&&h.id);}
     mapChrome(el); // «крошки» и легенда — по новой раскладке (имя приближенного, суммы программ); высота у них постоянная
     mapStatus();
