@@ -860,14 +860,17 @@ function mapTree(){
    Цвет закреплён за программой (хранится между запусками) и не зависит от вида:
    приближение, смена ресурса, уход с вкладки его не меняют. Раздаются цвета по весу программы
    во всей системе (доля памяти + доля ЦП); отбирается цвет только у программы, которая давно
-   не входит в число крупных, и только когда он нужен новой крупной. Остальные — оттенки серого. */
-const EXE_PAL=['#2e9e3a','#1e7fd8','#e07b00','#b7b000','#d0258f','#8f44c4','#d83a2e','#0aa39a','#6fae2a','#4052c0','#e0457b','#a86b1c','#2bb3d6','#a3478f'];
+   не входит в число крупных, и только когда он нужен новой крупной. Остальные — оттенки серого.
+   Процессы Windows всегда серые и цветов не занимают: это фон, а не программы пользователя. */
+const EXE_PAL=['#2e9e3a','#1e7fd8','#e07b00','#b7b000','#d0258f','#8f44c4','#d83a2e','#0aa39a','#6fae2a','#4052c0','#e0457b','#a86b1c','#2bb3d6','#a3478f',
+  '#5cc46a','#6aa8f0','#f2a54a','#d9d24a','#b77ee0','#f07a6e','#47c9bd','#c05a2a'];
 const COLORS=(()=>{try{return JSON.parse(localStorage.getItem('tm-map-colors')||'{}')||{};}catch(e){return {};}})(); // ключ → [цвет, когда последний раз был крупным]
 let colorsDirty=false,colorsSaved=0,colorsSeq=-1;
 function updateExeColors(){
   if(colorsSeq===SEQ)return;colorsSeq=SEQ;
   const mem=new Map(),cpu=new Map();let mt=0,ct=0;
   for(const n of NODES.values()){if(!alive(n)||!INFO.has(n.id))continue;const k=mapExe({node:n});
+    if(catOf(n)==='system'){if(COLORS[k]){delete COLORS[k];colorsDirty=true;}continue;}
     mem.set(k,(mem.get(k)||0)+(n.mem||0));cpu.set(k,(cpu.get(k)||0)+(n.cpu||0));mt+=n.mem||0;ct+=n.cpu||0;}
   const w=k=>(mt?mem.get(k)/mt:0)+(ct?cpu.get(k)/ct:0);
   const rank=[...mem.keys()].sort((p,q)=>w(q)-w(p)),N=EXE_PAL.length,now=Date.now(),near=new Set(rank.slice(0,N*2));
@@ -946,14 +949,15 @@ function mapLayout(w,h){
     const p=path?path+' › '+m.label:m.label,i=nodes.length;shown.add(m.key);
     if(m.kids&&r.w>44&&r.h>MAP_HDR+12){
       nodes.push({key:m.key,r:{x:r.x,y:r.y,w:r.w,h:r.h},m,head:1,depth,parent,path:p});
-      /* отступ внутри группы, как у папок в WizTree: видно, где кончается одна группа и начинается другая */
-      const P=r.w>90&&r.h>70?2:1,W=r.w-2*P,H=r.h-MAP_HDR-P;
-      for(const q of sq(m.key,visible(sticky(m.key,m.kids),W*H),r.x+P,r.y+MAP_HDR,W,H))lay(q,q,p,depth+1,i);
+      /* сетка без отступов: каждая плитка и заголовок владеют только своей правой и нижней линией
+         в 1 пиксель — между любыми соседями ровно одна линия (отступы давали где 1, где 3 пикселя) */
+      const W=r.w,H=r.h-MAP_HDR;
+      for(const q of sq(m.key,visible(sticky(m.key,m.kids),W*H),r.x,r.y+MAP_HDR,W,H))lay(q,q,p,depth+1,i);
     }else nodes.push({key:m.key,r:{x:r.x,y:r.y,w:r.w,h:r.h},m,depth,parent,path:p});
   };
   const zr=S.map.root&&NODES.get(S.map.root),base=zr?ancestors(zr).map(nameOf).join(' › '):'';
-  if(root.kids&&!S.map.root){for(const q of sq('root',visible(sticky('root',root.kids),w*h),0,0,w,h))lay(q,q,base,0,-1);}
-  else lay(root,{x:0,y:0,w,h},base,0,-1);
+  if(root.kids&&!S.map.root){for(const q of sq('root',visible(sticky('root',root.kids),(w-1)*(h-1)),1,1,w-1,h-1))lay(q,q,base,0,-1);}
+  else lay(root,{x:1,y:1,w:w-1,h:h-1},base,0,-1);
   MAP.order=order;MAP.shown=shown;MAP.plans=plans;
   return nodes;
 }
@@ -966,12 +970,13 @@ function mapRectFn(nodes){
 /* подушки — попиксельно, в отдельный холст; scale < 1 — черновое качество во время анимации.
    Правый и нижний пиксель плитки — тёмная граница: соседние плитки разделены ровно одной
    чёткой линией (как в WizTree), даже если они одного цвета. */
+const MAP_LINE=0xff121212; // цвет всех линий сетки (ABGR)
 function mapPaint(cv,nodes,rect,scale){
   const w=cv.clientWidth,h=cv.clientHeight,k=(devicePixelRatio||1)*scale;
   const PW=Math.max(1,Math.round(w*k)),PH=Math.max(1,Math.round(h*k)),off=MAP.off;
   if(off.width!==PW||off.height!==PH){off.width=PW;off.height=PH;}
   const ox=off.getContext('2d'),img=ox.createImageData(PW,PH),d=new Uint32Array(img.data.buffer),[Lx,Ly,Lz]=CUSH.L;
-  d.fill(0xff1c1c1c);
+  d.fill(MAP_LINE);
   const IA=CUSH.IA,BR=CUSH.BR,bw=Math.max(1,Math.round(k)),px8=(r,g,b)=>(0xff000000|(b>255?255:b|0)<<16|(g>255?255:g|0)<<8|(r>255?255:r|0))>>>0;
   for(let i=0;i<nodes.length;i++){
     const n=nodes[i];if(n.head)continue;const r=rect(i);
@@ -979,7 +984,7 @@ function mapPaint(cv,nodes,rect,scale){
     if(x1<=x0||y1<=y0)continue;
     const s=[0,0,0,0];addRidge({x:r.x,y:r.y,w:Math.max(r.w,.5),h:Math.max(r.h,.5)},s,CUSH.H);
     const R=n.rgb[0],G=n.rgb[1],B=n.rgb[2],s0=2*s[0],s1=2*s[1],s2=s[2],s3=s[3];
-    const edge=x1-x0>2*bw&&y1-y0>2*bw,xe=edge?x1-bw:x1,ye=edge?y1-bw:y1,line=px8(R*.28,G*.28,B*.28);
+    const edge=x1-x0>2*bw&&y1-y0>2*bw,xe=edge?x1-bw:x1,ye=edge?y1-bw:y1,line=MAP_LINE;
     for(let py=y0;py<y1;py++){
       let o=py*PW+x0;
       if(py>=ye){d.fill(line,o,o+(x1-x0));continue;}
@@ -1009,8 +1014,8 @@ function mapCompose(cv,nodes,rect){
   let sel=null,hov=null;
   for(let i=0;i<nodes.length;i++){
     const n=nodes[i],m=n.m;if(!n.head)continue;const q=D(rect(i));if(q.w<2||q.h<2)continue;
-    x.fillStyle='#2b2b2b';x.fillRect(q.x,q.y,q.w,Math.min(HD,q.h));
-    frame(q,L,'rgba(0,0,0,.8)');
+    /* заголовок, как и плитка, оставляет правую и нижнюю линию фону */
+    x.fillStyle='#2b2b2b';x.fillRect(q.x,q.y,q.w-L,Math.min(HD,q.h)-L);
     if(q.w>24*dpr){x.save();x.beginPath();x.rect(q.x+L,q.y,q.w-2*L,HD);x.clip();x.fillStyle='rgba(255,255,255,.9)';
       const t1=`${m.label} (${mapFmt(m.raw)})`;x.fillText(x.measureText(t1).width<q.w-2*pad?t1:m.label,q.x+pad,q.y+HD/2+L);x.restore();}
   }
