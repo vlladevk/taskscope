@@ -258,6 +258,25 @@ pub fn current_user_sid() -> Option<String> {
 }
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+/// Отметки «Автозагрузка» диспетчера задач Windows и Параметров: 12 байт, чётный первый байт —
+/// включено, нечётный (03, 07) — пользователь выключил. Запись в Run при этом остаётся.
+const APPROVED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
+
+/// Выключен ли автозапуск пользователем в «Автозагрузке» Windows (запись в Run есть, но не работает).
+pub fn autostart_disabled_by_user(name: &str) -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
+    let mut buf = [0u8; 12];
+    let mut len = buf.len() as u32;
+    let r = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr(), RRF_RT_REG_BINARY, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len)
+    };
+    r == 0 && len >= 1 && buf[0] & 1 == 1
+}
+
+/// Работает ли автозапуск на самом деле: запись в Run есть и не выключена в «Автозагрузке».
+pub fn autostart_enabled(name: &str) -> bool {
+    autostart_get(name).is_some() && !autostart_disabled_by_user(name)
+}
 
 /// Команда автозапуска текущего пользователя (HKCU\…\Run), если она есть.
 pub fn autostart_get(name: &str) -> Option<String> {
@@ -278,15 +297,27 @@ pub fn autostart_get(name: &str) -> Option<String> {
 /// Только HKCU — без прав администратора и без изменения системных настроек.
 pub fn autostart_set(name: &str, cmd: Option<&str>) -> std::io::Result<()> {
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+    use windows_sys::Win32::System::Registry::REG_BINARY;
     let r = match cmd {
         Some(c) => {
             let data = wide(c);
-            unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), wide(name).as_ptr(), REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) }
+            let r = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), wide(name).as_ptr(), REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) };
+            // включение в окне — явное желание пользователя: снимаем и отметку «выключено» из
+            // «Автозагрузки», иначе запись в Run была бы, а запуска — нет
+            if r == 0 && autostart_disabled_by_user(name) {
+                let on = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr(), REG_BINARY, on.as_ptr().cast(), on.len() as u32) };
+            }
+            r
         }
-        None => match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), wide(name).as_ptr()) } {
-            2 => 0, // и так нет
-            r => r,
-        },
+        None => {
+            // отметку тоже убираем, чтобы в «Автозагрузке» не осталось пустой строки
+            unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr()) };
+            match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), wide(name).as_ptr()) } {
+                2 => 0, // и так нет
+                r => r,
+            }
+        }
     };
     if r == 0 {
         Ok(())

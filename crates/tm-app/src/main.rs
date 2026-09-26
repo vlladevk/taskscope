@@ -315,12 +315,14 @@ async fn app_cmd(app: AppHandle, cmd: String, arg: Option<Value>) -> Result<Valu
             let parent = main_window(&app).and_then(|w| w.hwnd().ok()).map_or(0, |h| h.0 as isize);
             system::shell_execute_from(parent, "runas", &exe.display().to_string(), "--replace").map_err(|_| "запуск от администратора отменён".to_string())?;
         }
-        "autostart_get" => return Ok(json!(system::autostart_get(AUTOSTART_NAME).is_some())),
+        // «включён» — только если Windows его действительно запустит: выключенный в «Автозагрузке»
+        // диспетчера задач автозапуск остаётся в Run, но не работает
+        "autostart_get" => return Ok(json!(system::autostart_enabled(AUTOSTART_NAME))),
         "autostart_set" => {
             let on = arg.as_ref().and_then(Value::as_bool).unwrap_or(false);
             let c = autostart_cmd();
             system::autostart_set(AUTOSTART_NAME, if on { c.as_deref() } else { None }).map_err(|e| e.to_string())?;
-            return Ok(json!(system::autostart_get(AUTOSTART_NAME).is_some()));
+            return Ok(json!(system::autostart_enabled(AUTOSTART_NAME)));
         }
         _ => return Err(format!("неизвестная команда «{cmd}»")),
     }
