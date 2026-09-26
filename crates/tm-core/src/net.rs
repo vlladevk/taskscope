@@ -2,7 +2,8 @@
 //! (Ethernet, Wi-Fi, туннели VPN вроде WireGuard). Один вызов `GetIfTable2`.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_ROW2, MIB_IF_TABLE2};
@@ -38,6 +39,8 @@ struct Prev {
 pub struct NetSampler {
     prev: HashMap<u64, Prev>,
     at: Option<Instant>,
+    addrs: HashMap<IpAddr, String>,
+    addrs_at: Option<Instant>,
 }
 
 fn wstr(buf: &[u16]) -> String {
@@ -99,5 +102,36 @@ impl NetSampler {
         // VPN первыми: весь трафик приложений идёт через туннель
         out.sort_by_key(|n| (n.kind != "vpn", n.name.to_lowercase()));
         out
+    }
+
+    /// Адреса этого компьютера → ключ адаптера. Раз в 5 с: после переподключения VPN адрес туннеля меняется.
+    pub fn addresses(&mut self) -> &HashMap<IpAddr, String> {
+        use windows_sys::Win32::NetworkManagement::IpHelper::{GetUnicastIpAddressTable, MIB_UNICASTIPADDRESS_ROW, MIB_UNICASTIPADDRESS_TABLE};
+        if self.addrs_at.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+            return &self.addrs;
+        }
+        self.addrs_at = Some(Instant::now());
+        let mut table: *mut MIB_UNICASTIPADDRESS_TABLE = std::ptr::null_mut();
+        if unsafe { GetUnicastIpAddressTable(0, &mut table) } != 0 || table.is_null() {
+            return &self.addrs;
+        }
+        // SAFETY: таблица выделена GetUnicastIpAddressTable и освобождается ниже.
+        let rows: &[MIB_UNICASTIPADDRESS_ROW] = unsafe { std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize) };
+        self.addrs.clear();
+        for r in rows {
+            let luid = unsafe { r.InterfaceLuid.Value };
+            let ip: Option<IpAddr> = unsafe {
+                match r.Address.si_family {
+                    2 => Some(Ipv4Addr::from(r.Address.Ipv4.sin_addr.S_un.S_addr.to_ne_bytes()).into()),
+                    23 => Some(Ipv6Addr::from(r.Address.Ipv6.sin6_addr.u.Byte).into()),
+                    _ => None,
+                }
+            };
+            if let Some(ip) = ip {
+                self.addrs.insert(ip, format!("{luid:x}"));
+            }
+        }
+        unsafe { FreeMibTable(table.cast()) };
+        &self.addrs
     }
 }

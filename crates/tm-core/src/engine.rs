@@ -279,12 +279,26 @@ fn run(inner: &Inner) {
             }
         }
         if let Some(e) = &etw {
-            let bytes = e.take();
             let dt = (frame.interval_ms / 1000.0).max(0.001);
+            // локальный адрес пакета (источник при отправке, назначение при приёме — проверяем оба) → адаптер
+            let addrs = nets.addresses();
+            let mut per: HashMap<u32, HashMap<&str, (u64, u64)>> = HashMap::new();
+            let bytes = e.take();
+            for (&(pid, s, d), &(rx, tx)) in &bytes {
+                let key = addrs.get(&s).or_else(|| addrs.get(&d)).map_or("", String::as_str);
+                let e = per.entry(pid).or_default().entry(key).or_default();
+                e.0 += rx;
+                e.1 += tx;
+            }
             for p in frame.procs.iter_mut() {
-                if let Some(&(rx, tx)) = bytes.get(&p.pid) {
+                if let Some(m) = per.get(&p.pid) {
+                    let (rx, tx) = m.values().fold((0, 0), |a, v| (a.0 + v.0, a.1 + v.1));
                     p.net_rx_bps = rx as f64 / dt;
                     p.net_tx_bps = tx as f64 / dt;
+                    p.net_by = m
+                        .iter()
+                        .map(|(k, v)| crate::sampler::NetShare { key: k.to_string(), rx_bps: v.0 as f64 / dt, tx_bps: v.1 as f64 / dt })
+                        .collect();
                 }
             }
         }

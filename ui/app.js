@@ -101,6 +101,7 @@ function applySnap(s){
     if(!n){n={id,pid:p.pid,ct:p.create_time,exe:p.name,kids:[],parent:null,rc:ring(),rio:ring(),appKey:null,bornAt:BOOTING?0:NOW};NODES.set(id,n);NEWKEYS.push(id);}
     n.alive=true;n.ppid=p.ppid;n.cpu=p.cpu;n.mem=p.mem/MB;n.rd=p.io_read_bps/MB;n.wr=p.io_write_bps/MB;n.dsk=n.rd+n.wr;
     n.threads=p.threads;n.handles=p.handles;n.session=p.session;n.susp=!!p.suspended;n.cpuMs=p.cpu_time_ms;n.ws=p.working_set/MB;n.priv=p.private_bytes/MB;n.bprio=p.base_priority;n.gpu=p.gpu||0;n.gmem=(p.gpu_mem||0)/MB;n.nrx=(p.net_rx_bps||0)*8/1e6;n.ntx=(p.net_tx_bps||0)*8/1e6;n.net=n.nrx+n.ntx;
+    n.netBy=null;if(p.net_by){n.netBy={};for(const x of p.net_by)n.netBy[x.key]={rx:x.rx_bps*8/1e6,tx:x.tx_bps*8/1e6};}
     rpush(n.rc,n.cpu);rpush(n.rio,n.dsk);seen.add(id);
   }
   for(const n of NODES.values()){
@@ -1016,7 +1017,7 @@ const mapSecs=()=>Math.min(SPARKN,Math.round(S.range.ms/1000));
 function mapDesc(){
   const m=mapMetric(),p=S.range.label;
   if(m==='mem')return 'размер — занятая память сейчас';
-  if(m==='net')return 'размер — сетевой трафик процессов сейчас, все адаптеры вместе';
+  if(m==='net'){const a=curRes().net;return a?`размер — трафик процессов через «${a.name}» сейчас`+(a.kind==='vpn'?'':'. Если включён VPN, здесь и его клиент: он отправляет трафик программ зашифрованным'):'размер — сетевой трафик процессов сейчас';}
   if(curRes().m==='net')return 'трафик по процессам виден только с правами администратора (кнопка вверху) — показана загрузка ЦП';
   if(m==='gpu')return S.range.ms>SPARKN*1000?`размер — средняя загрузка видеокарты за ${p}`:'размер — загрузка видеокарты сейчас';
   const h=H('system',BY[m],0);const avg=h?h.total.avg:0;
@@ -1026,6 +1027,12 @@ function mapDesc(){
    длинные — история приложения, распределённая по его процессам пропорционально последним 5 минутам */
 function ownAvg(n,m){
   const r=m==='cpu'?n.rc:n.rio,k=mapSecs(),t=rtail(r,k);let s=0,c=0;for(const v of t){s+=v;c++;}return c?s/c:0;
+}
+/* трафик процесса по адаптерам — «через VPN …, через Wi-Fi …» (если адаптеров больше одного или адрес не опознан) */
+function netSplit(n){
+  const by=n.netBy;if(!by)return '';const ks=Object.keys(by).filter(k=>by[k].rx+by[k].tx>=.001);
+  if(ks.length<2&&!(ks.length===1&&ks[0]===''))return ks.length===1?` · через ${esc((NETS.find(a=>a.key===ks[0])||{name:'?'}).name)}`:'';
+  return '<br>'+ks.map(k=>{const a=NETS.find(a=>a.key===k);return `${a?esc(a.name):'адаптер не определён'}: ↓ ${fmtMbit(by[k].rx)} ↑ ${fmtMbit(by[k].tx)}`;}).join('<br>');
 }
 function mapFmt(v){const m=mapMetric();return m==='net'?fmtMbit(v):m==='mem'?fmtMem(v):m==='dsk'?fmtMBs(v):fmtPct(v);}
 function mountMap(el){
@@ -1103,7 +1110,10 @@ function mapTree(){
   /* процесс старше периода — его средняя за всю жизнь (время ЦП / возраст): точная и не дёргается,
      в отличие от последних 5 минут (после запуска движка там ещё пусто) */
   const rangeCpu=n=>{const age=Math.max(1,(NOW-(n.ct/1e4-11644473600000))/1000);return (n.cpuMs||0)/10/(Math.min(age,rangeS)*CPUS)*(age<=rangeS?Math.min(age,rangeS)/rangeS:1);};
-  const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?n.net:m==='cpu'&&long&&!PSEUDO[n.pid]?rangeCpu(n):ownAvg(n,m); /* у прерываний и DPC нет времени создания и накопленного ЦП — только история */
+  /* сеть — только через выбранный адаптер: иначе трафик программы через VPN и тот же трафик у клиента VPN
+     (зашифрованный, через Wi-Fi) складывались, и казалось, что программа идёт мимо туннеля */
+  const na=curRes().net,netOf=n=>{if(!na)return n.net;const x=n.netBy&&n.netBy[na.key];return x?x.rx+x.tx:0;};
+  const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?netOf(n):m==='cpu'&&long&&!PSEUDO[n.pid]?rangeCpu(n):ownAvg(n,m); /* у прерываний и DPC нет времени создания и накопленного ЦП — только история */
   /* приблизить можно процесс (id «pid:время») или группу-приложение («a…», «mWIN»). Внутри —
      ровно то, что было в группе на общей карте: процессы того же приложения. Программы, запущенные
      из него, — свои группы (раньше «Проводник» 100 МБ приближался в дерево на 3 ГБ из чужих программ) */
@@ -2115,7 +2125,7 @@ function renderDetails(){
      ${i.company?`<dt>Издатель</dt><dd>${esc(i.company)} <span class="caption">(из свойств файла)</span></dd>`:''}
      <dt>ЦП всего</dt><dd>${agoStr(n.cpuMs/1000)}</dd>
      <dt>Память</dt><dd>${fmtMem(n.mem)} частный рабочий набор · ${fmtMem(n.ws)} весь рабочий набор · ${fmtMem(n.priv)} выделено (commit)</dd>
-     ${NETPP?`<dt>Сеть</dt><dd>↓ ${fmtMbit(n.nrx)} · ↑ ${fmtMbit(n.ntx)}</dd>`:''}
+     ${NETPP?`<dt>Сеть</dt><dd>↓ ${fmtMbit(n.nrx)} · ↑ ${fmtMbit(n.ntx)}${netSplit(n)}</dd>`:''}
      ${n.gpu>=.05||n.gmem>=1?`<dt>Видеокарта</dt><dd>${fmtPct(n.gpu)} · видеопамять ${fmtMem(n.gmem)}</dd>`:''}
      <dt>Потоки</dt><dd class="num">${n.threads}</dd><dt>Дескрипторы</dt><dd class="num">${n.handles.toLocaleString('ru')}</dd>
      <dt>Сеанс</dt><dd class="num">${n.session}${n.session===0?' (службы)':''}</dd>

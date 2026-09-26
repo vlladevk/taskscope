@@ -61,9 +61,20 @@ pub struct ProcStat {
     pub net_rx_bps: f64,
     #[serde(default)]
     pub net_tx_bps: f64,
+    /// Тот же трафик по адаптерам (ключ — как у `NetStat::key`; пустой — адаптер не определён):
+    /// программа через VPN и сам клиент VPN, шифрующий её трафик для Wi-Fi, — на разных адаптерах.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub net_by: Vec<NetShare>,
     /// Процесс родился после прошлого замера (его ЦП — всё время с момента запуска).
     #[serde(default)]
     pub born: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetShare {
+    pub key: String,
+    pub rx_bps: f64,
+    pub tx_bps: f64,
 }
 
 impl ProcStat {
@@ -416,6 +427,7 @@ fn blank(pid: u32, name: &str) -> ProcStat {
         gpu_mem: 0,
         net_rx_bps: 0.0,
         net_tx_bps: 0.0,
+        net_by: Vec::new(),
         born: false,
     }
 }

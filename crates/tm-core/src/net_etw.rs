@@ -6,6 +6,7 @@
 //! Трафик через localhost не считается: он не выходит в сеть.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Mutex, OnceLock};
 
 use windows_sys::core::GUID;
@@ -23,8 +24,13 @@ const KEYWORDS: u64 = 0x10 | 0x20;
 const INVALID_PROCESSTRACE: u64 = u64::MAX;
 
 /// PID → (принято, отправлено) байт с последнего `take`.
-fn counters() -> &'static Mutex<HashMap<u32, (u64, u64)>> {
-    static C: OnceLock<Mutex<HashMap<u32, (u64, u64)>>> = OnceLock::new();
+/// Процесс и оба адреса пакета (источник, назначение): по локальному из них движок узнаёт
+/// адаптер — трафик программы через туннель VPN и зашифрованный туннель через Wi-Fi не
+/// складываются в одно число.
+pub type Key = (u32, IpAddr, IpAddr);
+
+fn counters() -> &'static Mutex<HashMap<Key, (u64, u64)>> {
+    static C: OnceLock<Mutex<HashMap<Key, (u64, u64)>>> = OnceLock::new();
     C.get_or_init(Default::default)
 }
 
@@ -95,8 +101,18 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     if local {
         return;
     }
+    // daddr, затем saddr
+    let (d, s): (IpAddr, IpAddr) = if v6 {
+        let a: [u8; 16] = data[8..24].try_into().unwrap_or([0; 16]);
+        let b: [u8; 16] = data[24..40].try_into().unwrap_or([0; 16]);
+        (Ipv6Addr::from(a).into(), Ipv6Addr::from(b).into())
+    } else {
+        let a: [u8; 4] = data[8..12].try_into().unwrap_or([0; 4]);
+        let b: [u8; 4] = data[12..16].try_into().unwrap_or([0; 4]);
+        (Ipv4Addr::from(a).into(), Ipv4Addr::from(b).into())
+    };
     if let Ok(mut m) = counters().lock() {
-        let e = m.entry(pid).or_default();
+        let e = m.entry((pid, s, d)).or_default();
         if recv {
             e.0 += size;
         } else {
@@ -157,8 +173,8 @@ impl NetEtw {
         Some(Self { session, trace: h })
     }
 
-    /// Байты по процессам с прошлого вызова: PID → (принято, отправлено).
-    pub fn take(&self) -> HashMap<u32, (u64, u64)> {
+    /// Байты с прошлого вызова: (PID, источник, назначение) → (принято, отправлено).
+    pub fn take(&self) -> HashMap<Key, (u64, u64)> {
         let _ = self.session;
         counters().lock().map(|mut m| std::mem::take(&mut *m)).unwrap_or_default()
     }
