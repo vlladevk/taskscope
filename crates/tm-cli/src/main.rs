@@ -46,7 +46,7 @@ tm — диспетчер задач для терминала и ИИ-аген�
                                --apps (по умолчанию) | --procs | --system | --net | --gpu
                                --by cpu|mem|io|read|write|gpu   -n N
   daemon start|stop|status   Фоновый движок: замер раз в секунду, история за 24 ч,
-                               канал \\\\.\\pipe\\tm. `daemon run` — то же, но в этом окне
+                               канал \\\\.\\pipe\\tm-<SID>-<сеанс>. `daemon run` — то же, но в этом окне
   docker [действие имя]      Контейнеры Docker: ЦП, память, сеть, диск.
                                Действия: start|stop|restart|pause|unpause|kill <имя|id>
   pool                       Пул ядра по меткам: память драйверов и объектов ядра, рост в час,
@@ -950,7 +950,7 @@ fn daemon_run(args: &Args) -> Res<bool> {
         service.call(m, p)
     });
     if !args.has("quiet") {
-        eprintln!("tm: движок работает (PID {}), канал {}. Ctrl+C — остановить.", std::process::id(), pipe::PIPE_NAME);
+        eprintln!("tm: движок работает (PID {}), канал {}. Ctrl+C — остановить.", std::process::id(), pipe::pipe_name());
     }
     pipe::serve(handler).map_err(io_err)?;
     Ok(true)
