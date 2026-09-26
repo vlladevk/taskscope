@@ -99,6 +99,37 @@ fn tools(allow_actions: bool) -> Value {
             } }
         },
         {
+            "name": "services",
+            "description": "Службы Windows: состояние, тип запуска, PID процесса (у svchost.exe — какие службы внутри), описание. По умолчанию только работающие.",
+            "inputSchema": { "type": "object", "properties": {
+                "filter": { "type": "string", "description": "часть имени или названия службы" },
+                "all": { "type": "boolean", "description": "и остановленные" }
+            } }
+        },
+        {
+            "name": "connections",
+            "description": "Сетевые подключения и открытые порты (TCP/UDP, IPv4/IPv6) с процессом-владельцем. target — только этого процесса.",
+            "inputSchema": { "type": "object", "properties": {
+                "target": target,
+                "listen": { "type": "boolean", "description": "только ожидающие подключений (открытые порты)" }
+            } }
+        },
+        {
+            "name": "who",
+            "description": "Кто держит файл или файлы в папке открытыми (Restart Manager): почему файл не удаляется или не заменяется.",
+            "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
+        },
+        {
+            "name": "service_act",
+            "description": "Запустить, остановить или перезапустить службу Windows (обычно нужны права администратора). Системные службы (RPC, DCOM, питание и т.п.) агенту не остановить.",
+            "inputSchema": { "type": "object", "properties": {
+                "action": { "type": "string", "enum": ["start", "stop", "restart"] },
+                "name": { "type": "string", "description": "короткое имя службы (из services)" },
+                "dry_run": { "type": "boolean" }
+            }, "required": ["action", "name"] },
+            "annotations": { "destructiveHint": true }
+        },
+        {
             "name": "act",
             "description": "Действие над процессом: kill (завершить; программе с окном сначала посылается «закрыть окно»), suspend (заморозить), resume, restart (перезапустить с тем же файлом, командной строкой, папкой и правами), prio (сменить приоритет). Защищены: ядро и критические процессы Windows, сам tm, процессы из списка защищённых пользователя; группы «Службы Windows» и «Windows» нельзя затронуть через app/all. Не больше 20 процессов за раз. Принудительного режима у агента нет: если программа не закрыла окно (например, спрашивает о сохранении) или действие рискованное (dwm, explorer), попросите человека сделать это в окне диспетчера или командой tm с --force. Если имя совпадает с несколькими процессами, нужен all=true. Сначала проверьте с dry_run=true.",
             "inputSchema": { "type": "object", "properties": {
@@ -116,7 +147,7 @@ fn tools(allow_actions: bool) -> Value {
     if !allow_actions {
         // только чтение: без act и без действий над контейнерами
         if let Some(list) = all.as_array_mut() {
-            list.retain(|t| t["name"] != "act");
+            list.retain(|t| t["name"] != "act" && t["name"] != "service_act");
             for t in list.iter_mut().filter(|t| t["name"] == "docker") {
                 t["description"] = json!("Контейнеры Docker: состояние, ЦП, память, сеть, диск (процессы контейнеров в Windows видны одним vmmem).");
                 t["inputSchema"] = json!({ "type": "object", "properties": {} });
@@ -188,6 +219,39 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
             opt(&mut v, "n", "n");
             if b("owners") {
                 v.push("--owners".into());
+            }
+        }
+        "services" => {
+            v.push("svc".into());
+            v.extend(s("filter"));
+            if b("all") {
+                v.push("--all".into());
+            }
+        }
+        "connections" => {
+            v.push("conns".into());
+            v.extend(s("target"));
+            if b("listen") {
+                v.push("--listen".into());
+            }
+        }
+        "who" => {
+            v.push("who".into());
+            v.push(s("path").ok_or("нужен path")?);
+        }
+        "service_act" => {
+            if !allow_actions {
+                return Err(NO_ACTIONS.into());
+            }
+            let action = s("action").ok_or("нужен action")?;
+            if !matches!(action.as_str(), "start" | "stop" | "restart") {
+                return Err(format!("неизвестное действие «{action}»"));
+            }
+            v.push("svc".into());
+            v.push(action);
+            v.push(s("name").ok_or("нужен name")?);
+            if b("dry_run") {
+                v.push("--dry-run".into());
             }
         }
         "docker" => {

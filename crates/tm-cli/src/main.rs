@@ -47,6 +47,11 @@ tm — диспетчер задач для терминала и ИИ-аген�
                                --by cpu|mem|io|read|write|gpu   -n N
   daemon start|stop|status   Фоновый движок: замер раз в секунду, история за 24 ч,
                                канал \\\\.\\pipe\\tm-<SID>-<сеанс>. `daemon run` — то же, но в этом окне
+  svc [фильтр]               Службы Windows: состояние, тип запуска, процесс (--all — и остановленные)
+  svc start|stop|restart <имя>  Запустить, остановить, перезапустить службу (нужны права администратора;
+                               системные — только с --force)
+  conns [цель]               Сетевые подключения и открытые порты (--listen — только ожидающие)
+  who <путь>                 Кто держит файл или файлы в папке открытыми
   docker [действие имя]      Контейнеры Docker: ЦП, память, сеть, диск.
                                Действия: start|stop|restart|pause|unpause|kill <имя|id>
   pool                       Пул ядра по меткам: память драйверов и объектов ядра, рост в час,
@@ -1100,6 +1105,9 @@ fn run() -> Res<bool> {
             Ok(true)
         }
         "docker" => cmd_docker(&args),
+        "svc" | "services" => cmd_svc(&args),
+        "conns" | "ports" => cmd_conns(&args),
+        "who" => cmd_who(&args),
         "pool" => cmd_pool(&args).map(|_| true),
         "mcp" => mcp::run(args.has("allow-actions")).map(|_| true).map_err(io_err),
         "daemon" => cmd_daemon(&args),
@@ -1309,4 +1317,146 @@ fn cmd_pool(args: &Args) -> Res<()> {
         println!("\nЧей драйвер у метки — tm pool --owners (поиск по файлам загруженных драйверов, 10–30 с)");
     }
     Ok(())
+}
+
+// ───────────────────────────── службы, подключения, файлы ─────────────────────────────
+
+/// Имена процессов по PID из собственного мгновенного снимка.
+fn proc_names() -> HashMap<u32, String> {
+    Sampler::new().sample().map(|f| f.procs.into_iter().map(|p| (p.pid, p.name)).collect()).unwrap_or_default()
+}
+
+fn svc_state_ru(s: &str) -> &'static str {
+    match s {
+        "running" => "работает",
+        "stopped" => "остановлена",
+        "start_pending" => "запускается",
+        "stop_pending" => "останавливается",
+        "paused" => "приостановлена",
+        _ => "?",
+    }
+}
+
+fn svc_start_ru(s: &str) -> &'static str {
+    match s {
+        "auto" => "авто",
+        "auto_delayed" => "авто (отлож.)",
+        "manual" => "вручную",
+        "disabled" => "отключена",
+        "boot" | "system" => "при загрузке",
+        _ => "",
+    }
+}
+
+/// `tm svc [фильтр]` — список; `tm svc start|stop|restart <имя>` — действие.
+fn cmd_svc(args: &Args) -> Res<bool> {
+    use tm_core::services::{self, Control};
+    let first = args.pos.first().map(String::as_str);
+    if let Some(what) = first.and_then(|a| match a {
+        "start" => Some(Control::Start),
+        "stop" => Some(Control::Stop),
+        "restart" => Some(Control::Restart),
+        _ => None,
+    }) {
+        let Some(name) = args.pos.get(1) else { return usage("укажите службу: tm svc stop <имя>") };
+        let list = services::list(false).map_err(io_err)?;
+        let Some(s) = list.iter().find(|s| s.name.eq_ignore_ascii_case(name)) else {
+            return Err(Fail::Error(format!("служба «{name}» не найдена (tm svc — список)")));
+        };
+        if args.has("dry-run") {
+            let note = if what != Control::Start && s.critical && !args.has("force") { " — системная служба, нужен --force" } else { "" };
+            println!("· {} ({}) — сейчас {}{note}", s.name, s.display, svc_state_ru(s.state));
+            return Ok(note.is_empty());
+        }
+        let r = services::control(&s.name, what, args.has("force"));
+        if args.has("json") {
+            print_json(&json!({ "name": s.name, "ok": r.is_ok(), "state": r.as_ref().ok(), "error": r.as_ref().err().map(|e| e.to_string()) }));
+        } else {
+            match &r {
+                Ok(st) => println!("✓ {} ({}) — {}", s.name, s.display, svc_state_ru(st)),
+                Err(e) => println!("✗ {} — {e}", s.name),
+            }
+        }
+        return Ok(r.is_ok());
+    }
+    let list = services::list(true).map_err(io_err)?;
+    let f = first.map(str::to_lowercase);
+    let names = proc_names();
+    let shown: Vec<_> = list
+        .into_iter()
+        .filter(|s| args.has("all") || f.is_some() || s.state != "stopped")
+        .filter(|s| f.as_ref().is_none_or(|f| s.name.to_lowercase().contains(f) || s.display.to_lowercase().contains(f)))
+        .collect();
+    if args.has("json") {
+        print_json(&shown);
+        return Ok(true);
+    }
+    println!("{:<28} {:<12} {:<14} {:>7}  {:<14} {}", "СЛУЖБА", "СОСТОЯНИЕ", "ЗАПУСК", "PID", "ПРОЦЕСС", "НАЗВАНИЕ");
+    for s in &shown {
+        let proc = if s.pid != 0 { names.get(&s.pid).map(String::as_str).unwrap_or("") } else { "" };
+        println!(
+            "{:<28} {:<12} {:<14} {:>7}  {:<14} {}{}",
+            s.name,
+            svc_state_ru(s.state),
+            svc_start_ru(s.start),
+            if s.pid != 0 { s.pid.to_string() } else { "-".into() },
+            proc,
+            s.display,
+            if s.critical { "  [системная]" } else { "" }
+        );
+    }
+    if !args.has("all") && f.is_none() {
+        println!("\nПоказаны работающие ({}). Все — tm svc --all; действия — tm svc start|stop|restart <имя>.", shown.len());
+    }
+    Ok(true)
+}
+
+/// `tm conns [цель] [--listen]` — подключения и открытые порты.
+fn cmd_conns(args: &Args) -> Res<bool> {
+    let names = proc_names();
+    let pids: Option<std::collections::HashSet<u32>> = match args.pos.first() {
+        Some(t) => {
+            let snap = Snap::take(args, false)?;
+            Some(snap.resolve(t)?.into_iter().map(|i| snap.procs()[i].pid).collect())
+        }
+        None => None,
+    };
+    let mut list: Vec<_> = tm_core::conns::list()
+        .into_iter()
+        .filter(|c| pids.as_ref().is_none_or(|p| p.contains(&c.pid)))
+        .filter(|c| !args.has("listen") || c.state == "listen" || c.proto == "udp")
+        .collect();
+    list.sort_by(|a, b| (a.proto, a.state != "listen", a.local_port).cmp(&(b.proto, b.state != "listen", b.local_port)));
+    if args.has("json") {
+        print_json(&list);
+        return Ok(true);
+    }
+    println!("{:<5} {:<30} {:<30} {:<13} {:>7}  {}", "PROTO", "ЛОКАЛЬНЫЙ", "УДАЛЁННЫЙ", "СОСТОЯНИЕ", "PID", "ПРОЦЕСС");
+    let addr = |a: &str, p: u16| if a.contains(':') { format!("[{a}]:{p}") } else { format!("{a}:{p}") };
+    for c in &list {
+        let remote = if c.remote.is_empty() { String::new() } else { addr(&c.remote, c.remote_port) };
+        println!("{:<5} {:<30} {:<30} {:<13} {:>7}  {}", c.proto, addr(&c.local, c.local_port), remote, c.state, c.pid, names.get(&c.pid).map(String::as_str).unwrap_or(""));
+    }
+    println!("\nВсего: {}", list.len());
+    Ok(true)
+}
+
+/// `tm who <путь>` — кто держит файл (или файлы в папке).
+fn cmd_who(args: &Args) -> Res<bool> {
+    let Some(path) = args.pos.first() else { return usage("укажите файл или папку: tm who <путь>") };
+    let list = tm_core::locks::holders(path).map_err(|e| Fail::Error(e.to_string()))?;
+    if args.has("json") {
+        print_json(&json!({ "path": path, "holders": list }));
+        return Ok(true);
+    }
+    if list.is_empty() {
+        println!("Никто не держит «{path}» открытым.");
+        return Ok(true);
+    }
+    println!("«{path}» держат открытым:");
+    for h in &list {
+        let svc = h.service.as_deref().map(|s| format!(" · служба {s}")).unwrap_or_default();
+        println!("  {:>7}  {}{svc}   (tm kill {}:{})", h.pid, h.app, h.pid, h.create_time);
+    }
+    Ok(true)
 }
