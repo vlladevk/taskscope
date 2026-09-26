@@ -1574,6 +1574,10 @@ fn cmd_inspect(args: &Args) -> Res<bool> {
 /// `tm sig <путь|цель>` — подпись файла и ссылка на VirusTotal.
 fn cmd_sig(args: &Args) -> Res<bool> {
     let Some(t) = args.pos.first() else { return usage("tm sig <путь к файлу | цель>") };
+    // до is_file: уже сама проверка «\\сервер\…» идёт на сервер и отдаёт ему NTLM-учётку
+    if tm_core::locks::is_remote(std::path::Path::new(t)) {
+        return Err(Fail::Error("сетевые пути не проверяются — только локальные файлы".into()));
+    }
     let path = if std::path::Path::new(t).is_file() {
         t.clone()
     } else {

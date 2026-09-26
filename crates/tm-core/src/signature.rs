@@ -181,6 +181,10 @@ type Key = (String, Option<SystemTime>, u64);
 
 /// Подпись и SHA-256 файла. Результат кэшируется по пути, времени изменения и размеру.
 pub fn check(path: &str) -> std::io::Result<Signature> {
+    // сетевой путь: обращение к \\сервер\… отдало бы серверу NTLM-учётку (путь может прийти от агента)
+    if crate::locks::is_remote(std::path::Path::new(path)) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "сетевые пути не проверяются — только локальные файлы"));
+    }
     static CACHE: OnceLock<Mutex<HashMap<Key, Signature>>> = OnceLock::new();
     let meta = std::fs::metadata(path)?;
     let key = (path.to_lowercase(), meta.modified().ok(), meta.len());
@@ -204,7 +208,9 @@ pub fn check(path: &str) -> std::io::Result<Signature> {
             (code, signer, false)
         }
     };
-    let sig = Signature { status: status_of(code), signer, catalog, sha256: sha256(&mut file) };
+    // больше 1 ГБ не хешируем: долго, а VirusTotal такие файлы всё равно не принимает
+    let hash = if meta.len() <= 1 << 30 { sha256(&mut file) } else { None };
+    let sig = Signature { status: status_of(code), signer, catalog, sha256: hash };
     let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());
     if c.len() > 2000 {
         c.clear();

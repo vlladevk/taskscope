@@ -87,7 +87,7 @@ fn wstr(s: &[u16]) -> String {
 
 /// Сетевые пути не принимаем: обращение к \\сервер\… отправило бы серверу учётные данные
 /// пользователя (NTLM), а путь может прийти от ИИ-агента или веб-страницы.
-fn is_remote(p: &Path) -> bool {
+pub fn is_remote(p: &Path) -> bool {
     use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
     let s = p.to_string_lossy().replace('/', "\\");
     if s.starts_with(r"\\") && !s.starts_with(r"\\?\") && !s.starts_with(r"\\.\") {
