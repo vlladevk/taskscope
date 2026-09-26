@@ -199,14 +199,15 @@ const RANGES=[
 const S={
   range:RANGES[0],res:'cpu',sel:null,multi:new Set(),hoverT:null,hl:null,
   procMode:'tree',incl:true,sort:'cpu',dir:-1,q:'',open:new Set(),freeze:false,order:null,
-  map:{color:'cat',root:null},chartMode:'apps',rail:true,right:true,bottom:true,btab:'chart',more:false,bh:300,rw:360,
+  map:{color:'cat',root:null},chartMode:'apps',rail:true,main:true,right:true,bottom:true,btab:'chart',more:false,bh:300,rw:360,
 };
 try{const r=RANGES.find(r=>r.key===localStorage.getItem('tm-range'));if(r)S.range=r;}catch(e){}
-try{const u=JSON.parse(localStorage.getItem('tm-ui')||'{}');for(const k of ['chartMode','rail','right','bottom','btab','res','bh','rw','more','procMode','incl'])if(k in u)S[k]=u[k];}catch(e){}
-const saveUI=()=>{try{localStorage.setItem('tm-ui',JSON.stringify({chartMode:S.chartMode,rail:S.rail,right:S.right,bottom:S.bottom,btab:S.btab,res:S.res,bh:S.bh,rw:S.rw,more:S.more,procMode:S.procMode,incl:S.incl}));}catch(e){}};
+try{const u=JSON.parse(localStorage.getItem('tm-ui')||'{}');for(const k of ['chartMode','rail','main','right','bottom','btab','res','bh','rw','more','procMode','incl'])if(k in u)S[k]=u[k];}catch(e){}
+const saveUI=()=>{try{localStorage.setItem('tm-ui',JSON.stringify({chartMode:S.chartMode,rail:S.rail,main:S.main,right:S.right,bottom:S.bottom,btab:S.btab,res:S.res,bh:S.bh,rw:S.rw,more:S.more,procMode:S.procMode,incl:S.incl}));}catch(e){}};
 let PROTECT=new Set();try{PROTECT=new Set(JSON.parse(localStorage.getItem('tm-protect')||'[]'));}catch(e){}
 const saveProtect=()=>{try{localStorage.setItem('tm-protect',JSON.stringify([...PROTECT]));}catch(e){}};
 const isProt=n=>PROTECT.has(n.exe.toLowerCase());
+let DRAGGING=false;
 const vis=el=>!!el&&el.isConnected&&el.clientWidth>0&&el.clientHeight>0;
 function openPath(n){for(let x=n;x.parent&&x.parent.appKey===x.appKey;x=x.parent)S.open.add(x.parent.id);}
 
@@ -318,7 +319,7 @@ function openMenu(x,y,ids){
 const closeMenu=()=>{menu.style.display='none';menuIds=null;};
 document.addEventListener('pointerdown',e=>{if(!menu.contains(e.target))closeMenu();},true);
 menu.addEventListener('click',e=>{const mi=e.target.closest('.mi[data-a]');if(!mi||!menuIds)return;const ids=menuIds;closeMenu();act(mi.dataset.a,ids);});
-function select(id,reveal){S.sel=id;if(!S.right)toggleRight(true);S.multi=new Set([id]);const n=NODES.get(id);if(n){if(reveal)openPath(n);info(n,true).then(()=>renderDetails());}renderAll();if(reveal)requestAnimationFrame(()=>{const r=document.querySelector(`tr[data-id="${id}"]`);if(r)r.scrollIntoView({block:'nearest'});});}
+function select(id,reveal){S.sel=id;if(!S.right)toggleRight(true);S.multi=new Set([id]);const n=NODES.get(id);if(n){if(reveal)openPath(n);info(n,true).then(()=>renderDetails());}renderAll();if(reveal)requestAnimationFrame(()=>revealRow(id));}
 
 /* =================================================================
    Графики (стиль CloudWatch / Cloudscape)
@@ -635,6 +636,7 @@ function mountProcs(el){
   $('.p-mode',el).addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;S.procMode=b.dataset.m;S.order=null;saveUI();renderProcs();});
   $('.p-incl',el).addEventListener('change',e=>{S.incl=e.target.checked;saveUI();renderProcs();});
   const wrap=$('.tbl-wrap',el);
+  let sraf=0;wrap.addEventListener('scroll',()=>{if(!sraf)sraf=requestAnimationFrame(()=>{sraf=0;renderProcs();});},{passive:true});
   wrap.addEventListener('mouseenter',()=>{S.freeze=true;$('.p-frz',el).style.visibility='visible';});
   wrap.addEventListener('mouseleave',()=>{S.freeze=false;$('.p-frz',el).style.visibility='hidden';});
   $('thead',el).addEventListener('click',e=>{const th=e.target.closest('th[data-k]');if(!th||th.dataset.k==='name')return;const k=th.dataset.k;if(S.sort===k)S.dir*=-1;else{S.sort=k;S.dir=-1;}S.order=null;renderProcs();});
@@ -678,6 +680,14 @@ function procRows(){
   return out;
 }
 let sparkReq=0;
+const ROW_H=32,ROW_BUF=12;
+/* строка может быть не нарисована (вне видимой части) — прокручиваем к ней по номеру */
+function revealRow(id){
+  const el=PANEL_EL.procs;if(!vis(el))return;const wrap=$('.tbl-wrap',el);
+  const r=el.querySelector(`tr[data-id="${CSS.escape(id)}"]`);if(r){r.scrollIntoView({block:'nearest'});return;}
+  const i=procRows().findIndex(x=>x.n.id===id);if(i<0)return;
+  wrap.scrollTop=($('thead',el).offsetHeight||33)+i*ROW_H-wrap.clientHeight/2;renderProcs();
+}
 function renderProcs(){
   const el=PANEL_EL.procs;if(!vis(el)||!SYS)return;
   $('.p-mode',el).querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.procMode));
@@ -690,7 +700,11 @@ function renderProcs(){
   const rows=procRows();
   if(!S.freeze||!S.order)S.order=new Map(rows.map((r,i)=>[r.n.id,i]));
   const core=100/CPUS;
-  patchRows($('tbody',el),rows.map(({n,d})=>{
+  /* рисуем только видимые строки (плюс запас): все ~400 строк делали каждый кадр
+     перетаскивания границ и каждое обновление заметно тяжелее */
+  const wrap=$('.tbl-wrap',el),hd=$('thead',el).offsetHeight||33;
+  const i0=Math.max(0,Math.floor((wrap.scrollTop-hd)/ROW_H)-ROW_BUF),i1=Math.min(rows.length,Math.ceil((wrap.scrollTop+wrap.clientHeight)/ROW_H)+ROW_BUF);
+  patchRows($('tbody',el),rows.slice(i0,i1).map(({n,d})=>{
     const kids=sameApp(n),iss=ISS.get(n.id),w=kids.length&&!S.open.has(n.id)?worstIn(n):null,sp=n.susp;
     const from=n.parent&&n.parent.appKey!==n.appKey&&!LAUNCHERS.has(n.parent.appKey)&&!LAUNCHERS.has(n.parent.exe.toLowerCase())?(APPS.get(n.parent.appKey)||{}).title||nameOf(n.parent):null;
     const lvl=iss?(iss.some(i=>i.lvl==='red')?'red':'yel'):null;
@@ -706,7 +720,7 @@ function renderProcs(){
         <span class="n2">${showExe?esc(n.exe)+' · ':''}${n.pid}${kids.length&&!S.open.has(n.id)?` · ${appDesc(n).length-1} доч.`:''}${from&&S.procMode==='tree'?` · из ${esc(from)}`:''}</span>
         ${sp?'<span class="chip">приостановлен</span>':''}${isProt(n)?'<span class="chip">защищён</span>':''}${n.prio==='idle'||n.prio==='below_normal'?'<span class="chip">низкий приоритет</span>':''}</div>`;
     return {id:n.id,cls:`${S.sel===n.id||S.multi.has(n.id)?'sel':''}${sp?' susp':''}`,cells:[{h:name},...cells,{h:spk}]};
-  }));
+  }),{top:i0*ROW_H,bot:(rows.length-i1)*ROW_H});
   const apps=new Set();for(const n of NODES.values())if(n.alive&&n.appKey)apps.add(n.appKey);
   setHTML($('.p-foot',el),`<span>Процессов: ${procCount()}</span><span>Приложений: ${apps.size}</span><div class="spacer"></div><span><span class="kbd">Del</span> завершить · <span class="kbd">Shift+Del</span> с дочерними · <span class="kbd">Ctrl+клик</span> несколько · <span class="kbd">ПКМ</span> меню</span>`);
 }
@@ -719,9 +733,12 @@ function selIn(el){
   const s=getSelection();if(!el||!s||s.isCollapsed||!s.rangeCount)return false;
   const r=s.getRangeAt(0);return el.contains(r.startContainer)||el.contains(r.endContainer);
 }
-function patchRows(tb,list){
+function patchRows(tb,list,pad){
   if(selIn(tb))return; // перестановка строк тоже сбросила бы выделение
   const map=tb._rows||(tb._rows=new Map()),keep=new Set();let prev=null;
+  /* pad — высота невидимых строк сверху и снизу (распорки вместо них) */
+  const spacer=k=>{let t=tb[k];if(!t||!t.isConnected){t=tb[k]=document.createElement('tr');t.className='vsp';t.innerHTML='<td colspan="99"></td>';}return t;};
+  if(pad){const t=spacer('_top');if(tb.firstChild!==t)tb.insertBefore(t,tb.firstChild);t.firstChild.style.height=pad.top+'px';t.hidden=!pad.top;prev=t;}
   for(const r of list){
     let e=map.get(r.id);
     if(!e){const tr=document.createElement('tr');tr.dataset.id=r.id;e={tr,cls:null,tds:r.cells.map(()=>tr.appendChild(document.createElement('td'))),h:[],c:[],t:[]};map.set(r.id,e);}
@@ -739,6 +756,7 @@ function patchRows(tb,list){
     prev=e.tr;
   }
   for(const [id,e] of map)if(!keep.has(id)){e.tr.remove();map.delete(id);}
+  if(pad){const b=spacer('_bot');if(tb.lastChild!==b)tb.appendChild(b);b.firstChild.style.height=pad.bot+'px';b.hidden=!pad.bot;}
 }
 
 /* =================================================================
@@ -1292,7 +1310,7 @@ const dock=DV.createDockview($('#dock'),{
     else if(o.name==='docker'){PANEL_EL.docker=el;mountDocker(el);}
     else if(o.name==='pool'){PANEL_EL.pool=el;mountPool(el);}
     else if(o.name==='proc'){mountProcTab(el,String(o.id).slice(5));}
-    new ResizeObserver(()=>{if(vis(el)){renderAll();flushNeeds();}}).observe(el);
+    new ResizeObserver(()=>{if(!DRAGGING&&vis(el)){renderAll();flushNeeds();}}).observe(el);
     return {element:el,init(){},dispose(){if(o.name==='proc')PROC_TABS.delete(String(o.id).slice(5));}};
   },
   /* плавающие окна выключены: оторванную основную вкладку нельзя было закрыть */
@@ -1320,27 +1338,36 @@ ensureFixed();
 dock.onDidLayoutChange(()=>{try{localStorage.setItem(LAYOUT_KEY,JSON.stringify(dock.toJSON()));}catch(e){}});
 dock.onDidActivePanelChange(()=>requestAnimationFrame(()=>{renderAll();flushNeeds();}));
 
+/* размеры — прямо на панели: наследуемая CSS-переменная на #shell заставляла пересчитывать стили всех элементов */
+function sizeZones(){$('#bottom').style.height=S.bh+'px';$('#right').style.width=S.rw+'px';}
 function applyShell(){
   const sh=$('#shell');
-  sh.classList.toggle('no-rail',!S.rail);sh.classList.toggle('no-bottom',!S.bottom);sh.classList.toggle('no-right',!S.right);
-  sh.style.setProperty('--bh',S.bh+'px');sh.style.setProperty('--rw',S.rw+'px');
-  $('#tglBottom').classList.toggle('on',S.bottom);$('#tglRight').classList.toggle('on',S.right);
+  sh.classList.toggle('no-rail',!S.rail);sh.classList.toggle('no-main',!S.main);sh.classList.toggle('no-bottom',!S.bottom);sh.classList.toggle('no-right',!S.right);
+  sizeZones();
+  $('#tglRail').classList.toggle('on',S.rail);$('#tglMain').classList.toggle('on',S.main);$('#tglBottom').classList.toggle('on',S.bottom);$('#tglRight').classList.toggle('on',S.right);
   $('#btabs').querySelectorAll('[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===S.btab));
   $('#bChart').hidden=S.btab!=='chart';$('#bLog').hidden=S.btab!=='log';
   requestAnimationFrame(()=>{relayout();renderAll();flushNeeds();});
 }
-const toggleBottom=v=>{S.bottom=v==null?!S.bottom:v;if(!S.bottom&&S.max==='bottom'){S.max=null;maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));}saveUI();applyShell();};
+const toggleBottom=v=>{S.bottom=v==null?!S.bottom:v;if(!S.bottom)S.main=true;if(!S.bottom&&S.max==='bottom'){S.max=null;maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));}saveUI();applyShell();};
+/* центр не бывает пустым: спрятали вкладки — показываем нижнюю панель, и наоборот */
+const toggleMain=v=>{S.main=v==null?!S.main:v;if(!S.main){S.bottom=true;if(S.max==='bottom'){S.max=null;maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));}}saveUI();applyShell();};
 const toggleRail=v=>{S.rail=v==null?!S.rail:v;saveUI();applyShell();};
 const toggleRight=v=>{S.right=v==null?!S.right:v;saveUI();applyShell();};
+$('#tglRail').addEventListener('click',()=>toggleRail());$('#tglMain').addEventListener('click',()=>toggleMain());
 $('#tglBottom').addEventListener('click',()=>toggleBottom());
 $('#maxBottom').addEventListener('click',()=>setMax('bottom'));maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));
 $('#tglRight').addEventListener('click',()=>toggleRight());
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.dataset.close==='bottom'?toggleBottom(false):toggleRight(false)));
 function sash(id,apply){
   const s=$(id);let start,base;
-  s.addEventListener('pointerdown',e=>{s.setPointerCapture(e.pointerId);s.classList.add('drag');start={x:e.clientX,y:e.clientY};base={bh:S.bh,rw:S.rw};});
-  s.addEventListener('pointermove',e=>{if(!start)return;apply(e.clientX-start.x,e.clientY-start.y,base);$('#shell').style.setProperty('--bh',S.bh+'px');$('#shell').style.setProperty('--rw',S.rw+'px');});
-  s.addEventListener('pointerup',()=>{start=null;s.classList.remove('drag');saveUI();renderAll();});
+  let raf=0,last;
+  s.addEventListener('pointerdown',e=>{s.setPointerCapture(e.pointerId);s.classList.add('drag');start={x:e.clientX,y:e.clientY};base={bh:S.bh,rw:S.rw};DRAGGING=true;});
+  /* пока тянем — только меняем размеры раз в кадр; перерисовка таблиц и графиков — после отпускания */
+  s.addEventListener('pointermove',e=>{if(!start)return;last=e;if(raf)return;raf=requestAnimationFrame(()=>{raf=0;if(!start)return;
+    apply(last.clientX-start.x,last.clientY-start.y,base);sizeZones();});});
+  const end=()=>{if(!start)return;start=null;DRAGGING=false;s.classList.remove('drag');saveUI();requestAnimationFrame(()=>{relayout();renderAll();flushNeeds();});};
+  s.addEventListener('pointerup',end);s.addEventListener('pointercancel',end);
 }
 sash('#sashB',(dx,dy,b)=>{S.bh=clamp(b.bh-dy,160,innerHeight-260);});
 sash('#sashR',(dx,dy,b)=>{S.rw=clamp(b.rw-dx,280,Math.min(640,innerWidth-700));});
@@ -1365,6 +1392,7 @@ $('#moreBtn').addEventListener('click',async e=>{
     <div class="mi" data-g="reset"><span>Сбросить раскладку</span></div>
     <div class="sep"></div><div class="mh">Панели</div>
     <div class="mi" data-g="rail"><span><span class="ck">${S.rail?'✓':''}</span> Ресурсы и графики (слева)</span><kbd>Ctrl+B</kbd></div>
+    <div class="mi" data-g="main"><span><span class="ck">${S.main?'✓':''}</span> Вкладки: процессы, карта… (центр)</span></div>
     <div class="mi" data-g="bottom"><span><span class="ck">${S.bottom?'✓':''}</span> График и журнал (снизу)</span><kbd>Ctrl+J</kbd></div>
     <div class="mi" data-g="right"><span><span class="ck">${S.right?'✓':''}</span> Детали (справа)</span><kbd>Ctrl+Alt+B</kbd></div><div class="sep"></div>
     ${SYSINFO&&SYSINFO.elevated?'':'<div class="mi" data-g="admin"><span>Перезапустить от администратора</span></div>'}
@@ -1376,6 +1404,7 @@ menu.addEventListener('click',async e=>{const mi=e.target.closest('[data-g]');if
     if(g==='pause')paused=!paused;
     else if(g==='reset'){try{localStorage.removeItem(LAYOUT_KEY);}catch(x){}defaultLayout();Object.assign(S,{bh:300,rw:360,rail:true,bottom:true,right:true});saveUI();applyShell();}
     else if(g==='rail')toggleRail();
+    else if(g==='main')toggleMain();
     else if(g==='bottom')toggleBottom();
     else if(g==='right')toggleRight();
     else if(g==='admin'){if(!TAURI)return toast('Запустите приложение, а не режим разработки','yel');await appCmd('admin');}

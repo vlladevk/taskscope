@@ -176,6 +176,7 @@ button,input{font:inherit;color:inherit}
 .tbl tbody tr.sel td{background:var(--accent-sel)}
 .tbl tbody tr.sel td:first-child{box-shadow:inset 3px 0 var(--accent)}
 .tbl tbody{user-select:none}
+.tbl tr.vsp td{height:auto;padding:0;border:0;background:none}
 .nm{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden}
 .nm>*{flex:none}.nm .n1,.nm .n2{flex:0 1 auto;min-width:0;white-space:nowrap}
 .nm .tw{width:16px;height:16px;display:inline-grid;place-items:center;flex:none;color:var(--text-3);cursor:pointer;border-radius:3px}
@@ -276,10 +277,12 @@ tr.susp .n1{color:var(--text-3)}
 .bottom{height:var(--bh,300px);flex:none}
 .right{width:var(--rw,360px);flex:none}
 .shell.no-bottom .bottom,.shell.no-bottom #sashB{display:none}
+.shell.no-main #dock,.shell.no-main #sashB{display:none}
+.shell.no-main .bottom{flex:1;height:auto!important}
 /* развёрнутый график: поверх всех панелей, внутри окна (без отдельных окон) */
 /* нижняя панель: прячем вкладки и «Детали», слева остаётся список ресурсов для переключения */
 .shell.max-bottom #dock,.shell.max-bottom #sashB,.shell.max-bottom #sashR,.shell.max-bottom #right{display:none}
-.shell.max-bottom .bottom{flex:1;height:auto}
+.shell.max-bottom .bottom{flex:1;height:auto!important}
 .dchart.max{position:fixed;inset:8px;z-index:40;box-shadow:0 8px 32px rgba(0,0,0,.5)}
 .dchart.max{background:var(--layer);border:1px solid var(--stroke-ctrl);border-radius:8px;padding:12px 16px;display:flex;flex-direction:column}
 .dchart.max canvas{flex:1;height:auto;min-height:0}
@@ -370,6 +373,8 @@ img.ico{background:none;box-shadow:none;object-fit:contain;border-radius:0}
   <span class="lbl">Период</span>
   <div class="seg" id="range"></div>
   <div class="spacer"></div>
+  <button class="ib" id="tglRail" title="Ресурсы слева · Ctrl+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="4.5" height="10" rx="1"/></svg></button>
+  <button class="ib" id="tglMain" title="Вкладки в центре (процессы, карта, Docker…)"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="12" height="5.5" rx="1"/></svg></button>
   <button class="ib" id="tglBottom" title="Нижняя панель · Ctrl+J"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="9" width="12" height="4" rx="1"/></svg></button>
   <button class="ib" id="tglRight" title="Правая панель · Ctrl+Alt+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="9.5" y="3" width="4.5" height="10" rx="1"/></svg></button>
   <button class="ib" id="moreBtn" title="Ещё"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor"/></svg></button>
