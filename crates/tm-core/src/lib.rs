@@ -18,6 +18,7 @@ pub mod pool;
 pub mod sampler;
 pub mod sysmem;
 pub mod service;
+pub mod settings;
 pub mod system;
 pub mod tree;
 pub mod watch;
