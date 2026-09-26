@@ -13,6 +13,13 @@ pub fn uptime_ms() -> u64 {
     unsafe { GetTickCount64() }
 }
 
+/// Текущее время как FILETIME (100 нс с 1601 г.) — в той же шкале, что время создания процесса.
+pub fn filetime_now() -> i64 {
+    let mut f = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    unsafe { windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(&mut f) };
+    (((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64) as i64
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct CpuTimes {
     idle: u64,

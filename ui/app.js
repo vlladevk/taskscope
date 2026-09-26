@@ -18,6 +18,7 @@ const fmtMbit=v=>v<0.005?'0 Мбит/с':v<0.1?Math.round(v*1000)+' Кбит/с'
 const hexA=(hex,a)=>{const n=parseInt(hex.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`;};
 const agoStr=s=>s<60?Math.round(s)+' с':s<3600?Math.round(s/60)+' мин':s<86400?Math.floor(s/3600)+' ч '+Math.round(s%3600/60)+' мин':Math.floor(s/86400)+' д '+Math.floor(s%86400/3600)+' ч';
 const CHEV='<svg width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 1.5 7 5l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_INFO='<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M7 6.2v3.6M7 4.2v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const ctToMs=ct=>(ct-116444736000000000)/10000;
 
@@ -80,6 +81,7 @@ const NODES=new Map();           // "pid:время создания" → узе
 const INFO=new Map();            // id → {path, description, company, role}
 const ICONS=new Map();           // путь в нижнем регистре → data URL | null
 let APPS=new Map(), NETS=[], GPUS=[], NETPP=false, MEMD=null, ISS=new Map(), EVENTS=[];
+const SHORT_R=new Map();const shortAvg=(k,n)=>{const r=SHORT_R.get(k);if(!r)return 0;const t=rtail(r,Math.min(n,r.n||1));return t.reduce((s,v)=>s+v,0)/Math.max(1,t.length);};
 let SYS=null, SYSINFO=null, SEQ=0, EVSEQ=0, NOW=Date.now(), CPUS=1, TOTAL_MB=1;
 let NEWKEYS=[], needBackfill=true;
 
@@ -110,10 +112,15 @@ function applySnap(s){
   }
   APPS=new Map();
   for(const a of s.apps){
-    const app={key:a.key,title:a.title,rootPid:a.root_pid,path:a.path,count:a.count,cpu:a.cpu,mem:a.mem/MB,dsk:(a.io_read_bps+a.io_write_bps)/MB,gpu:a.gpu||0,pids:a.pids};
+    const app={key:a.key,title:a.title,rootPid:a.root_pid,path:a.path,count:a.count,cpu:a.cpu,mem:a.mem/MB,dsk:(a.io_read_bps+a.io_write_bps)/MB,gpu:a.gpu||0,pids:a.pids,short:a.short_cpu||0,spawn:a.spawn_rate||0,spawnNames:a.spawn_names||[]};
     APPS.set(a.key,app);
     for(const pid of a.pids){const n=byPid.get(pid);if(n)n.appKey=a.key;}
   }
+  /* ЦП коротких процессов — посекундно по приложениям ('' — не отнесённое никому) */
+  const shortSeen=new Set();
+  for(const a of APPS.values())if(a.short>0||SHORT_R.has(a.key)){if(!SHORT_R.has(a.key))SHORT_R.set(a.key,ring());rpush(SHORT_R.get(a.key),a.short);shortSeen.add(a.key);}
+  if(!SHORT_R.has(''))SHORT_R.set('',ring());rpush(SHORT_R.get(''),SYS.unseen_cpu||0);shortSeen.add('');
+  for(const [k,r] of SHORT_R)if(!shortSeen.has(k)){rpush(r,0);if(rtail(r,SPARKN).every(v=>!v))SHORT_R.delete(k);}
   NETS=s.nets||[];GPUS=s.gpus||[];NETPP=!!s.net_per_process;MEMD=s.mem_detail||null;POOLA=s.pool_alerts||[];
   ISS=new Map();
   for(const i of s.issues||[]){const id=i.pid+':'+i.create_time;if(!ISS.has(id))ISS.set(id,[]);ISS.get(id).push({lvl:i.level,txt:i.text,kind:i.kind});}
@@ -630,6 +637,7 @@ function mountProcs(el){
       <label class="chk" title="Для родителя показывать сумму вместе с дочерними процессами того же приложения. Программы, запущенные из него (например, из Проводника), считаются отдельно — наведите на число, чтобы увидеть общую сумму."><input type="checkbox" class="p-incl"> Σ по приложению</label>
       <div class="spacer"></div><span class="caption p-frz" style="visibility:hidden">порядок заморожен, пока курсор над списком</span>
     </div>
+    <div class="p-short" hidden></div>
     <div class="tbl-wrap"><table class="tbl"><colgroup></colgroup><thead></thead><tbody></tbody></table></div>
     <div class="foot p-foot"></div>`;
   $('.p-q',el).addEventListener('input',e=>{S.q=e.target.value.trim().toLowerCase();S.order=null;renderProcs();});
@@ -639,6 +647,8 @@ function mountProcs(el){
   let sraf=0;wrap.addEventListener('scroll',()=>{if(!sraf)sraf=requestAnimationFrame(()=>{sraf=0;renderProcs();});},{passive:true});
   wrap.addEventListener('mouseenter',()=>{S.freeze=true;$('.p-frz',el).style.visibility='visible';});
   wrap.addEventListener('mouseleave',()=>{S.freeze=false;$('.p-frz',el).style.visibility='hidden';});
+  $('.p-short',el).addEventListener('click',e=>{const a=e.target.closest('[data-app]');if(!a)return;const ap=APPS.get(a.dataset.app);if(!ap)return;
+    const n=[...NODES.values()].find(x=>alive(x)&&x.pid===ap.rootPid);if(n){openPath(n);select(n.id,true);revealRow(n.id);}});
   $('thead',el).addEventListener('click',e=>{const th=e.target.closest('th[data-k]');if(!th||th.dataset.k==='name')return;const k=th.dataset.k;if(S.sort===k)S.dir*=-1;else{S.sort=k;S.dir=-1;}S.order=null;renderProcs();});
   const tb=$('tbody',el);
   tb.addEventListener('pointerdown',e=>{
@@ -651,8 +661,11 @@ function mountProcs(el){
   tb.addEventListener('contextmenu',e=>{const tr=e.target.closest('tr');if(!tr)return;e.preventDefault();const id=tr.dataset.id;if(!S.multi.has(id)){S.sel=id;S.multi=new Set([id]);renderAll();}openMenu(e.clientX,e.clientY,[...S.multi]);});
 }
 function matchQ(n){if(!S.q)return true;const i=INFO.get(n.id);return (nameOf(n)+' '+n.exe+' '+n.pid+' '+(i&&i.description||'')+' '+(i&&i.path||'')).toLowerCase().includes(S.q);}
+/* в Σ у верхней строки приложения — и ЦП его коротких процессов: иначе «Claude 12 %» стоял ниже
+   антивируса, хотя вместе с запущенными им git и grep занимал треть процессора */
+const shortOf=(n,m)=>{if(m!=='cpu'||!n.appKey)return 0;const a=APPS.get(n.appKey);return a&&a.rootPid===n.pid?shortAvg(n.appKey,5):0;};
 function sortNodes(list){
-  const m=COLS.find(c=>c.k===S.sort).m,v=n=>cur(n,m,S.incl);
+  const m=COLS.find(c=>c.k===S.sort).m,v=n=>cur(n,m,S.incl)+(S.incl?shortOf(n,m):0);
   if(S.freeze&&S.order){const idx=S.order;return list.sort((a,b)=>(idx.has(a.id)?idx.get(a.id):1e9)-(idx.has(b.id)?idx.get(b.id):1e9));}
   return list.sort((a,b)=>S.dir*(v(a)-v(b))||a.pid-b.pid);
 }
@@ -688,6 +701,15 @@ function revealRow(id){
   const i=procRows().findIndex(x=>x.n.id===id);if(i<0)return;
   wrap.scrollTop=($('thead',el).offsetHeight||33)+i*ROW_H-wrap.clientHeight/2;renderProcs();
 }
+/* Короткие процессы (git, grep, sh из скриптов) живут меньше секунды и в список не попадают, но могут
+   занимать процессор целиком: «ЦП 100 %», а в таблице сверху 8 %. Здесь — сколько их и кто запускает */
+function renderShort(el){
+  const box=$('.p-short',el),sec=5,list=[...APPS.values()].map(a=>({a,v:shortAvg(a.key,sec)})).filter(x=>x.v>=1).sort((p,q)=>q.v-p.v);
+  const un=shortAvg('',sec),tot=list.reduce((s,x)=>s+x.v,0);
+  if(tot+un<5){box.hidden=true;return;}box.hidden=false;
+  const who=list.slice(0,3).map(({a,v})=>`<a data-app="${esc(a.key)}" title="Показать ${esc(a.title)} в списке">${esc(mapLabel(a.title))}</a> — ${fmtPct(v)}${a.spawnNames.length?` <span class="n2">(${esc(a.spawnNames.join(', '))})</span>`:''}`).join(' · ');
+  setHTML(box,`${ICON_INFO}<span>${tot>=1?`<b>${fmtPct(tot)} ЦП — короткие процессы</b>, которых нет в списке: каждый живёт меньше секунды, но их запускают десятками в секунду. Запускает ${who}.`:''}${un>=5?` ${tot>=1?'Ещё':'<b>'}${fmtPct(un)} ЦП${tot>=1?'':'</b>'} не удалось отнести ни к одному процессу — прерывания, драйверы или процессы, завершившиеся до замера.`:''}</span>`);
+}
 function renderProcs(){
   const el=PANEL_EL.procs;if(!vis(el)||!SYS)return;
   $('.p-mode',el).querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.procMode));
@@ -708,9 +730,9 @@ function renderProcs(){
     const kids=sameApp(n),iss=ISS.get(n.id),w=kids.length&&!S.open.has(n.id)?worstIn(n):null,sp=n.susp;
     const from=n.parent&&n.parent.appKey!==n.appKey&&!LAUNCHERS.has(n.parent.appKey)&&!LAUNCHERS.has(n.parent.exe.toLowerCase())?(APPS.get(n.parent.appKey)||{}).title||nameOf(n.parent):null;
     const lvl=iss?(iss.some(i=>i.lvl==='red')?'red':'yel'):null;
-    const cells=COLS.map(c=>{const vi=cur(n,c.m,S.incl&&kids.length>0),vo=cur(n,c.m,false),bw=clamp(vi/c.bar,0,1)*100;
+    const cells=COLS.map(c=>{const sh=S.incl?shortOf(n,c.m):0,vi=cur(n,c.m,S.incl&&kids.length>0)+sh,vo=cur(n,c.m,false),bw=clamp(vi/c.bar,0,1)*100;
       const other=aliveKids(n).length>kids.length;
-      return {c:c.k===act?'act':'',t:kids.length||other?`Сам процесс: ${c.fmt(vo)}${kids.length?`\nС дочерними процессами приложения: ${c.fmt(cur(n,c.m,true))}`:''}${other?`\nСо всем, что запущено из него (другие приложения — отдельными строками): ${c.fmt(curAll(n,c.m))}`:''}`:'',
+      return {c:c.k===act?'act':'',t:kids.length||other?`Сам процесс: ${c.fmt(vo)}${kids.length?`\nС дочерними процессами приложения: ${c.fmt(cur(n,c.m,true))}`:''}${other?`\nСо всем, что запущено из него (другие приложения — отдельными строками): ${c.fmt(curAll(n,c.m))}`:''}${sh>=.05?`\nКороткие процессы, которые оно запускает (в списке не видны): ${c.fmt(sh)}`:''}`:'',
         h:`<span class="cell-bar" style="width:${bw.toFixed(1)}%"></span><span class="cell-v">${vi<.05&&c.k!=='mem'?'<span style="color:var(--text-4)">—</span>':c.fmt(vi)}</span>`};});
     const sd=S.incl&&kids.length?sparkSum(n):rtail(n.rc,120);
     const spk=sparkSVG(sd,Math.max(core*1.2,5),PAL[0]);
@@ -721,6 +743,7 @@ function renderProcs(){
         ${sp?'<span class="chip">приостановлен</span>':''}${isProt(n)?'<span class="chip">защищён</span>':''}${n.prio==='idle'||n.prio==='below_normal'?'<span class="chip">низкий приоритет</span>':''}</div>`;
     return {id:n.id,cls:`${S.sel===n.id||S.multi.has(n.id)?'sel':''}${sp?' susp':''}`,cells:[{h:name},...cells,{h:spk}]};
   }),{top:i0*ROW_H,bot:(rows.length-i1)*ROW_H,cols:COLS.length+2});
+  renderShort(el);
   const apps=new Set();for(const n of NODES.values())if(n.alive&&n.appKey)apps.add(n.appKey);
   setHTML($('.p-foot',el),`<span>Процессов: ${procCount()}</span><span>Приложений: ${apps.size}</span><div class="spacer"></div><span><span class="kbd">Del</span> завершить · <span class="kbd">Shift+Del</span> с дочерними · <span class="kbd">Ctrl+клик</span> несколько · <span class="kbd">ПКМ</span> меню</span>`);
 }
@@ -812,7 +835,8 @@ function mapStatus(){
   const pct=pv!=null?` · ${pv<.1?'<0,1 %':fmtPct(pv)} ${S.map.root?`от «${esc(MAP.rootLabel)}»`:'от всего'}`:'';
   /* плитка «ещё N» — что в ней; плитка-группа — что PID только у главного процесса, размер — вместе с дочерними */
   const cnt=h.rest&&[...h.rest.reduce((m,s)=>m.set(s,(m.get(s)||0)+1),new Map())].map(([s,c])=>c>1?`${s} ×${c}`:s); // «svchost ×12», а не двенадцать раз
-  const what=h.rest?` · ${esc(cnt.slice(0,6).join(', '))}${cnt.length>6?'…':''}`
+  const what=h.short?` · запускает ${esc(h.short.join(', ')||'процессы')} — каждый живёт меньше секунды, поэтому в списке их нет`
+    :h.unseen?' · прерывания, драйверы и процессы, завершившиеся до замера':h.rest?` · ${esc(cnt.slice(0,6).join(', '))}${cnt.length>6?'…':''}`
     :h.procs>1?(h.own?` · ${esc(n.exe)} · PID ${n.pid} и ещё ${h.procs-1} ${plural(h.procs-1,'дочерний','дочерних','дочерних')}`:` · ${h.procs} ${plural(h.procs,'процесс','процесса','процессов')}`)
     :n?` · ${esc(n.exe)} · PID ${n.pid}`:'';
   setHTML(st,`<b>${esc(path)}${h.self?' · сам процесс, без дочерних':''}</b> — ${mapFmt(h.v)}${pct}${n&&!h.rest&&mapMetric()!=='cpu'?` · ЦП ${fmtPct(c)}`:''}${what}`);
@@ -869,11 +893,13 @@ function mapTree(){
     if(appAvg){const target=appAvg.get(k)||0;if(v>0){const f=target/v;kids.forEach(x=>scaleTree(x,f));}else if(target>0&&kids.length){kids.forEach(x=>scaleTree(x,0));kids[0].v=target;}v=target;}
     const a=APPS.get(k),root=tops.find(t=>a&&t.pid===a.rootPid)||tops[0];
     const flat=kids.filter(x=>x.v>eps);
+    if(m==='cpu'&&!long){const sv=shortAvg(k,mapSecs());if(sv>eps){const sa=APPS.get(k);flat.push({key:'x'+k,label:'короткие процессы',v:sv,rep:root,cat:root?catOf(root):'other',short:sa?sa.spawnNames:[]});v+=sv;}}
     return {key:'a'+k,label:mapLabel(a?a.title:k),v,kids:flat,node:flat.length===1?flat[0].node:null,rep:root,cat:root?catOf(root):'other',zoomId:'a'+k};
   });
   /* приближенное приложение не выкидывает к общему виду, когда оно затихло (в режиме ЦП) */
   if(S.map.root&&!procRoot){const g=apps.find(a=>a.key===S.map.root);if(g&&g.kids&&g.kids.length)return g;}
   apps=apps.filter(a=>a.v>eps);
+  if(m==='cpu'&&!long){const un=shortAvg('',mapSecs());if(un>eps)apps.push({key:'mUNSEEN',label:'Не отнесено к процессам',v:un,cat:'system'});}
   if(m==='mem'){
     /* занятое, но не принадлежащее ни одному процессу лично — по частям, а не одной серой плиткой */
     const parts=memParts().filter(p=>p.v>=1).map(p=>({key:'m'+p.label,label:p.label,v:p.v,cat:'system'}));
@@ -1291,7 +1317,7 @@ function renderMap(force){
     const procs=m=>m.ghost?0:m.rest?m.items.reduce((s,k)=>s+procs(k),0):m.kids?m.kids.reduce((s,k)=>s+procs(k),0):m.node?1:0;
     const zoomOf=n=>{let z=zOf(n.m);if(z&&z!==S.map.root)return z;for(let p=n.parent;p>=0;p=show[p].parent){z=zOf(show[p].m);if(z&&z!==S.map.root)return z;}return null;};
     cv._rects=show.map(n=>{const m=n.m,q=n.r,z=zoomOf(n);return {id:mapId(n),x:q.x,y:q.y,w:q.w,h:n.head?MAP_HDR:q.h,node:m.node||m.rep||null,label:m.label,v:m.raw,path:n.path,
-      self:m.self,own:!!m.node,procs:procs(m),cpu:cpuOf(m),rest:m.rest?m.items.map(k=>k.label):null,zoom:z};});
+      self:m.self,own:!!m.node,procs:procs(m),cpu:cpuOf(m),rest:m.rest?m.items.map(k=>k.label):null,short:m.short||null,unseen:m.key==='mUNSEEN',zoom:z};});
     if(MAP.mouse){const h=hitMap(cv,MAP.mouse);mapHover(h&&h.id);}
     mapChrome(el); // «крошки» и легенда — по новой раскладке (имя приближенного, суммы программ); высота у них постоянная
     mapStatus();

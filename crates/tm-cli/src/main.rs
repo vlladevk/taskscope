@@ -389,6 +389,14 @@ fn cmd_top(args: &Args) -> Res<()> {
         "ЦП {:.1} % · память {} из {} ({} %) · процессов {}\n",
         s.cpu, bytes(s.memory.used), bytes(s.memory.total), s.memory.load_pct, s.processes
     );
+    // короткие процессы в список процессов не попадают — объясняем, куда делся процессор
+    let short: f32 = list.iter().map(|a| a.short_cpu).sum();
+    if short >= 5.0 {
+        println!("Внимание: {short:.0} % ЦП — короткие процессы (живут меньше секунды, в списке ниже их нет); кто их запускает — «↳» у приложения.\n");
+    }
+    if s.unseen_cpu >= 5.0 {
+        println!("{:.0} % ЦП не отнесено ни к одному процессу: прерывания, драйверы или процессы, завершившиеся до замера.\n", s.unseen_cpu);
+    }
     println!("ПРИЛОЖЕНИЯ");
     print_apps(&list);
     println!("\nПРОЦЕССЫ");
@@ -406,6 +414,9 @@ fn print_apps(list: &[tm_core::AppStat]) {
             "{:>6.1} {:>9} {:>10} {:>5.0}{} {:>4}  {}  ({}, PID {})",
             a.cpu, bytes(a.mem), rate(a.io_read_bps + a.io_write_bps), a.gpu, net_col(a.net_rx_bps, a.net_tx_bps), a.count, a.title, a.key, a.root_pid
         );
+        if a.short_cpu >= 1.0 {
+            println!("{:>6}   ↳ из них {:.1} % — короткие процессы, которые оно запускает: {}", "", a.short_cpu, a.spawn_names.join(", "));
+        }
     }
 }
 

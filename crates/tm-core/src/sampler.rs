@@ -58,6 +58,9 @@ pub struct ProcStat {
     pub net_rx_bps: f64,
     #[serde(default)]
     pub net_tx_bps: f64,
+    /// Процесс родился после прошлого замера (его ЦП — всё время с момента запуска).
+    #[serde(default)]
+    pub born: bool,
 }
 
 impl ProcStat {
@@ -75,6 +78,15 @@ pub struct SystemStat {
     pub threads: u64,
     pub handles: u64,
     pub uptime_ms: u64,
+    /// ЦП коротких процессов, которые родились и завершились между замерами и в списке
+    /// не видны (git, grep, sh из скриптов): занятость машины минус сумма по видимым процессам.
+    /// Движок раздаёт его приложениям, которые такие процессы запускают (`AppStat::short_cpu`);
+    /// здесь — остаток, который отнести некому (прерывания, неизвестные запуски).
+    #[serde(default)]
+    pub unseen_cpu: f32,
+    /// Сколько процессов в секунду запускается (замеченных живыми), сглажено.
+    #[serde(default)]
+    pub spawn_rate: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -100,6 +112,8 @@ pub struct Sampler {
     prev: HashMap<ProcKey, Prev>,
     prev_at: Option<Instant>,
     prev_cpu: Option<CpuTimes>,
+    /// Время прошлого замера (FILETIME): кто создан позже — родился между замерами.
+    prev_ft: i64,
     ncpu: u32,
 }
 
@@ -117,6 +131,7 @@ impl Sampler {
             prev: HashMap::with_capacity(512),
             prev_at: None,
             prev_cpu: None,
+            prev_ft: i64::MAX,
             ncpu: system::logical_cpus(),
         }
     }
@@ -124,6 +139,7 @@ impl Sampler {
     pub fn sample(&mut self) -> io::Result<Frame> {
         let now = Instant::now();
         let cpu_now = system::cpu_times();
+        let ft_now = system::filetime_now();
         self.query.snapshot(&mut self.raw)?;
 
         let dt = self.prev_at.map(|p| now.duration_since(p).as_secs_f64()).unwrap_or(0.0);
@@ -142,8 +158,16 @@ impl Sampler {
                     r.io_read.saturating_sub(p.io_read) as f64 / dt,
                     r.io_write.saturating_sub(p.io_write) as f64 / dt,
                 ),
+                // родился между замерами: всё его время ЦП потрачено за этот интервал
+                // (раньше первый замер давал 0 — сборка из сотни коротких javac и git была невидима)
+                None if dt > 0.0 && r.create_time >= self.prev_ft => (
+                    (r.cpu_time.max(0) as f64 / cpu_budget * 100.0) as f32,
+                    r.io_read as f64 / dt,
+                    r.io_write as f64 / dt,
+                ),
                 _ => (0.0, 0.0, 0.0),
             };
+            let born = prev.is_none() && dt > 0.0 && r.create_time >= self.prev_ft;
             next.insert(key, Prev { cpu_time: r.cpu_time, io_read: r.io_read, io_write: r.io_write });
             threads += r.threads as u64;
             handles += r.handles as u64;
@@ -168,6 +192,7 @@ impl Sampler {
                 gpu_mem: 0,
                 net_rx_bps: 0.0,
                 net_tx_bps: 0.0,
+                born,
             });
         }
         // завершившиеся процессы просто не попадают в next — карта не растёт
@@ -176,6 +201,7 @@ impl Sampler {
         let sys_cpu = self.prev_cpu.map(|p| system::cpu_busy(p, cpu_now)).unwrap_or(0.0);
         self.prev_at = Some(now);
         self.prev_cpu = Some(cpu_now);
+        self.prev_ft = ft_now;
 
         Ok(Frame {
             at_ms: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
@@ -188,6 +214,8 @@ impl Sampler {
                 threads,
                 handles,
                 uptime_ms: system::uptime_ms(),
+                unseen_cpu: 0.0,
+                spawn_rate: 0.0,
             },
             procs,
         })

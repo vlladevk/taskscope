@@ -225,6 +225,8 @@ fn run(inner: &Inner) {
     let etw = crate::net_etw::NetEtw::start();
     let mut sysmem = crate::sysmem::MemSampler::new();
     let mut info = InfoCache::default();
+    let mut lineage = apps::Lineage::default();
+    let mut spawns = apps::Spawns::default();
     let _ = sampler.sample(); // первый замер — только база для скоростей
     nets.sample();
     // время истории: монотонные часы, привязанные к настенным при старте (перевод часов не ломает кольца)
@@ -272,7 +274,9 @@ fn run(inner: &Inner) {
         }
         let sys_gpu = g.adapters.iter().map(|a| a.util).fold(0.0f32, f32::max);
         let tree = Tree::build(&frame.procs);
-        let groups = apps::group(&frame.procs, &tree, &mut info);
+        let mut groups = apps::group_with(&frame.procs, &tree, &mut info, Some(&mut lineage));
+        lineage.update(&frame.procs, &groups, wall_ms());
+        spawns.apply(&frame.procs, &mut groups, &mut frame.system, frame.interval_ms / 1000.0);
         let alive: Vec<ProcKey> = frame.procs.iter().map(|p| p.key()).collect();
         info.retain_alive(alive.iter());
 
