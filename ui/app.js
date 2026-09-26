@@ -211,9 +211,17 @@ const S={
 try{const r=RANGES.find(r=>r.key===localStorage.getItem('tm-range'));if(r)S.range=r;}catch(e){}
 try{const u=JSON.parse(localStorage.getItem('tm-ui')||'{}');for(const k of ['chartMode','rail','main','right','bottom','btab','res','bh','rw','more','procMode','incl'])if(k in u)S[k]=u[k];}catch(e){}
 const saveUI=()=>{try{localStorage.setItem('tm-ui',JSON.stringify({chartMode:S.chartMode,rail:S.rail,main:S.main,right:S.right,bottom:S.bottom,btab:S.btab,res:S.res,bh:S.bh,rw:S.rw,more:S.more,procMode:S.procMode,incl:S.incl}));}catch(e){}};
-let PROTECT=new Set();try{PROTECT=new Set(JSON.parse(localStorage.getItem('tm-protect')||'[]'));}catch(e){}
-const saveProtect=()=>{try{localStorage.setItem('tm-protect',JSON.stringify([...PROTECT]));}catch(e){}};
-const isProt=n=>PROTECT.has(n.exe.toLowerCase());
+/* настройки общие с CLI и MCP (%LOCALAPPDATA%	msettings.json): защищённые процессы, подтверждение */
+let SETTINGS={protected:[],confirm_kill:true};
+const stem=x=>String(x).toLowerCase().replace(/.exe$/,'');
+const isProt=n=>SETTINGS.protected.some(p=>!/[\/]/.test(p)&&stem(p)===stem(n.exe));
+async function loadSettings(){
+  try{SETTINGS={...SETTINGS,...await rpc('settings_get')};}catch(e){return;}
+  /* перенос старого списка защищённых из localStorage окна */
+  try{const old=JSON.parse(localStorage.getItem('tm-protect')||'[]');const add=old.filter(x=>!SETTINGS.protected.some(p=>stem(p)===stem(x)));
+    if(add.length){SETTINGS.protected.push(...add);await saveSettings();}localStorage.removeItem('tm-protect');}catch(e){}
+}
+async function saveSettings(){try{await rpc('settings_set',SETTINGS);}catch(e){toast('Настройки не сохранены: '+(e.message||e),'red',6000);}}
 let DRAGGING=false;
 const vis=el=>!!el&&el.isConnected&&el.clientWidth>0&&el.clientHeight>0;
 function openPath(n){for(let x=n;x.parent&&x.parent.appKey===x.appKey;x=x.parent)S.open.add(x.parent.id);}
@@ -247,29 +255,91 @@ const conv=m=>m==='mem'||m==='dsk'?(v=>v/MB):m==='net'?(v=>v*8/1e6):(v=>v);
 /* =================================================================
    Действия
    ================================================================= */
-function toast(txt,lvl='info',ms=4200){const el=document.createElement('div');el.className='toast';el.innerHTML=`<span class="dot ${lvl==='red'?'red':lvl==='yel'?'yel':''}" style="${lvl==='ok'?'background:var(--success)':lvl==='info'?'background:var(--accent)':''}"></span><span>${esc(txt)}</span>`;$('#toasts').appendChild(el);setTimeout(()=>el.remove(),ms);}
+function toast(txt,lvl='info',ms=4200,btn=null){const el=document.createElement('div');el.className='toast';el.innerHTML=`<span class="dot ${lvl==='red'?'red':lvl==='yel'?'yel':''}" style="${lvl==='ok'?'background:var(--success)':lvl==='info'?'background:var(--accent)':''}"></span><span>${esc(txt)}</span>`;if(btn){const b=document.createElement('button');b.className='btn';b.textContent=btn.t;b.onclick=()=>{el.remove();btn.f();};el.appendChild(b);}$('#toasts').appendChild(el);setTimeout(()=>el.remove(),ms);}
 function showErr(e){const b=$('#errbar');b.textContent='Нет связи с движком: '+(e&&e.message||e);b.style.display='block';clearTimeout(showErr.t);showErr.t=setTimeout(()=>b.style.display='none',4000);}
 const PRIO_NAMES={idle:'Низкий',below_normal:'Ниже среднего',normal:'Обычный',above_normal:'Выше среднего',high:'Высокий'};
 async function doAct(action,nodes,opts={}){
   const targets=nodes.map(n=>[n.pid,n.ct]);
-  try{
-    const r=await rpc('act',{action,targets,tree:!!opts.tree,priority:opts.priority||null});
-    const bad=r.results.filter(x=>!x.ok);
-    if(bad.length){const b=bad[0];toast(`${b.name||('PID '+b.pid)}: ${b.error}${bad.length>1?` (и ещё ${bad.length-1})`:''}`,'red',6000);}
-    return r;
-  }catch(e){toast(e.message||String(e),'red',6000);return null;}
+  try{return await rpc('act',{action,targets,tree:!!opts.tree,priority:opts.priority||null,dry_run:!!opts.dry,force:!!opts.force,confirmed:!!opts.confirmed});}
+  catch(e){toast(e.message||String(e),'red',6000);return null;}
 }
-async function kill(nodes,withKids){
-  const list=withKids?[...new Set(nodes.flatMap(n=>desc(n)))]:nodes.filter(alive);
-  const prot=list.filter(isProt);
-  if(prot.length){toast(`${nameOf(prot[0])} (${prot[0].exe}) защищён от завершения — снимите защиту в меню.`,'red',5500);return;}
-  if(!list.length)return;
-  const r=await doAct('kill',nodes,{tree:withKids});
-  if(r&&r.results.some(x=>x.ok)){
-    const ok=r.results.filter(x=>x.ok);
-    toast(`Завершено: ${label(nodes[0])}${ok.length>1?` и ещё ${ok.length-1}`:''} — освобождено ${fmtMem(r.freed/MB)}`,'ok');
-    if(S.sel&&ok.some(x=>x.pid+':'+x.create_time===S.sel)){const p=NODES.get(S.sel)?.parent;S.sel=p&&p.alive?p.id:null;}
+/* отказы и неудачи — одним сообщением; «не закрылся» — с кнопкой «принудительно» */
+function reportBad(r,action,opts){
+  const bad=r.results.filter(x=>!x.ok);if(!bad.length)return;
+  const b=bad[0],more=bad.length>1?` (и ещё ${bad.length-1})`:'';
+  const forceable=bad.filter(x=>x.can_force);
+  if(forceable.length&&action==='kill'){
+    const nodes=forceable.map(x=>NODES.get(x.pid+':'+x.create_time)).filter(alive);
+    toast(`${b.name||('PID '+b.pid)}: ${b.error}${more}`,'yel',12000,nodes.length?{t:'Завершить принудительно',f:()=>runAct('kill',nodes,{...opts,force:true,confirmed:true})}:null);
+  }else toast(`${b.name||('PID '+b.pid)}: ${b.error}${more}`,'red',6500);
+}
+const VERBS={kill:'Завершить',suspend:'Приостановить',resume:'Возобновить',restart:'Перезапустить'};
+/* окно подтверждения: цели и отказы — из пробного прогона ядра (dry_run), те же правила, что у tm kill */
+function dialog({title,body,ok,danger,check}){
+  return new Promise(res=>{
+    const bg=document.createElement('div');bg.className='modal-bg';
+    bg.innerHTML=`<div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title"><h3 id="m-title">${esc(title)}</h3><div class="m-body scroll">${body}</div>
+      ${check?`<label class="m-check"><input type="checkbox"> ${esc(check)}</label>`:''}
+      <div class="m-acts"><button class="btn" data-r="0">Отмена</button>${ok?`<button class="btn ${danger?'danger-fill':'primary'}" data-r="1">${esc(ok)}</button>`:''}</div></div>`;
+    const prevFocus=document.activeElement;
+    const done=v=>{const c=bg.querySelector('.m-check input');bg.remove();document.removeEventListener('keydown',key,true);if(prevFocus&&prevFocus.focus)prevFocus.focus();res(v?{check:!!(c&&c.checked)}:null);};
+    const key=e=>{
+      e.stopPropagation(); /* пока окно открыто, горячие клавиши списка (Delete и т.п.) не срабатывают */
+      if(e.key==='Escape'){e.preventDefault();done(false);}
+      else if(e.key==='Enter'&&!e.target.matches('input')){e.preventDefault();done(e.target.dataset.r!=='0'&&!!ok);}
+      else if(e.key==='Tab'){const f=[...bg.querySelectorAll('button,input')];const i=f.indexOf(document.activeElement);e.preventDefault();f[(i+(e.shiftKey?f.length-1:1))%f.length].focus();}
+    };
+    bg.addEventListener('click',e=>{const b=e.target.closest('[data-r]');if(b)done(b.dataset.r==='1');else if(e.target===bg)done(false);});
+    document.addEventListener('keydown',key,true);
+    document.body.appendChild(bg);(bg.querySelector('[data-r="1"]')||bg.querySelector('[data-r="0"]')).focus();
+  });
+}
+function targetRows(rs,why){
+  const shown=rs.slice(0,12);
+  return shown.map(r=>{const n=NODES.get(r.pid+':'+r.create_time);
+    return `<div class="m-row">${n?ico(n):'<span class="m-ico"></span>'}<span class="m-n">${esc(n?nameOf(n):r.name||('PID '+r.pid))}</span><span class="caption num">PID ${r.pid}</span>${n?`<span class="caption num m-mem">${fmtMem(cur(n,'mem',false))}</span>`:''}</div>${why&&r.error?`<div class="m-why">${esc(r.error)}</div>`:''}${!why&&r.note?`<div class="m-why warn">${esc(r.note.replace(/^внимание: /,''))}</div>`:''}`;
+  }).join('')+(rs.length>shown.length?`<div class="caption m-more">и ещё ${rs.length-shown.length}</div>`:'');
+}
+/* действие с подтверждением. Завершение и перезапуск спрашивают всегда (завершение — пока не выбрано
+   «больше не спрашивать»); приостановка — только если затронет несколько процессов или есть предупреждение */
+async function runAct(action,nodes,opts={}){
+  const n=nodes[0];
+  if(!opts.confirmed){
+    const pre=await doAct(action,nodes,{...opts,dry:true});if(!pre)return;
+    const ok=pre.results.filter(x=>x.ok),bad=pre.results.filter(x=>!x.ok),warn=ok.filter(x=>x.note);
+    if(!ok.length){reportBad(pre,action,opts);return;}
+    const ask=action==='restart'||warn.length||bad.length||(action==='kill'?SETTINGS.confirm_kill:ok.length>1);
+    if(ask){
+      const others=new Map();
+      if(opts.tree)for(const r of nodes)for(const x of desc(r))if(x!==r&&x.appKey!==r.appKey&&x.alive){const ap=appOf(x);const k=x.appKey||x.exe;if(!others.has(k))others.set(k,ap?ap.title:nameOf(x));}
+      const title=ok.length>1?`${VERBS[action]} процессы: ${ok.length}?`:`${VERBS[action]} «${label(n)}»?`;
+      const lead={kill:'Программе с окном сначала предлагается закрыться самой (как при закрытии окна) — она успеет сохранить данные. Остальные процессы завершаются сразу.',
+        restart:'Процесс будет завершён и запущен заново с тем же файлом, командной строкой, папкой и правами. Несохранённые данные в нём пропадут.',
+        suspend:'Приостановленный процесс не получает время процессора и не отвечает, пока его не возобновят. Окна и память остаются на месте.',
+        resume:''}[action];
+      const body=`${lead?`<p class="m-lead">${lead}</p>`:''}
+        ${others.size?`<p class="m-lead warn">Вместе с ним завершатся программы, запущенные из него: ${esc([...others.values()].slice(0,8).join(', '))}${others.size>8?` и ещё ${others.size-8}`:''}.</p>`:''}
+        <div class="m-list">${targetRows(ok,false)}</div>
+        ${bad.length?`<div class="m-sub">Не будут затронуты</div><div class="m-list">${targetRows(bad,true)}</div>`:''}`;
+      const r=await dialog({title,body,ok:VERBS[action],danger:action==='kill'||action==='restart',check:action==='kill'&&!warn.length?'Больше не спрашивать при завершении':null});
+      if(!r)return;
+      if(r.check){SETTINGS.confirm_kill=false;saveSettings();}
+    }
+    opts={...opts,confirmed:true};
   }
+  const slow=action==='kill'&&!opts.force?setTimeout(()=>toast('Жду, пока программа закроется сама…','info',5000),700):0;
+  const r=await doAct(action,nodes,opts);clearTimeout(slow);
+  if(!r)return;
+  reportBad(r,action,opts);
+  const done=r.results.filter(x=>x.ok);if(!done.length)return renderAll();
+  const more=done.length>1?` и ещё ${done.length-1}`:'';
+  if(action==='kill'){
+    toast(`Завершено: ${label(n)}${more} — освобождено ${fmtMem(r.freed/MB)}`,'ok');
+    if(S.sel&&done.some(x=>x.pid+':'+x.create_time===S.sel)){const p=NODES.get(S.sel)?.parent;S.sel=p&&p.alive?p.id:null;}
+  }else if(action==='suspend')toast(`${label(n)}${more}: приостановлен. ЦП = 0, окна и память на месте.`,'info');
+  else if(action==='resume')toast(`${label(n)}${more}: возобновлён`,'info');
+  else if(action==='restart')toast(`${label(n)} перезапущен${done[0].new_pid?` (новый PID ${done[0].new_pid})`:''}`,'ok');
+  renderAll();
 }
 async function info(n,full){
   if(full){try{const r=await rpc('info',{pid:n.pid,create_time:n.ct});n.full=r.info;n.prio=r.priority;return r.info;}catch(e){return null;}}
@@ -278,32 +348,26 @@ async function info(n,full){
 async function act(a,ids){
   const nodes=ids.map(id=>NODES.get(id)).filter(alive);if(!nodes.length)return;
   const n=nodes[0];
-  if(a==='kill')return kill(nodes,false);
-  if(a==='tree'){
-    /* из Проводника, терминала, лаунчера запущены другие программы — они погибнут вместе с деревом */
-    const others=new Map();
-    for(const r of nodes)for(const x of desc(r))if(x.appKey!==r.appKey&&x.alive){const ap=appOf(x);const k=x.appKey||x.exe;if(!others.has(k))others.set(k,ap?ap.title:nameOf(x));}
-    if(others.size){
-      const names=[...others.values()],list=names.slice(0,8).join(', ')+(names.length>8?` и ещё ${names.length-8}`:'');
-      if(!confirm(`Вместе с «${label(n)}» будут завершены и программы, запущенные из него:\n${list}\n\nПродолжить?`))return;
-    }
-    return kill(nodes,true);
-  }
-  if(a==='suspend'){
+  if(a==='kill')return runAct('kill',nodes);
+  if(a==='tree')return runAct('kill',nodes,{tree:true});
+  /* приостановка по умолчанию — только сам процесс; с дочерними — отдельный пункт */
+  if(a==='suspend'||a==='suspend_tree'){
     const on=!nodes.every(x=>x.susp);
-    if(on&&nodes.some(isProt))return toast('Защищённый процесс нельзя приостановить','red');
-    const r=await doAct(on?'suspend':'resume',nodes,{tree:true});
-    if(r&&r.ok)toast(on?`${label(n)}: приостановлен вместе с дочерними. ЦП = 0, окна и память на месте.`:`${label(n)}: возобновлён`,'info');
-  }else if(a==='restart'){
-    if(isProt(n))return toast('Защищённый процесс нельзя перезапустить','red');
-    const r=await doAct('restart',[n]);if(r&&r.ok)toast(`${label(n)} перезапущен`,'ok');
-  }else if(a.startsWith('prio:')){
+    return runAct(on?'suspend':'resume',nodes,{tree:a==='suspend_tree'||!on});
+  }
+  if(a==='restart')return runAct('restart',[n]);
+  if(a.startsWith('prio:')){
     const p=a.slice(5);const r=await doAct('priority',nodes,{priority:p});
-    if(r&&r.ok){nodes.forEach(x=>x.prio=p);toast(`${label(n)}: приоритет «${PRIO_NAMES[p]}»`,'info');}
+    if(r){reportBad(r,'priority',{});if(r.ok){nodes.forEach(x=>x.prio=p);toast(`${label(n)}: приоритет «${PRIO_NAMES[p]}»`,'info');}}
   }else if(a==='folder'){const i=INFO.get(n.id);if(!i||!i.path)return toast('Путь к файлу недоступен (нужны права администратора)','yel');rpc('reveal',{path:i.path}).catch(e=>toast(e.message,'red'));}
   else if(a==='web'){const i=INFO.get(n.id);rpc('web',{q:`${n.exe} ${i&&i.company?i.company+' ':''}что это за процесс`}).catch(e=>toast(e.message,'red'));}
   else if(a==='copycmd'){const f=await info(n,true);if(!f||!f.cmdline)return toast('Командная строка недоступна','yel');try{await navigator.clipboard.writeText(f.cmdline);toast('Командная строка скопирована','info');}catch(e){toast('Не удалось скопировать','red');}}
-  else if(a==='protect'){const k=n.exe.toLowerCase();PROTECT.has(k)?PROTECT.delete(k):PROTECT.add(k);saveProtect();toast(PROTECT.has(k)?`${n.exe}: защищён от случайного завершения`:`${n.exe}: защита снята`,'info');}
+  else if(a==='protect'){
+    const on=isProt(n);
+    SETTINGS.protected=on?SETTINGS.protected.filter(p=>stem(p)!==stem(n.exe)):[...SETTINGS.protected,n.exe.toLowerCase()];
+    await saveSettings();
+    toast(on?`${n.exe}: защита снята`:`${n.exe}: защищён — его не завершат ни окно, ни tm kill, ни ИИ-агент`,'info');
+  }
   else if(a==='open')return openProcTab(n.id);
   renderAll();
 }
@@ -315,7 +379,9 @@ function openMenu(x,y,ids){
   it.push({h:many?`Выбрано: ${ids.length}`:`${nameOf(n)} · PID ${n.pid}`});
   it.push({t:many?'Завершить выбранные':'Завершить',a:'kill',k:'Del',d:1});
   if(hasKids)it.push({t:'Завершить вместе с дочерними',a:'tree',k:'Shift+Del',d:1});
-  it.push({t:sp?'Возобновить':'Приостановить',a:'suspend'},{t:'Перезапустить',a:'restart'});
+  it.push({t:sp?'Возобновить':'Приостановить',a:'suspend'});
+  if(hasKids&&!sp)it.push({t:'Приостановить с дочерними',a:'suspend_tree'});
+  it.push({t:'Перезапустить',a:'restart'});
   it.push('-',{h:'Приоритет'},...['idle','below_normal','normal','above_normal','high'].map(p=>({t:PRIO_NAMES[p],a:'prio:'+p,c:n.prio===p})));
   it.push('-',{t:'Открыть отдельной вкладкой',a:'open'},{t:'Открыть расположение файла',a:'folder'},{t:'Копировать командную строку',a:'copycmd'},{t:'Что это за процесс?',a:'web'},{t:isProt(n)?'Снять защиту':'Защитить от завершения',a:'protect'});
   menu.innerHTML=it.map(i=>i==='-'?'<div class="sep"></div>':i.h?`<div class="mh">${esc(i.h)}</div>`:`<div class="mi${i.d?' danger':''}" data-a="${i.a}"><span>${i.c?'✓ ':''}${esc(i.t)}</span>${i.k?`<kbd>${i.k}</kbd>`:''}</div>`).join('');
@@ -1788,4 +1854,5 @@ async function loop(){
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){needBackfill=true;}});
 applyShell();
+loadSettings().then(()=>renderAll());
 loop();
