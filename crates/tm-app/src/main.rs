@@ -9,7 +9,7 @@
 #![windows_subsystem = "windows"]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,17 +40,13 @@ impl log::Log for EngineLog {
     }
     fn flush(&self) {}
 }
-/// Скрытое окно дольше этого времени закрывается целиком: WebView2 отдаёт свою память (~100 МБ).
-/// Движок и трей продолжают работать, следующее открытие займёт на полсекунды дольше.
-const SAVE_MEMORY_AFTER: Duration = Duration::from_secs(10 * 60);
+/// Спрятанное в трей дольше этого окно закрывается целиком: WebView2 отдаёт всю свою память.
+/// Движок и трей продолжают работать, следующее открытие займёт около секунды.
+const DROP_WINDOW_AFTER: Duration = Duration::from_secs(60);
 
 struct Ui {
     service: Arc<Service>,
     hidden_since: Mutex<Option<Instant>>,
-    /// окно создано скрытым, а должно быть развёрнутым
-    maximize_on_show: AtomicBool,
-    /// WebView2 переведён в режим экономии памяти
-    saving_memory: AtomicBool,
 }
 
 /* ------------------------------------------------------------------ окно */
@@ -95,34 +91,41 @@ fn on_screen(app: &AppHandle, g: &Geometry) -> bool {
     })
 }
 
-/// Главное окно создаётся один раз при запуске (в режиме трея — скрытым) и дальше только
-/// показывается и прячется. Создавать WebView2 в уже работающем приложении ненадёжно: иногда оно
-/// падает с ERROR_NOT_ENOUGH_QUOTA (0x80070718), а Tauri лишь пишет это в свой журнал и оставляет
-/// в списке мёртвое окно, которое не отвечает на запросы, — его не считаем.
+/// Живое главное окно. Если создание WebView2 сорвалось, Tauri оставляет в своём списке мёртвое
+/// окно, которое не отвечает на запросы, — его не считаем.
 fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
-    app.get_webview_window("main").filter(|w| w.is_visible().is_ok())
+    app.webview_windows()
+        .into_iter()
+        .filter(|(label, _)| label.starts_with("main"))
+        .map(|(_, w)| w)
+        .find(|w| w.is_visible().is_ok())
 }
 
-fn build_main(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> {
-    let g = load_geometry();
-    let mut b = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+/// Имя может остаться за мёртвым окном, поэтому каждое новое окно получает своё: main, main-1, …
+static NEXT_WINDOW: AtomicU32 = AtomicU32::new(0);
+
+/// Окно создаётся скрытым и показывается, только когда WebView2 уже встроен. Если встраивать его
+/// в окно, которое в этот момент показывается и разворачивается, WebView2 то и дело падает с
+/// ERROR_NOT_ENOUGH_QUOTA (0x80070718); скрытые окна создаются без сбоев. Вызывать только
+/// в главном потоке: там build() возвращается, когда WebView2 уже создан.
+fn build_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let g = load_geometry().filter(|g| on_screen(app, g));
+    let n = NEXT_WINDOW.fetch_add(1, Ordering::Relaxed);
+    let label = if n == 0 { "main".to_string() } else { format!("main-{n}") };
+    let mut b = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
         .title("Диспетчер задач")
         .inner_size(g.map_or(1360.0, |g| g.w.max(900.0)), g.map_or(860.0, |g| g.h.max(560.0)))
         .min_inner_size(900.0, 560.0)
         .theme(Some(tauri::Theme::Dark))
         .background_color(tauri::window::Color(32, 32, 32, 255))
-        .visible(visible);
-    match g {
-        // развернуть скрытое окно нельзя — Windows при этом его покажет; развернём при первом показе
-        Some(g) if on_screen(app, &g) => {
-            b = b.position(g.x, g.y).maximized(g.max && visible);
-            app.state::<Ui>().maximize_on_show.store(g.max && !visible, Ordering::Relaxed);
-        }
-        _ => b = b.center(),
-    }
+        .visible(false);
+    b = match g {
+        Some(g) => b.position(g.x, g.y),
+        None => b.center(),
+    };
     let w = b.build()?;
-    if visible {
-        let _ = w.set_focus();
+    if g.is_some_and(|g| g.max) {
+        let _ = w.maximize();
     }
     Ok(w)
 }
@@ -133,42 +136,60 @@ fn set_page_hidden(w: &WebviewWindow, hidden: bool) {
     let _ = w.eval(format!("window.__tmHidden={hidden}"));
 }
 
-/// Долго скрытое окно: просим WebView2 отдать память, как браузер со свёрнутой вкладкой;
-/// при показе возвращаем обычный режим.
-fn memory_saver(w: &WebviewWindow, save: bool) {
-    let _ = w.with_webview(move |pw| unsafe {
-        use webview2_com::Microsoft::Web::WebView2::Win32::*;
-        use windows::core::Interface;
-        let c = pw.controller();
-        let _ = c.SetIsVisible(!save);
-        if let Ok(core) = c.CoreWebView2().and_then(|v| v.cast::<ICoreWebView2_19>()) {
-            let level = if save { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW } else { COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL };
-            let _ = core.SetMemoryUsageTargetLevel(level);
+fn reveal(w: &WebviewWindow) {
+    let _ = w.unminimize();
+    let _ = w.show();
+    set_page_hidden(w, false);
+    let _ = w.set_focus();
+}
+
+fn show_main(app: &AppHandle) {
+    *app.state::<Ui>().hidden_since.lock().unwrap() = None;
+    match main_window(app) {
+        Some(w) => reveal(&w),
+        None => open_main(app, 1),
+    }
+}
+
+/// Создаёт и показывает окно. Строим в главном потоке отдельной задачей цикла событий: из других
+/// потоков Tauri создаёт окно асинхронно и при сбое лишь пишет в свой журнал, а прямо в обработчике
+/// трея создание WebView2 может зависнуть. Проверяем, что окно появилось, и при сбое пробуем ещё.
+fn open_main(app: &AppHandle, attempt: u32) {
+    let log = |a: &AppHandle, lvl: &str, s: String| a.state::<Ui>().service.engine.log(lvl, s, None);
+    let a = app.clone();
+    let posted = app.run_on_main_thread(move || {
+        if main_window(&a).is_some() {
+            return;
+        }
+        match build_main(&a) {
+            Ok(w) if w.is_visible().is_ok() => reveal(&w),
+            Ok(_) => {}
+            Err(e) => log(&a, "red", format!("Не удалось открыть окно: {e}")),
+        }
+    });
+    if let Err(e) = posted {
+        return log(app, "red", format!("Не удалось открыть окно: {e}"));
+    }
+    let a = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        if main_window(&a).is_some() {
+            return;
+        }
+        if attempt < 3 {
+            log(&a, "yel", format!("Окно не открылось с {attempt}-й попытки — пробую ещё раз"));
+            open_main(&a, attempt + 1);
+        } else {
+            relaunch_with_window(&a);
         }
     });
 }
 
-fn show_main(app: &AppHandle) {
-    let ui = app.state::<Ui>();
-    *ui.hidden_since.lock().unwrap() = None;
-    let Some(w) = main_window(app) else { return relaunch_with_window(app) };
-    let _ = w.unminimize();
-    let _ = w.show();
-    if ui.maximize_on_show.swap(false, Ordering::Relaxed) {
-        let _ = w.maximize();
-    }
-    if ui.saving_memory.swap(false, Ordering::Relaxed) {
-        memory_saver(&w, false);
-    }
-    set_page_hidden(&w, false);
-    let _ = w.set_focus();
-}
-
-/// Окна нет — WebView2 упал или не создался. Перезапускаемся с окном: при старте оно создаётся
-/// надёжно. Новый экземпляр сам попросит этот завершиться (--replace), история сохранится.
+/// Крайний случай: окно не создаётся. Перезапускаемся — новый экземпляр сам попросит этот
+/// завершиться (--replace), история сохранится.
 fn relaunch_with_window(app: &AppHandle) {
     let engine = &app.state::<Ui>().service.engine;
-    engine.log("yel", "Окно диспетчера пропало — перезапускаю приложение".into(), None);
+    engine.log("red", "Окно так и не открылось — перезапускаю приложение (причина в записях журнала выше)".into(), None);
     if let Err(e) = std::env::current_exe().and_then(|exe| system::spawn_detached(&exe, &["--replace"])) {
         engine.log("red", format!("Не удалось перезапустить приложение: {e}"), None);
     }
@@ -256,14 +277,13 @@ fn tray_loop(app: AppHandle, engine: Engine) {
             let _ = t.set_icon(Some(tray_icon(&cpu)));
             let _ = t.set_tooltip(Some(tip));
         }
-        // долго скрытое окно: WebView2 отдаёт память (само окно живёт — см. main_window)
+        // долго спрятанное окно закрываем целиком — вместе с памятью WebView2
         let ui = app.state::<Ui>();
-        let stale = ui.hidden_since.lock().unwrap().is_some_and(|t| t.elapsed() >= SAVE_MEMORY_AFTER);
+        let stale = ui.hidden_since.lock().unwrap().is_some_and(|t| t.elapsed() >= DROP_WINDOW_AFTER);
         if stale {
             *ui.hidden_since.lock().unwrap() = None;
             if let Some(w) = main_window(&app) {
-                ui.saving_memory.store(true, Ordering::Relaxed);
-                memory_saver(&w, true);
+                let _ = w.destroy();
             }
         }
     }
@@ -346,23 +366,6 @@ fn start_pipe(app: AppHandle, service: Arc<Service>) {
             show_main(&app);
             Ok(json!(true))
         }
-        // ВРЕМЕННО, диагностика: уничтожить / заново создать окно
-        "app_debug_window" => {
-            let a = app.clone();
-            let what = p.as_str().unwrap_or("").to_string();
-            let (tx, rx) = std::sync::mpsc::channel();
-            let _ = app.run_on_main_thread(move || {
-                let r = match what.as_str() {
-                    "destroy" => main_window(&a).map(|w| w.destroy().map_err(|e| e.to_string())).unwrap_or(Ok(())),
-                    "create" => build_main(&a, true).map(|_| ()).map_err(|e| e.to_string()),
-                    _ => Err("destroy|create".into()),
-                };
-                let _ = tx.send(r);
-            });
-            let r = rx.recv_timeout(Duration::from_secs(20)).map_err(|e| e.to_string())?;
-            std::thread::sleep(Duration::from_millis(1500));
-            Ok(json!({ "result": r.err(), "alive": main_window(&app).is_some() }))
-        }
         "app_quit" | "shutdown" => {
             let a = app.clone();
             std::thread::spawn(move || {
@@ -402,11 +405,11 @@ fn main() {
     }
 
     let app = tauri::Builder::default()
-        .manage(Ui { service: service.clone(), hidden_since: Mutex::new(None), maximize_on_show: AtomicBool::new(false), saving_memory: AtomicBool::new(false) })
+        .manage(Ui { service: service.clone(), hidden_since: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![rpc, app_cmd])
         .on_window_event(|w, e| {
             // крестик прячет окно в трей; выход — из меню трея или «⋯ → Выйти»
-            if w.label() != "main" {
+            if !w.label().starts_with("main") {
                 return;
             }
             match e {
@@ -449,17 +452,9 @@ fn main() {
             let e2 = engine.clone();
             let h2 = h.clone();
             std::thread::Builder::new().name("tm-tray".into()).spawn(move || tray_loop(h2, e2))?;
-            build_main(&h, !tray)?;
-            if tray {
-                // страница грузится ещё какое-то время — сообщаем ей о скрытом окне, когда загрузится
-                *h.state::<Ui>().hidden_since.lock().unwrap() = Some(Instant::now());
-                let h3 = h.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_secs(3));
-                    if let Some(w) = main_window(&h3).filter(|w| !w.is_visible().unwrap_or(true)) {
-                        set_page_hidden(&w, true);
-                    }
-                });
+            // в трее окна нет вовсе — оно создаётся при первом открытии
+            if !tray {
+                open_main(&h, 1);
             }
             Ok(())
         })

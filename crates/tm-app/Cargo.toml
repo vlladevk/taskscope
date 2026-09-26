@@ -17,9 +17,6 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = ["tray-icon"] }
 log = "0.4"
-# режим экономии памяти WebView2 — те же версии, что у wry
-webview2-com = "0.38"
-windows = "0.61"
 
 [features]
 default = ["custom-protocol"]

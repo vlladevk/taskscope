@@ -3364,8 +3364,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tm-core",
- "webview2-com",
- "windows",
 ]
 
 [[package]]
