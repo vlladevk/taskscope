@@ -265,7 +265,8 @@ const APPROVED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\
 /// Выключен ли автозапуск пользователем в «Автозагрузке» Windows (запись в Run есть, но не работает).
 pub fn autostart_disabled_by_user(name: &str) -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
-    let mut buf = [0u8; 12];
+    // обычно 12 байт, но бывает и длиннее — с коротким буфером чтение не удалось бы
+    let mut buf = [0u8; 64];
     let mut len = buf.len() as u32;
     let r = unsafe {
         RegGetValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr(), RRF_RT_REG_BINARY, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len)
@@ -306,7 +307,10 @@ pub fn autostart_set(name: &str, cmd: Option<&str>) -> std::io::Result<()> {
             // «Автозагрузки», иначе запись в Run была бы, а запуска — нет
             if r == 0 && autostart_disabled_by_user(name) {
                 let on = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr(), REG_BINARY, on.as_ptr().cast(), on.len() as u32) };
+                let w = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr(), REG_BINARY, on.as_ptr().cast(), on.len() as u32) };
+                if w != 0 {
+                    crate::logs::warn(format!("автозапуск: не удалось снять отметку «выключено» ({w})"));
+                }
             }
             r
         }

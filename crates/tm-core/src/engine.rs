@@ -254,12 +254,17 @@ fn run(inner: &Inner) {
             Ok(f) => f,
             Err(e) => {
                 let msg = e.to_string();
-                let mut st = inner.state.lock().unwrap();
-                // в журнал — только новую ошибку, а не каждую секунду одну и ту же
-                if st.error.as_deref() != Some(msg.as_str()) {
+                // в журнал — только новую ошибку, а не каждую секунду одну и ту же; запись в файл —
+                // вне замка состояния, чтобы не задерживать читателей
+                let new = {
+                    let mut st = inner.state.lock().unwrap();
+                    let new = st.error.as_deref() != Some(msg.as_str());
+                    st.error = Some(msg.clone());
+                    new
+                };
+                if new {
                     crate::logs::error(format!("замер: {msg}"));
                 }
-                st.error = Some(msg);
                 continue;
             }
         };

@@ -301,7 +301,7 @@ impl Service {
             // ошибки окна (window.onerror) — в журнал ошибок; длина ограничена
             "log" => {
                 let msg: String = params.get("msg").and_then(Value::as_str).unwrap_or("").chars().take(2000).collect();
-                crate::logs::write("ui", msg);
+                crate::logs::write_ui(&msg);
                 Ok(json!({ "ok": true }))
             }
             // подпись файла и SHA-256 (для ссылки на VirusTotal)
