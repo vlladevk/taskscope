@@ -336,6 +336,8 @@ fn run(inner: &Inner) {
         }
         pool_due = st.pool.due(hist_t + inner.interval.as_millis() as u64);
         st.samples += 1;
+        // сжатая память живёт в рабочем наборе процесса «Memory Compression»
+        let compressed = frame.procs.iter().find(|p| p.name.eq_ignore_ascii_case("Memory Compression")).map_or(0, |p| p.working_set);
         let snap = Snapshot {
             seq: st.samples,
             frame: Arc::new(frame),
@@ -343,7 +345,7 @@ fn run(inner: &Inner) {
             nets: Arc::new(net),
             gpus: Arc::new(g.adapters),
             net_per_process: etw.is_some(),
-            mem_detail: sysmem.as_mut().map(|m| m.sample()).unwrap_or_default(),
+            mem_detail: crate::sysmem::MemDetail { compressed, ..sysmem.as_mut().map(|m| m.sample()).unwrap_or_default() },
             issues: Arc::new(st.watch.issues().to_vec()),
             pool_alerts: Arc::new(st.pool.alerts().to_vec()),
         };

@@ -1,5 +1,6 @@
 //! Из чего состоит память, которая занята, но не принадлежит ни одному процессу лично:
 //! пулы ядра (память драйверов), файловый кэш, код ядра и драйверов, изменённые страницы.
+//! Плюс списки страниц: резерв (standby), свободная, сжатая.
 //! Остаток — общая память программ (DLL, общие буферы браузеров и Electron-приложений,
 //! таблицы страниц): в «частную память» процессов она не входит.
 //!
@@ -23,15 +24,29 @@ pub struct MemDetail {
     pub kernel_code: u64,
     /// Изменённые страницы: ждут записи на диск, потом освободятся.
     pub modified: u64,
+    /// Резерв (standby): кэш недавно использованных страниц. Занятой памятью не считается —
+    /// Windows отдаёт его программам по первому требованию.
+    #[serde(default)]
+    pub standby: u64,
+    /// Свободная и обнулённая память — совсем ничем не занята.
+    #[serde(default)]
+    pub free: u64,
+    /// Сжатая память: рабочий набор процесса «Memory Compression» (заполняет движок).
+    #[serde(default)]
+    pub compressed: u64,
 }
 
-const COUNTERS: [&str; 6] = [
+const COUNTERS: [&str; 10] = [
     r"\Memory\Pool Nonpaged Bytes",
     r"\Memory\Pool Paged Resident Bytes",
     r"\Memory\System Cache Resident Bytes",
     r"\Memory\System Driver Resident Bytes",
     r"\Memory\System Code Resident Bytes",
     r"\Memory\Modified Page List Bytes",
+    r"\Memory\Standby Cache Core Bytes",
+    r"\Memory\Standby Cache Normal Priority Bytes",
+    r"\Memory\Standby Cache Reserve Bytes",
+    r"\Memory\Free & Zero Page List Bytes",
 ];
 
 pub struct MemSampler {
@@ -77,7 +92,16 @@ impl MemSampler {
                 unsafe { val.Anonymous.largeValue }.max(0) as u64
             })
             .collect();
-        MemDetail { pool_nonpaged: v[0], pool_paged: v[1], cache: v[2], kernel_code: v[3] + v[4], modified: v[5] }
+        MemDetail {
+            pool_nonpaged: v[0],
+            pool_paged: v[1],
+            cache: v[2],
+            kernel_code: v[3] + v[4],
+            modified: v[5],
+            standby: v[6] + v[7] + v[8],
+            free: v[9],
+            compressed: 0,
+        }
     }
 }
 
