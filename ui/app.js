@@ -720,7 +720,7 @@ function renderProcs(){
         <span class="n2">${showExe?esc(n.exe)+' · ':''}${n.pid}${kids.length&&!S.open.has(n.id)?` · ${appDesc(n).length-1} доч.`:''}${from&&S.procMode==='tree'?` · из ${esc(from)}`:''}</span>
         ${sp?'<span class="chip">приостановлен</span>':''}${isProt(n)?'<span class="chip">защищён</span>':''}${n.prio==='idle'||n.prio==='below_normal'?'<span class="chip">низкий приоритет</span>':''}</div>`;
     return {id:n.id,cls:`${S.sel===n.id||S.multi.has(n.id)?'sel':''}${sp?' susp':''}`,cells:[{h:name},...cells,{h:spk}]};
-  }),{top:i0*ROW_H,bot:(rows.length-i1)*ROW_H});
+  }),{top:i0*ROW_H,bot:(rows.length-i1)*ROW_H,cols:COLS.length+2});
   const apps=new Set();for(const n of NODES.values())if(n.alive&&n.appKey)apps.add(n.appKey);
   setHTML($('.p-foot',el),`<span>Процессов: ${procCount()}</span><span>Приложений: ${apps.size}</span><div class="spacer"></div><span><span class="kbd">Del</span> завершить · <span class="kbd">Shift+Del</span> с дочерними · <span class="kbd">Ctrl+клик</span> несколько · <span class="kbd">ПКМ</span> меню</span>`);
 }
@@ -737,7 +737,8 @@ function patchRows(tb,list,pad){
   if(selIn(tb))return; // перестановка строк тоже сбросила бы выделение
   const map=tb._rows||(tb._rows=new Map()),keep=new Set();let prev=null;
   /* pad — высота невидимых строк сверху и снизу (распорки вместо них) */
-  const spacer=k=>{let t=tb[k];if(!t||!t.isConnected){t=tb[k]=document.createElement('tr');t.className='vsp';t.innerHTML='<td colspan="99"></td>';}return t;};
+  /* colspan — ровно по числу колонок: лишние колонки сжимали «Имя» почти до нуля */
+  const spacer=k=>{let t=tb[k];if(!t||!t.isConnected){t=tb[k]=document.createElement('tr');t.className='vsp';t.appendChild(document.createElement('td'));}t.firstChild.colSpan=pad.cols;return t;};
   if(pad){const t=spacer('_top');if(tb.firstChild!==t)tb.insertBefore(t,tb.firstChild);t.firstChild.style.height=pad.top+'px';t.hidden=!pad.top;prev=t;}
   for(const r of list){
     let e=map.get(r.id);
