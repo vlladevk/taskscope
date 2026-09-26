@@ -680,6 +680,7 @@ function mountChart(el){
   cv.addEventListener('dblclick',()=>setMax('bottom'));
   $('.c-mode',el).addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;S.chartMode=b.dataset.m;S.hl=null;saveUI();renderCharts();flushNeeds();});
   $('.c-more-t',el).addEventListener('click',()=>{S.more=!S.more;saveUI();renderCharts();});
+  $('.c-more',el).addEventListener('click',e=>{const r=e.target.closest('.dfs-r[data-id]');if(r)select(r.dataset.id,true);});
   const leg=$('.c-leg',el);
   leg.addEventListener('mouseover',e=>{const lg=e.target.closest('.lg');S.hl=lg?lg.dataset.k:null;renderCharts();});
   leg.addEventListener('mouseleave',()=>{S.hl=null;renderCharts();});
@@ -698,7 +699,7 @@ function renderChart(){
   seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
   $('.c-more-t',el).textContent=S.more?'Скрыть подробности':'Подробнее';
   const more=$('.c-more',el);more.hidden=!S.more;
-  if(S.more)setHTML(more,[...(r.sub?[['Устройство',r.sub]]:[]),...r.more(v)].map(([a,b])=>`<div><span>${esc(a)}</span><b>${esc(String(b))}</b></div>`).join('')+(r.note?`<div class="note">${esc(r.note)}${r.m==='net'&&!NETPP&&!isAdmin()?ADMIN_LINK:''}</div>`:''));
+  if(S.more)setHTML(more,[...(r.sub?[['Устройство',r.sub]]:[]),...r.more(v)].map(([a,b])=>`<div><span>${esc(a)}</span><b>${esc(String(b))}</b></div>`).join('')+(r.m==='dsk'?chartFiles():'')+(r.note?`<div class="note">${esc(r.note)}${r.m==='net'&&!NETPP&&!isAdmin()?ADMIN_LINK:''}</div>`:''));
   const d=mode==='total'?totalSeries(r):breakdown(r,mode);
   const cv=$('.c-cv',el);
   if(!d){drawTS(cv,{series:[],t0:NOW,step:1000,fmt:r.fmt,empty:'Загружаю историю…'});return;}
@@ -2083,6 +2084,63 @@ function dedupConns(list){
   for(const c of list){const k=`${c.proto}|${c.local}|${c.local_port}|${c.remote}|${c.remote_port}|${c.state}|${c.pid}`;const x=m.get(k);if(x)x.n++;else m.set(k,{c,n:1});}
   return [...m.values()];
 }
+/* Какие файлы читают и пишут процессы: трассировка файловых операций ядра (только от администратора).
+   Запрашиваем, только пока открыт раздел в деталях или «Подробнее» у диска: первый запрос начинает
+   наблюдение, без запросов оно само останавливается через 2 минуты. Один общий список на оба места. */
+let DFILES={at:0,d:null,err:'',busy:false};
+function diskFiles(){
+  if(!isAdmin())return null;
+  if(!DFILES.busy&&Date.now()-DFILES.at>2000){DFILES.busy=true;
+    rpc('disk_files',{limit:500}).then(d=>{DFILES={at:Date.now(),d,err:'',busy:false};renderDetails();renderCharts();})
+      .catch(e=>{DFILES={at:Date.now(),d:null,err:String(e&&e.message||e),busy:false};renderDetails();renderCharts();});}
+  return DFILES;
+}
+const fmtBytes=b=>b<1024?b+' Б':b<MB?Math.round(b/1024)+' КБ':b<1024*MB?nf(b/MB,b<10*MB?1:0)+' МБ':nf(b/MB/1024,1)+' ГБ';
+const dfBusy=f=>f.read_bps+f.write_bps>=1024;
+/* «↓ 2 МБ/с ↑ 40 КБ/с», если идёт сейчас, иначе сколько всего с начала наблюдения */
+function dfAmount(f){
+  const bps=v=>v<100*1024?Math.max(1,Math.round(v/1024))+' КБ/с':fmtMBs(v/MB);
+  if(dfBusy(f))return [f.read_bps>=512?'↓ '+bps(f.read_bps):'',f.write_bps>=512?'↑ '+bps(f.write_bps):''].filter(Boolean).join(' ');
+  return [f.read?'прочитано '+fmtBytes(f.read):'',f.write?'записано '+fmtBytes(f.write):''].filter(Boolean).join(' · ');
+}
+function dfName(f){
+  if(!f.path)return {name:'файлы, открытые до начала наблюдения',dir:'их имена Windows не сообщает — видны только байты',full:''};
+  const i=f.path.lastIndexOf('\\');return {name:f.path.slice(i+1)||f.path,dir:i>0?f.path.slice(0,i):'',full:f.path};
+}
+const dfSince=d=>{const s=Math.round(d.since_s);return s<60?`${s} с`:`${Math.floor(s/60)} мин ${s%60} с`;};
+/* один файл в нескольких процессах приложения — одной строкой */
+function dfMerge(list){
+  const m=new Map();
+  for(const f of list){const k=f.path.toLowerCase(),x=m.get(k);
+    if(!x){m.set(k,{...f,pids:[f.pid]});continue;}
+    for(const p of ['read','write','reads','writes','read_bps','write_bps'])x[p]+=f[p];x.idle_s=Math.min(x.idle_s,f.idle_s);x.pids.push(f.pid);}
+  return [...m.values()].sort((a,b)=>(dfBusy(b)-dfBusy(a))||(dfBusy(a)?(b.read_bps+b.write_bps)-(a.read_bps+a.write_bps):(b.read+b.write)-(a.read+a.write)));
+}
+function detailFiles(tree,pids,secOpen){
+  const open=secOpen('files');
+  const head=`<details class="dsec" data-s="files" ${open}><summary>${CHEV}Файлы на диске<span class="caption">что ${tree.length>1?'приложение читает':'процесс читает'} и пишет</span></summary><div class="kids">`;
+  if(!isAdmin())return head+`<div class="caption" style="padding:4px 8px">Какие файлы читают и пишут процессы, Windows сообщает только программе с правами администратора.${ADMIN_LINK}</div></div></details>`;
+  if(!open)return head+'</div></details>';
+  const D=diskFiles();
+  if(DFILES.err&&!D.d)return head+`<div class="caption" style="padding:4px 8px">${esc(DFILES.err)}</div></div></details>`;
+  if(!D.d)return head+'<div class="caption" style="padding:4px 8px">Начинаю наблюдение…</div></div></details>';
+  const rows=dfMerge(D.d.files.filter(f=>pids.has(f.pid)));
+  const who=f=>tree.length>1?` <span class="caption">· ${f.pids.slice(0,3).join(', ')}</span>`:'';
+  return head+(rows.length?rows.slice(0,14).map(f=>{const x=dfName(f);
+      return `<div class="kid2 df" title="${esc(x.full||x.dir)}"><span><span class="df-n">${esc(x.name)}${who(f)}</span><span class="caption df-d">${esc(x.dir)}</span></span><span class="caption num">${esc(dfAmount(f))}</span></div>`;}).join('')
+    :`<div class="caption" style="padding:4px 8px">За ${dfSince(D.d)} наблюдения — ни чтения, ни записи.</div>`)
+    +`<div class="caption" style="padding:2px 8px">Наблюдение ${dfSince(D.d)}${rows.length>14?` · ещё ${rows.length-14}`:''} · чтение и запись через кэш Windows тоже считаются: не всё из этого дошло до самого диска</div></div></details>`;
+}
+/* «Подробнее» у диска: кто и что пишет прямо сейчас по всей системе */
+function chartFiles(){
+  if(!isAdmin())return `<div class="note">Какие файлы читают и пишут процессы, видно только с правами администратора.${ADMIN_LINK}</div>`;
+  const D=diskFiles();
+  if(!D.d)return `<div class="note">${DFILES.err?esc(DFILES.err):'Начинаю наблюдение за файлами…'}</div>`;
+  const rows=D.d.files.slice(0,12);
+  if(!rows.length)return `<div class="note">Файлы: за ${dfSince(D.d)} наблюдения — ни чтения, ни записи.</div>`;
+  return `<div class="dfs"><div class="dfs-h">Файлы · наблюдение ${dfSince(D.d)}</div>${rows.map(f=>{const x=dfName(f),n=nodeByPid(f.pid);
+    return `<div class="dfs-r" ${n?`data-id="${esc(n.id)}"`:''} title="${esc(x.full||x.dir)}"><span class="dfs-p">${esc(n?nameOf(n):'PID '+f.pid)}</span><span class="dfs-f">${esc(x.name)} <span class="caption">${esc(x.dir)}</span></span><span class="num">${esc(dfAmount(f))}</span></div>`;}).join('')}</div>`;
+}
 function detailExtras(n,secOpen){
   const svcs=SVC_BY_PID.get(n.pid)||[];
   /* сеть — всего приложения: у браузера соединения держит дочерний «сетевой» процесс, а не главный */
@@ -2090,7 +2148,7 @@ function detailExtras(n,secOpen){
     rpc('connections').then(d=>{DCONN={at:Date.now(),list:d.connections,busy:false};renderDetails();}).catch(()=>{DCONN={at:Date.now(),list:DCONN.list,busy:false};});}
   const tree=appDesc(n),pids=new Set(tree.map(x=>x.pid));
   const conns=DCONN.list?DCONN.list.filter(c=>pids.has(c.pid)):[];
-  let h='';
+  let h=detailFiles(tree,pids,secOpen);
   if(svcs.length)h+=`<details class="dsec" data-s="svcs" ${secOpen('svcs')}><summary>${CHEV}Службы в процессе<span class="caption">${svcs.length}</span></summary>
     <div class="kids">${svcs.slice(0,20).map(s=>`<div class="kid2"><span>${esc(s.display)}</span><span class="caption">${esc(s.name)}</span></div>`).join('')}${svcs.length>20?`<div class="caption" style="padding:2px 8px">и ещё ${svcs.length-20}</div>`:''}</div></details>`;
   if(conns.length){
@@ -2183,7 +2241,7 @@ $('#details').addEventListener('click',e=>{
   if(a){if(a.dataset.a==='more'){const r=a.getBoundingClientRect();openMenu(r.left,r.bottom+4,[S.sel]);}else if(a.dataset.a==='open')openProcTab(S.sel);else act(a.dataset.a,[S.sel]);return;}
   const j=e.target.closest('[data-go]');if(j)select(j.dataset.go,true);
 });
-$('#details').addEventListener('toggle',e=>{const d=e.target.closest('.dsec');if(d)SEC[d.dataset.s]=d.open;},true);
+$('#details').addEventListener('toggle',e=>{const d=e.target.closest('.dsec');if(d){SEC[d.dataset.s]=d.open;if(d.open&&d.dataset.s==='files')setTimeout(renderDetails);}},true);
 $('#details').addEventListener('dblclick',e=>{if(e.target.closest('.d-cv'))setMax('detail');});
 $('#details').addEventListener('mousemove',e=>{const cv=e.target.closest('canvas');if(cv)chartHover(cv,cv.nextElementSibling,e);});
 $('#details').addEventListener('mouseout',e=>{if(e.target.tagName==='CANVAS'){S.hoverT=null;e.target.nextElementSibling.style.display='none';renderCharts();}});
