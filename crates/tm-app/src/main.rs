@@ -338,6 +338,19 @@ fn wait_pipe_gone() {
     }
 }
 
+/// Вызов по каналу с повторами: другой экземпляр может ещё запускаться и не слушать канал.
+fn call_retry(method: &str, secs: u64) -> bool {
+    let until = Instant::now() + Duration::from_secs(secs);
+    loop {
+        // «неизвестный метод» — отвечает `tm daemon`, которого приложение вот-вот сменит: ждём приложение
+        match pipe::call(method, Value::Null, Duration::from_secs(2)) {
+            Ok(_) => return true,
+            Err(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(150)),
+            Err(_) => return false,
+        }
+    }
+}
+
 /// true — продолжать запуск; false — уже работает другой экземпляр, мы ему всё передали.
 fn claim_instance(tray: bool, replace: bool) -> bool {
     let hello = if tray || replace { "app_hello" } else { "app_show" };
@@ -393,6 +406,19 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tray = args.iter().any(|a| a == "--tray");
     let replace = args.iter().any(|a| a == "--replace");
+    // замок держим до конца процесса: пока он наш, второй экземпляр главным не станет
+    let lock = system::InstanceLock::acquire("Local\\tm-app-instance");
+    if let Some((lock, false)) = &lock {
+        // экземпляр уже есть, но мог ещё не открыть канал (запущены в одну секунду) — ждём его
+        if !replace {
+            call_retry(if tray { "app_hello" } else { "app_show" }, 10);
+            return;
+        }
+        call_retry("app_quit", 10);
+        if !lock.wait(Duration::from_secs(10)) {
+            return;
+        }
+    }
     if !claim_instance(tray, replace) {
         return;
     }

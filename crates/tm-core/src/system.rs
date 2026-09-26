@@ -5,6 +5,36 @@ use windows_sys::Win32::Foundation::FILETIME;
 use windows_sys::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::{GetActiveProcessorCount, GetSystemTimes};
 
+/// Именованный мьютекс «один экземпляр». Проверка через канал не спасала от одновременного
+/// запуска: оба процесса успевали спросить «кто-то работает?» раньше, чем кто-то открывал канал.
+/// Мьютекс создаётся атомарно — первым становится ровно один. Дескриптор живёт до выхода
+/// процесса; после аварийного выхода Windows освобождает его сама.
+pub struct InstanceLock(windows_sys::Win32::Foundation::HANDLE);
+
+impl InstanceLock {
+    /// `Some((замок, true))` — мы первые; `Some((замок, false))` — экземпляр уже есть;
+    /// `None` — создать мьютекс не удалось (тогда полагаемся на проверку через канал).
+    pub fn acquire(name: &str) -> Option<(Self, bool)> {
+        use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+        let w: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let h = unsafe { CreateMutexW(std::ptr::null(), 1, w.as_ptr()) };
+        if h.is_null() {
+            return None;
+        }
+        let first = unsafe { GetLastError() } != ERROR_ALREADY_EXISTS;
+        Some((Self(h), first))
+    }
+
+    /// Дождаться, пока прежний владелец выйдет, и забрать мьютекс себе.
+    pub fn wait(&self, timeout: std::time::Duration) -> bool {
+        use windows_sys::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let r = unsafe { WaitForSingleObject(self.0, timeout.as_millis().min(u32::MAX as u128 - 1) as u32) };
+        r == WAIT_OBJECT_0 || r == WAIT_ABANDONED
+    }
+}
+
 pub fn logical_cpus() -> u32 {
     unsafe { GetActiveProcessorCount(0xFFFF) }.max(1) // ALL_PROCESSOR_GROUPS
 }
