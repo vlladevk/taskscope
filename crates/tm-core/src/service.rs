@@ -27,6 +27,14 @@ pub fn is_mutating(method: &str) -> bool {
     matches!(method, "act" | "reveal" | "web" | "docker_act" | "settings_set" | "service_act")
 }
 
+/// Методы, которые через канал не выполняются: действия, а также чтение чужих процессов
+/// изнутри (окружение, дескрипторы), подпись файлов и запись в журнал. Движок может работать
+/// от администратора, а канал открыт и обычным процессам того же пользователя — иначе они
+/// читали бы окружение и файлы с правами администратора. Клиент (tm) делает это сам.
+pub fn is_local_only(method: &str) -> bool {
+    is_mutating(method) || matches!(method, "inspect" | "signature" | "log")
+}
+
 fn arg<T: for<'de> Deserialize<'de>>(params: &Value) -> Result<T, String> {
     serde_json::from_value(params.clone()).map_err(|e| format!("неверные параметры: {e}"))
 }
@@ -151,7 +159,7 @@ impl Service {
                         .iter()
                         .map(|c| {
                             let m = c["method"].as_str().unwrap_or("");
-                            let r = if is_mutating(m) || m == "batch" { Err("в batch можно только читать".to_string()) } else { self.call(m, &c["params"]) };
+                            let r = if is_local_only(m) || m == "batch" { Err("в batch можно только читать".to_string()) } else { self.call(m, &c["params"]) };
                             match r {
                                 Ok(v) => json!({ "result": v }),
                                 Err(e) => json!({ "error": e }),

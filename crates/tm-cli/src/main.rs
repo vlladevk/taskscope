@@ -948,8 +948,8 @@ fn daemon_run(args: &Args) -> Res<bool> {
     }
     let service = tm_core::Service::new(Engine::start(Duration::from_secs(1), tm_core::engine::default_store()));
     let handler: pipe::Handler = Arc::new(move |m: &str, p: &Value| {
-        if tm_core::service::is_mutating(m) {
-            return Err("действия через канал не выполняются — tm делает их сам".into());
+        if tm_core::service::is_local_only(m) {
+            return Err("действия и просмотр процессов изнутри через канал не выполняются — tm делает их сам".into());
         }
         if m == "shutdown" {
             let _ = service.engine.save();

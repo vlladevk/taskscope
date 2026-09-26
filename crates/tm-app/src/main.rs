@@ -390,7 +390,7 @@ fn start_pipe(app: AppHandle, service: Arc<Service>) {
             });
             Ok(json!(true))
         }
-        m if service::is_mutating(m) => Err("действия через канал не выполняются: клиент выполняет их сам, со своими правами".into()),
+        m if service::is_local_only(m) => Err("действия через канал не выполняются: клиент выполняет их сам, со своими правами".into()),
         m => service.call(m, p),
     });
     std::thread::Builder::new()

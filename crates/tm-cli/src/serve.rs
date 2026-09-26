@@ -56,7 +56,11 @@ fn handle(mut conn: TcpStream, service: &Service, root: &Path, port: u16, allow_
                     let m = req["method"].as_str().unwrap_or("");
                     // пробный прогон ничего не меняет — окно подтверждения работает и в режиме чтения
                     let dry = m == "act" && req["params"]["dry_run"] == true;
-                    if tm_core::service::is_mutating(m) && !allow_actions && !dry {
+                    // сервер от администратора не отдаёт окружение и дескрипторы чужих процессов
+                    // тому, кто постучался на порт (запрос без Origin от любой программы)
+                    if tm_core::service::is_local_only(m) && !tm_core::service::is_mutating(m) && tm_core::system::is_elevated() {
+                        json!({ "error": "tm serve запущен от администратора — просмотр процессов изнутри выключен" })
+                    } else if tm_core::service::is_mutating(m) && !allow_actions && !dry {
                         json!({ "error": "в режиме разработки действия выключены (tm serve --allow-actions)" })
                     } else {
                         match service.call(m, &req["params"]) {
