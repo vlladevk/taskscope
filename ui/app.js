@@ -1753,30 +1753,6 @@ function openProcTab(id){
   requestAnimationFrame(()=>{renderAll();flushNeeds();});
 }
 
-/* =================================================================
-   Главная зона: «Docker» — контейнеры из Docker Engine.
-   Процессы контейнеров в Windows видны одним vmmem; здесь — разбивка.
-   Статистику движок собирает, только пока вкладку кто-то смотрит.
-   ================================================================= */
-let DOCKER=null,dockerBusy=false,dockerAt=0;
-const DK_ACTS={start:'Запустить',stop:'Остановить',restart:'Перезапустить',pause:'Приостановить',unpause:'Продолжить',kill:'Остановить принудительно'};
-function mountDocker(el){
-  el.innerHTML=`<div class="ph"><span class="caption dk-head">Подключаюсь к Docker…</span><div class="spacer"></div><span class="caption">процессы контейнеров в списке Windows видны одним vmmem</span></div>
-    <div class="tbl-wrap"><table class="tbl" style="min-width:680px"><colgroup><col><col style="width:72px"><col style="width:84px"><col style="width:136px"><col style="width:128px"><col style="width:44px"><col style="width:40px"></colgroup>
-    <thead><tr><th style="cursor:default">Контейнер</th><th class="act">ЦП</th><th>Память</th><th>Сеть ↓ / ↑</th><th>Диск чт. / зап.</th><th>PID</th><th style="cursor:default"></th></tr></thead><tbody></tbody></table></div>
-    <div class="empty dk-empty" hidden></div>`;
-  const open=(e,id)=>{
-    const c=DOCKER&&DOCKER.containers.find(x=>x.id===id);if(!c)return;
-    const on=c.state==='running',paused=c.state==='paused';
-    const acts=on?['stop','restart','pause','kill']:paused?['unpause','stop','kill']:['start'];
-    menuIds=null;
-    menu.innerHTML=`<div class="mh">${esc(c.name)} · ${esc(c.image)}</div>`+acts.map(a=>`<div class="mi${a==='kill'||a==='stop'?' danger':''}" data-dk="${a}" data-id="${esc(c.id)}"><span>${DK_ACTS[a]}</span></div>`).join('');
-    menu.style.display='block';const r=menu.getBoundingClientRect();
-    menu.style.left=Math.min(e.clientX,innerWidth-r.width-8)+'px';menu.style.top=Math.max(8,Math.min(e.clientY,innerHeight-r.height-8))+'px';
-  };
-  el.addEventListener('click',e=>{const b=e.target.closest('[data-dkm]');if(b)open(e,b.dataset.dkm);});
-  el.addEventListener('contextmenu',e=>{const tr=e.target.closest('tr[data-id]');if(!tr)return;e.preventDefault();open(e,tr.dataset.id);});
-}
 /* перезапуск от администратора — из шапки, из меню и по ссылкам там, где без прав чего-то не видно */
 const isAdmin=()=>!!(SYSINFO&&SYSINFO.elevated);
 const ADMIN_LINK=' <a class="admin-link" data-admin>Перезапустить от администратора</a>';
@@ -1785,49 +1761,6 @@ async function runAdmin(){if(!TAURI)return toast('Запустите прило�
   try{await appCmd('admin');}catch(err){toast(err.message||String(err),'yel');}}
 $('#adminBtn').addEventListener('click',runAdmin);
 document.addEventListener('click',e=>{if(e.target.closest('[data-admin]')){e.preventDefault();runAdmin();}});
-menu.addEventListener('click',async e=>{
-  const b=e.target.closest('[data-dk]');if(!b)return;closeMenu();
-  const c=DOCKER&&DOCKER.containers.find(x=>x.id===b.dataset.id);if(!c)return;
-  const a=b.dataset.dk;
-  try{await rpc('docker_act',{id:c.id,action:a,name:c.name});toast(`Docker: ${c.name} — ${DK_ACTS[a].toLowerCase()}: готово`,'ok');}
-  catch(err){toast(err.message||String(err),'red',6000);}
-  dockerAt=0;renderDocker();
-});
-function fetchDocker(){
-  if(dockerBusy||Date.now()-dockerAt<1800)return;
-  dockerBusy=true;
-  rpc('docker').then(d=>{DOCKER=d;}).catch(e=>{DOCKER={available:false,error:e.message||String(e),containers:[]};})
-    .finally(()=>{dockerBusy=false;dockerAt=Date.now();renderDocker(true);});
-}
-function renderDocker(fromFetch){
-  const el=PANEL_EL.docker;if(!vis(el))return;
-  if(!fromFetch)fetchDocker();
-  const head=$('.dk-head',el),empty=$('.dk-empty',el),tb=$('tbody',el);
-  if(!DOCKER){return;}
-  if(!DOCKER.available){
-    head.textContent='Docker недоступен';
-    empty.hidden=false;setHTML(empty,`${esc(DOCKER.error||'Docker не запущен')}.<br>Запустите Docker Desktop — контейнеры появятся здесь сами.`);
-    patchRows(tb,[]);return;
-  }
-  empty.hidden=true;
-  const run=DOCKER.containers.filter(c=>c.state==='running'||c.state==='paused');
-  const cpu=run.reduce((s,c)=>s+c.cpu,0),mem=run.reduce((s,c)=>s+c.mem,0);
-  setHTML(head,`Docker ${esc(DOCKER.version||'')} · контейнеров ${DOCKER.containers.length}, работает ${run.length} · вместе ЦП ${fmtPct(cpu)}, память ${fmtMem(mem/MB)}`);
-  patchRows(tb,DOCKER.containers.map(c=>{
-    const on=c.state==='running',paused=c.state==='paused';
-    const dash='<span style="color:var(--text-4)">—</span>';
-    return {id:c.id,cls:on?'':'susp',cells:[
-      {h:`<div class="nm"><span class="n1">${esc(c.name)}</span><span class="n2">${esc(c.image)} · ${esc(c.id)}</span>${c.project?`<span class="chip">${esc(c.project)}</span>`:''}${on?'':`<span class="chip">${esc(c.status)}</span>`}</div>`},
-      {c:'act',h:on?`<span class="cell-bar" style="width:${clamp(c.cpu,0,100).toFixed(1)}%"></span><span class="cell-v">${fmtPct(c.cpu)}</span>`:dash},
-      {h:on||paused?`<span class="cell-v">${fmtMem(c.mem/MB)}</span>`:dash,t:c.mem_limit?`лимит ${fmtMem(c.mem_limit/MB)}`:''},
-      {h:on?`<span class="cell-v">${fmtMbit(c.net_rx_bps*8/1e6)} / ${fmtMbit(c.net_tx_bps*8/1e6)}</span>`:dash},
-      {h:on?`<span class="cell-v">${fmtMBs(c.blk_read_bps/MB)} / ${fmtMBs(c.blk_write_bps/MB)}</span>`:dash},
-      {h:on||paused?`<span class="cell-v">${c.pids}</span>`:dash},
-      {h:`<button class="ib" data-dkm="${esc(c.id)}" title="Действия">⋯</button>`},
-    ]};
-  }));
-}
-
 /* =================================================================
    Пул ядра: память драйверов и объектов ядра по меткам — её не видно ни у одного процесса.
    Движок снимает пул раз в минуту и считает рост; панель спрашивает, только пока видна.
@@ -2220,7 +2153,7 @@ $('#details').addEventListener('mouseout',e=>{if(e.target.tagName==='CANVAS'){S.
 const DV=window['dockview-core'];
 /* основные вкладки не закрываются — только переключаются и перетаскиваются;
    крестик есть лишь у вкладок отдельных процессов */
-const FIXED=['procs','map','docker','pool','svcs','conns'];
+const FIXED=['procs','map','pool','svcs','conns'];
 const dock=DV.createDockview($('#dock'),{
   theme:DV.themeDark,
   createTabComponent:o=>{
@@ -2234,7 +2167,6 @@ const dock=DV.createDockview($('#dock'),{
     const el=document.createElement('div');el.className='pnl';
     if(o.name==='procs'){PANEL_EL.procs=el;mountProcs(el);}
     else if(o.name==='map'){PANEL_EL.map=el;mountMap(el);}
-    else if(o.name==='docker'){PANEL_EL.docker=el;mountDocker(el);}
     else if(o.name==='pool'){PANEL_EL.pool=el;mountPool(el);}
     else if(o.name==='svcs'){PANEL_EL.svcs=el;mountSvcs(el);}
     else if(o.name==='conns'){PANEL_EL.conns=el;mountConns(el);}
@@ -2253,22 +2185,24 @@ function defaultLayout(){
   dock.clear();
   dock.addPanel({id:'procs',component:'procs',tabComponent:'fixed',title:'Процессы'});
   dock.addPanel({id:'map',component:'map',tabComponent:'fixed',title:'Карта',position:{referencePanel:'procs',direction:'within'},inactive:true});
-  dock.addPanel({id:'docker',component:'docker',tabComponent:'fixed',title:'Docker',position:{referencePanel:'procs',direction:'within'},inactive:true});
   dock.addPanel({id:'pool',component:'pool',tabComponent:'fixed',title:'Пул ядра',position:{referencePanel:'procs',direction:'within'},inactive:true});
   dock.addPanel({id:'svcs',component:'svcs',tabComponent:'fixed',title:'Службы',position:{referencePanel:'procs',direction:'within'},inactive:true});
   dock.addPanel({id:'conns',component:'conns',tabComponent:'fixed',title:'Сеть',position:{referencePanel:'procs',direction:'within'},inactive:true});
 }
 const LAYOUT_KEY='tm-layout-3';
 let restored=false;
-try{const j=localStorage.getItem(LAYOUT_KEY);if(j){const L=JSON.parse(j);delete L.floatingGroups;delete L.popoutGroups;for(const k of FIXED)if(L.panels&&L.panels[k])L.panels[k].tabComponent='fixed';dock.fromJSON(L);for(const p of dock.panels.slice())if(p.id.startsWith('proc:'))p.api.close();restored=!!dock.getPanel('procs')||!!dock.getPanel('map');}}catch(e){restored=false;}
+try{const j=localStorage.getItem(LAYOUT_KEY);if(j){const L=JSON.parse(j);delete L.floatingGroups;delete L.popoutGroups;for(const k of FIXED)if(L.panels&&L.panels[k])L.panels[k].tabComponent='fixed';dock.fromJSON(L);for(const p of dock.panels.slice())if(p.id.startsWith('proc:')||p.id==='docker')p.api.close(); /* вкладки Docker больше нет — из старой раскладки убираем */restored=!!dock.getPanel('procs')||!!dock.getPanel('map');}}catch(e){restored=false;}
 if(!restored)defaultLayout();
 /* основная вкладка могла остаться в выкинутом плавающем окне — возвращаем её в общую группу */
 function ensureFixed(){const ref=FIXED.map(k=>dock.getPanel(k)).find(Boolean);
-  for(const [k,t] of [['procs','Процессы'],['map','Карта'],['docker','Docker'],['pool','Пул ядра'],['svcs','Службы'],['conns','Сеть']])if(!dock.getPanel(k))dock.addPanel({id:k,component:k,tabComponent:'fixed',title:t,inactive:!!ref,...(ref?{position:{referencePanel:ref.id,direction:'within'}}:{})});}
+  for(const [k,t] of [['procs','Процессы'],['map','Карта'],['pool','Пул ядра'],['svcs','Службы'],['conns','Сеть']])if(!dock.getPanel(k))dock.addPanel({id:k,component:k,tabComponent:'fixed',title:t,inactive:!!ref,...(ref?{position:{referencePanel:ref.id,direction:'within'}}:{})});}
 ensureFixed();
 /* сохранённая раскладка помнит старые названия вкладок */
 {const c=dock.getPanel('conns');if(c&&c.title!=='Сеть')c.api.setTitle('Сеть');}
-dock.onDidLayoutChange(()=>{try{localStorage.setItem(LAYOUT_KEY,JSON.stringify(dock.toJSON()));}catch(e){}});
+const saveLayout=()=>{try{localStorage.setItem(LAYOUT_KEY,JSON.stringify(dock.toJSON()));}catch(e){}};
+/* сразу после восстановления: убранные вкладки (Docker) не должны оставаться в сохранённой раскладке */
+saveLayout();
+dock.onDidLayoutChange(saveLayout);
 dock.onDidActivePanelChange(()=>requestAnimationFrame(()=>{renderAll();flushNeeds();}));
 
 /* Узкое окно: «Детали» (уже 900 px) и ресурсы слева (уже 700 px) выезжают поверх списка, а не
@@ -2378,7 +2312,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(DRAWER){DRAWER=null;applyShell();}else if(S.max)setMax(S.max);else if(mapUp()){}else if(TAURI)appCmd('hide').catch(()=>{});}
 });
 
-function renderAll(){if(!SYS)return;RES=resList();renderTop();renderRail();renderChart();renderLog();renderProcs();renderMap();renderDocker();renderPool();renderSvcs();renderConns();fetchSvcNames();renderDetails();renderProcTabs();}
+function renderAll(){if(!SYS)return;RES=resList();renderTop();renderRail();renderChart();renderLog();renderProcs();renderMap();renderPool();renderSvcs();renderConns();fetchSvcNames();renderDetails();renderProcTabs();}
 
 /* =================================================================
    Главный цикл: ждём следующий замер движка (длинный опрос).
