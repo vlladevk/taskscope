@@ -1422,7 +1422,9 @@ function mountDocker(el){
 /* перезапуск от администратора — из шапки, из меню и по ссылкам там, где без прав чего-то не видно */
 const isAdmin=()=>!!(SYSINFO&&SYSINFO.elevated);
 const ADMIN_LINK=' <a class="admin-link" data-admin>Перезапустить от администратора</a>';
-async function runAdmin(){if(!TAURI)return toast('Запустите приложение, а не режим разработки','yel');try{await appCmd('admin');}catch(err){toast(err.message||String(err),'yel');}}
+async function runAdmin(){if(!TAURI)return toast('Запустите приложение, а не режим разработки','yel');
+  toast('Подтвердите запуск в окне Windows — если его не видно, нажмите мигающий щит на панели задач','info');
+  try{await appCmd('admin');}catch(err){toast(err.message||String(err),'yel');}}
 $('#adminBtn').addEventListener('click',runAdmin);
 document.addEventListener('click',e=>{if(e.target.closest('[data-admin]')){e.preventDefault();runAdmin();}});
 menu.addEventListener('click',async e=>{

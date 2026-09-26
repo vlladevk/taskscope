@@ -312,7 +312,8 @@ async fn app_cmd(app: AppHandle, cmd: String, arg: Option<Value>) -> Result<Valu
         "admin" => {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
             // новый экземпляр сам попросит этот завершиться (--replace); отказ в UAC — просто ошибка
-            system::shell_execute("runas", &exe.display().to_string(), "--replace").map_err(|_| "запуск от администратора отменён".to_string())?;
+            let parent = main_window(&app).and_then(|w| w.hwnd().ok()).map_or(0, |h| h.0 as isize);
+            system::shell_execute_from(parent, "runas", &exe.display().to_string(), "--replace").map_err(|_| "запуск от администратора отменён".to_string())?;
         }
         "autostart_get" => return Ok(json!(system::autostart_get(AUTOSTART_NAME).is_some())),
         "autostart_set" => {

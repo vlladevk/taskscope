@@ -155,11 +155,17 @@ fn wide(s: &str) -> Vec<u16> {
 /// ShellExecute: открыть файл, папку или ссылку «как двойным щелчком» (`verb` = "open")
 /// или запустить с запросом прав администратора (`verb` = "runas").
 pub fn shell_execute(verb: &str, file: &str, params: &str) -> std::io::Result<()> {
+    shell_execute_from(0, verb, file, params)
+}
+
+/// Как `shell_execute`, но от имени окна `parent` (HWND). Для "runas" это важно: без окна-владельца
+/// Windows не выводит запрос UAC сразу, а лишь мигает щитом на панели задач — «нажал, и ничего».
+pub fn shell_execute_from(parent: isize, verb: &str, file: &str, params: &str) -> std::io::Result<()> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     let r = unsafe {
         ShellExecuteW(
-            std::ptr::null_mut(),
+            parent as _,
             wide(verb).as_ptr(),
             wide(file).as_ptr(),
             if params.is_empty() { std::ptr::null() } else { wide(params).as_ptr() },
