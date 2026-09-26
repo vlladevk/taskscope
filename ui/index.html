@@ -366,6 +366,21 @@ tr.susp .n1{color:var(--text-3)}
 .dchart.max canvas{flex:1;height:auto;min-height:0}
 .dchart .caption .ib{width:24px;height:20px;margin:-2px -4px -2px 6px;vertical-align:middle}
 .shell.no-right .right,.shell.no-right #sashR{display:none}
+/* узкое окно: «Детали» и ресурсы — выезжающими панелями поверх центра */
+.shell{position:relative}
+.shell.ov-right #sashR{display:none}
+.shell.ov-right .right{position:absolute;right:8px;top:0;bottom:8px;z-index:30;width:min(360px,calc(100% - 16px))!important;box-shadow:0 8px 32px rgba(0,0,0,.55)}
+.shell.ov-rail .rail{position:absolute;left:0;top:0;bottom:0;z-index:31;width:min(240px,calc(100% - 48px));padding:4px 8px 8px;background:var(--bg-base);border-right:1px solid var(--stroke-ctrl);box-shadow:8px 0 32px rgba(0,0,0,.5)}
+/* верхняя строка сжимается постепенно: сначала подписи, потом название; уже 700 px — в две строки */
+@media (max-width:1180px){.bar .lbl{display:none}.adm span{display:none}}
+@media (max-width:900px){.bar .proto,.bar .title>span{display:none}.bar{gap:8px}}
+/* верхняя строка в две: период — отдельной строкой во всю ширину */
+body.narrow .bar{flex-wrap:wrap;height:auto;min-height:40px;padding:6px 8px;row-gap:6px;gap:6px}
+body.narrow .bar .lbl,body.narrow .bar .proto{display:none}
+body.narrow #range{order:10;flex:1 1 100%;display:flex}
+body.narrow #range button{flex:1;padding:0 4px}
+/* кнопка администратора — одним значком (подсказка остаётся), подпись «порядок заморожен» не занимает строку */
+body.narrow .adm span,body.narrow .bar .title>span:not(.proto){display:none}body.narrow .p-frz{display:none}
 .sash{flex:none;position:relative;z-index:5}
 .sash.h{height:8px;cursor:row-resize}
 .sash.v{width:8px;cursor:col-resize}

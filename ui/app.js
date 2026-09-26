@@ -431,7 +431,7 @@ function openMenu(x,y,ids){
 const closeMenu=()=>{menu.style.display='none';menuIds=null;menu.classList.remove('col-menu');};
 document.addEventListener('pointerdown',e=>{if(!menu.contains(e.target))closeMenu();},true);
 menu.addEventListener('click',e=>{const mi=e.target.closest('.mi[data-a]');if(!mi||!menuIds)return;const ids=menuIds;closeMenu();act(mi.dataset.a,ids);});
-function select(id,reveal){S.sel=id;if(!S.right)toggleRight(true);S.multi=new Set([id]);const n=NODES.get(id);if(n){if(reveal)openPath(n);info(n,true).then(()=>renderDetails());}renderAll();if(reveal)requestAnimationFrame(()=>revealRow(id));}
+function select(id,reveal){S.sel=id;if(!S.right&&!overlay('right'))toggleRight(true);S.multi=new Set([id]);const n=NODES.get(id);if(n){if(reveal)openPath(n);info(n,true).then(()=>renderDetails());}renderAll();if(reveal)requestAnimationFrame(()=>revealRow(id));}
 
 /* =================================================================
    Графики (стиль CloudWatch / Cloudscape)
@@ -606,7 +606,7 @@ function railData(r){
   return s?s.values.map(conv(r.m)):null;
 }
 function renderRail(){
-  const el=$('#rail');if(!SYS||!S.rail||selIn(el))return;
+  const el=$('#rail');if(!SYS||!railOn()||selIn(el))return;
   el.innerHTML='<div class="rh"><span>Ресурсы</span><button class="ib" data-close="rail" title="Скрыть · Ctrl+B"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button></div>'+RES.map(r=>{
     const v=r.now(),st=resStatus(r,v),col=PAL[r.col];
     const data=railData(r)||[v,v];
@@ -2137,7 +2137,7 @@ function detailExtras(n,secOpen){
    ================================================================= */
 const SEC={kids:true,info:true,svcs:true,net:true};
 function renderDetails(){
-  const body=$('#details');if(!S.right||!vis(body))return;
+  const body=$('#details');if(!rightOn()||!vis(body))return;
   const n=NODES.get(S.sel);
   if(!n||!SYS){body.innerHTML='<div class="empty">Выберите процесс в списке, на карте или на графике.</div>';body._id=null;return;}
   if(body._id===n.id&&selIn(body)){renderDetailChart();return;}
@@ -2192,7 +2192,7 @@ function renderDetails(){
   renderDetailChart();
 }
 function renderDetailChart(){
-  const body=$('#details');if(!S.right||!vis(body))return;
+  const body=$('#details');if(!rightOn()||!vis(body))return;
   const cv=$('.d-cv',body),n=NODES.get(S.sel);if(!cv||!n)return;
   maxMark(cv.parentElement,'max',S.max==='detail',$('.d-max',body));
   const r=curRes(),mm=r.m==='net'?'cpu':r.m,c=COLS_ALL.find(c=>c.m===mm);
@@ -2271,13 +2271,29 @@ ensureFixed();
 dock.onDidLayoutChange(()=>{try{localStorage.setItem(LAYOUT_KEY,JSON.stringify(dock.toJSON()));}catch(e){}});
 dock.onDidActivePanelChange(()=>requestAnimationFrame(()=>{renderAll();flushNeeds();}));
 
+/* Узкое окно: «Детали» (уже 900 px) и ресурсы слева (уже 700 px) выезжают поверх списка, а не
+   сжимают его до нуля (на 420 px от центра не оставалось ничего). Такая панель открывается
+   кнопкой или сочетанием и закрывается Esc или щелчком мимо; сохранённые «показывать всегда»
+   не трогаются — окно расширили, и всё как было. */
+var DRAWER=null,NARROW_AT=''; /* var и function: select() и отрисовка могут вызвать их раньше, чем дойдёт до этих строк */
+function overlay(z){return innerWidth<(z==='rail'?700:900);}
+function railOn(){return overlay('rail')?DRAWER==='rail':S.rail;}
+function rightOn(){return overlay('right')?DRAWER==='right':S.right;}
+/* ResizeObserver, а не только resize: событие окна приходит не всегда (и бывает раньше, чем меняется ширина) */
+function checkNarrow(){const k=`${overlay('rail')}${overlay('right')}`;if(k===NARROW_AT)return;NARROW_AT=k;if(DRAWER&&!overlay(DRAWER))DRAWER=null;applyShell();}
+addEventListener('resize',checkNarrow);new ResizeObserver(checkNarrow).observe(document.documentElement);
+/* щелчок мимо выехавшей панели — закрыть */
+document.addEventListener('pointerdown',e=>{if(!DRAWER||DIALOG)return;const z=$('#'+DRAWER);
+  if(z.contains(e.target)||e.target.closest('#tglRail,#tglRight,.menu'))return;DRAWER=null;applyShell();},true);
 /* размеры — прямо на панели: наследуемая CSS-переменная на #shell заставляла пересчитывать стили всех элементов */
 function sizeZones(){$('#bottom').style.height=S.bh+'px';$('#right').style.width=S.rw+'px';}
 function applyShell(){
   const sh=$('#shell');
-  sh.classList.toggle('no-rail',!S.rail);sh.classList.toggle('no-main',!S.main);sh.classList.toggle('no-bottom',!S.bottom);sh.classList.toggle('no-right',!S.right);
+  NARROW_AT=`${overlay('rail')}${overlay('right')}`;
+  sh.classList.toggle('ov-rail',overlay('rail'));sh.classList.toggle('ov-right',overlay('right'));document.body.classList.toggle('narrow',overlay('rail'));
+  sh.classList.toggle('no-rail',!railOn());sh.classList.toggle('no-main',!S.main);sh.classList.toggle('no-bottom',!S.bottom);sh.classList.toggle('no-right',!rightOn());
   sizeZones();
-  $('#tglRail').classList.toggle('on',S.rail);$('#tglMain').classList.toggle('on',S.main);$('#tglBottom').classList.toggle('on',S.bottom);$('#tglRight').classList.toggle('on',S.right);
+  $('#tglRail').classList.toggle('on',railOn());$('#tglMain').classList.toggle('on',S.main);$('#tglBottom').classList.toggle('on',S.bottom);$('#tglRight').classList.toggle('on',rightOn());
   $('#btabs').querySelectorAll('[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===S.btab));
   $('#bChart').hidden=S.btab!=='chart';$('#bLog').hidden=S.btab!=='log';
   requestAnimationFrame(()=>{relayout();renderAll();flushNeeds();});
@@ -2285,8 +2301,9 @@ function applyShell(){
 const toggleBottom=v=>{S.bottom=v==null?!S.bottom:v;if(!S.bottom)S.main=true;if(!S.bottom&&S.max==='bottom'){S.max=null;maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));}saveUI();applyShell();};
 /* центр не бывает пустым: спрятали вкладки — показываем нижнюю панель, и наоборот */
 const toggleMain=v=>{S.main=v==null?!S.main:v;if(!S.main){S.bottom=true;if(S.max==='bottom'){S.max=null;maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));}}saveUI();applyShell();};
-const toggleRail=v=>{S.rail=v==null?!S.rail:v;saveUI();applyShell();};
-const toggleRight=v=>{S.right=v==null?!S.right:v;saveUI();applyShell();};
+const drawer=(z,v)=>{DRAWER=(v==null?DRAWER!==z:v)?z:DRAWER===z?null:DRAWER;applyShell();};
+const toggleRail=v=>{if(overlay('rail'))return drawer('rail',v);S.rail=v==null?!S.rail:v;saveUI();applyShell();};
+const toggleRight=v=>{if(overlay('right'))return drawer('right',v);S.right=v==null?!S.right:v;saveUI();applyShell();};
 $('#tglRail').addEventListener('click',()=>toggleRail());$('#tglMain').addEventListener('click',()=>toggleMain());
 $('#tglBottom').addEventListener('click',()=>toggleBottom());
 $('#maxBottom').addEventListener('click',()=>setMax('bottom'));maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));
@@ -2327,10 +2344,10 @@ $('#moreBtn').addEventListener('click',async e=>{
   menu.innerHTML=`<div class="mi" data-g="pause"><span>${paused?'Продолжить обновление':'Пауза обновления'}</span></div>
     <div class="mi" data-g="reset"><span>Сбросить раскладку</span></div>
     <div class="sep"></div><div class="mh">Панели</div>
-    <div class="mi" data-g="rail"><span><span class="ck">${S.rail?'✓':''}</span> Ресурсы и графики (слева)</span><kbd>Ctrl+B</kbd></div>
+    <div class="mi" data-g="rail"><span><span class="ck">${railOn()?'✓':''}</span> Ресурсы и графики (слева)</span><kbd>Ctrl+B</kbd></div>
     <div class="mi" data-g="main"><span><span class="ck">${S.main?'✓':''}</span> Вкладки: процессы, карта… (центр)</span></div>
     <div class="mi" data-g="bottom"><span><span class="ck">${S.bottom?'✓':''}</span> График и журнал (снизу)</span><kbd>Ctrl+J</kbd></div>
-    <div class="mi" data-g="right"><span><span class="ck">${S.right?'✓':''}</span> Детали (справа)</span><kbd>Ctrl+Alt+B</kbd></div><div class="sep"></div>
+    <div class="mi" data-g="right"><span><span class="ck">${rightOn()?'✓':''}</span> Детали (справа)</span><kbd>Ctrl+Alt+B</kbd></div><div class="sep"></div>
     ${SYSINFO&&SYSINFO.elevated?'':'<div class="mi" data-g="admin"><span>Перезапустить от администратора</span></div>'}
     ${TAURI?`<div class="mi" data-g="autostart"><span>${autostart?'✓ ':''}Запускать вместе с Windows</span></div><div class="mi" data-g="hide"><span>Свернуть в трей</span><kbd>Esc</kbd></div><div class="sep"></div><div class="mi danger" data-g="quit"><span>Выйти (сбор истории остановится)</span></div>`:''}`;
   menu.style.display='block';menu.style.left=Math.min(r.right-280,innerWidth-290)+'px';menu.style.top=r.bottom+4+'px';
@@ -2358,7 +2375,7 @@ document.addEventListener('keydown',e=>{
   if(e.target.matches('input'))return;
   if(e.key==='Delete'&&S.sel){act(e.shiftKey?'tree':'kill',[...(S.multi.size?S.multi:[S.sel])]);return;}
   if(!DIALOG&&menu.style.display!=='block'&&procKeys(e)){e.preventDefault();return;}
-  if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(S.max)setMax(S.max);else if(mapUp()){}else if(TAURI)appCmd('hide').catch(()=>{});}
+  if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(DRAWER){DRAWER=null;applyShell();}else if(S.max)setMax(S.max);else if(mapUp()){}else if(TAURI)appCmd('hide').catch(()=>{});}
 });
 
 function renderAll(){if(!SYS)return;RES=resList();renderTop();renderRail();renderChart();renderLog();renderProcs();renderMap();renderDocker();renderPool();renderSvcs();renderConns();fetchSvcNames();renderDetails();renderProcTabs();}
