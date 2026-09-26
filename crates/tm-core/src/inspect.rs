@@ -78,6 +78,9 @@ pub struct Handles {
     pub names: bool,
     /// Сколько дескрипторов какого типа — для сводки.
     pub by_type: Vec<(String, usize)>,
+    /// Имя одного из файлов не удалось узнать за отведённое время (на нём висит операция) —
+    /// имена остальных файлов не запрашивались.
+    pub files_skipped: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -117,6 +120,23 @@ pub fn modules(pid: u32, create_time: i64) -> io::Result<Vec<Module>> {
     unsafe { CloseHandle(snap) };
     out.sort_by_key(|m| m.base);
     Ok(out)
+}
+
+/// Модули для подписи точек входа: окно обновляет потоки раз в 2 с, а список модулей
+/// меняется редко — держим его 10 с (последний процесс).
+fn modules_cached(pid: u32, create_time: i64) -> Vec<Module> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(u32, i64, Instant, Vec<Module>)>> = Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, ct, at, m)) = c.as_ref() {
+        if *p == pid && *ct == create_time && at.elapsed() < Duration::from_secs(10) {
+            return m.clone();
+        }
+    }
+    let m = modules(pid, create_time).unwrap_or_default();
+    *c = Some((pid, create_time, Instant::now(), m.clone()));
+    m
 }
 
 fn thread_state(state: u32, reason: u32) -> &'static str {
@@ -161,7 +181,7 @@ pub fn threads(pid: u32, create_time: i64) -> io::Result<Vec<Thread>> {
         off += next;
     };
     let n = rd32(entry + 4) as usize;
-    let mods = modules(pid, create_time).unwrap_or_default();
+    let mods = modules_cached(pid, create_time);
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let t = entry + 256 + i * 80;
@@ -248,7 +268,14 @@ fn pretty_key(name: &str) -> String {
         let rest = &name[USER.len()..];
         if let Some(sid) = SID.get_or_init(crate::system::current_user_sid) {
             if let Some(tail) = rest.strip_prefix(sid.as_str()) {
-                return format!("HKCU{tail}");
+                // «<SID>_Classes\…» — это HKCU\Software\Classes, а не «HKCU_Classes»
+                if let Some(t) = tail.strip_prefix("_Classes") {
+                    if t.is_empty() || t.starts_with('\\') {
+                        return format!(r"HKCU\Software\Classes{t}");
+                    }
+                } else if tail.is_empty() || tail.starts_with('\\') {
+                    return format!("HKCU{tail}");
+                }
             }
         }
         return format!(r"HKU\{rest}");
@@ -277,24 +304,79 @@ fn object_name(h: HANDLE) -> String {
 /// к синхронному каналу может зависнуть навсегда (System Informer обходит это отдельным потоком).
 fn name_of(kind: &str, h: HANDLE) -> String {
     match kind {
-        "File" => {
-            if unsafe { GetFileType(h) } != FILE_TYPE_DISK {
-                return String::new();
-            }
-            let mut w = vec![0u16; 1024];
-            let n = unsafe { GetFinalPathNameByHandleW(h, w.as_mut_ptr(), w.len() as u32, VOLUME_NAME_DOS) } as usize;
-            if n == 0 || n >= w.len() {
-                return String::new();
-            }
-            let s = String::from_utf16_lossy(&w[..n]);
-            s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
-        }
-        "Process" => format!("PID {}", unsafe { GetProcessId(h) }),
-        "Thread" => format!("TID {}", unsafe { GetThreadId(h) }),
+        "File" => file_name(h),
+        // 0 — нет права узнать номер: пусто, а не «PID 0»
+        "Process" => match unsafe { GetProcessId(h) } {
+            0 => String::new(),
+            id => format!("PID {id}"),
+        },
+        "Thread" => match unsafe { GetThreadId(h) } {
+            0 => String::new(),
+            id => format!("TID {id}"),
+        },
         "Key" => pretty_key(&object_name(h)),
         "Directory" | "Event" | "Mutant" | "Section" | "Semaphore" | "SymbolicLink" | "ALPC Port" | "WindowStation" | "Desktop" | "Timer"
         | "Job" | "Partition" => object_name(h),
         _ => String::new(),
+    }
+}
+
+/// Типы, у которых бывает имя (остальные не копируем — это тысячи лишних вызовов).
+const NAMED: &[&str] = &[
+    "File", "Process", "Thread", "Key", "Directory", "Event", "Mutant", "Section", "Semaphore", "SymbolicLink", "ALPC Port", "WindowStation",
+    "Desktop", "Timer", "Job", "Partition",
+];
+
+fn file_name(h: HANDLE) -> String {
+    if unsafe { GetFileType(h) } != FILE_TYPE_DISK {
+        return String::new();
+    }
+    let mut w = vec![0u16; 1024];
+    let n = unsafe { GetFinalPathNameByHandleW(h, w.as_mut_ptr(), w.len() as u32, VOLUME_NAME_DOS) } as usize;
+    if n == 0 || n >= w.len() {
+        return String::new();
+    }
+    let s = String::from_utf16_lossy(&w[..n]);
+    s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
+}
+
+/// Имена файлов в отдельном потоке: если запрос завис, поток остаётся ждать сам (он и закроет
+/// копию дескриптора, когда операция завершится), а проверка идёт дальше без имён файлов.
+struct FileNamer {
+    tx: Option<std::sync::mpsc::Sender<usize>>,
+    rx: std::sync::mpsc::Receiver<String>,
+}
+
+impl FileNamer {
+    const WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+    fn new() -> Self {
+        let (tx, jobs) = std::sync::mpsc::channel::<usize>();
+        let (done, rx) = std::sync::mpsc::channel::<String>();
+        let spawned = std::thread::Builder::new().name("tm-file-names".into()).spawn(move || {
+            for h in jobs {
+                let h = h as HANDLE;
+                let n = file_name(h);
+                unsafe { CloseHandle(h) };
+                if done.send(n).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { tx: spawned.ok().map(|_| tx), rx }
+    }
+
+    /// Имя файла; `None` — не ответил вовремя (копию дескриптора закроет поток, когда освободится).
+    fn name(&self, h: HANDLE) -> Option<String> {
+        let Some(tx) = &self.tx else {
+            unsafe { CloseHandle(h) };
+            return Some(String::new());
+        };
+        if tx.send(h as usize).is_err() {
+            unsafe { CloseHandle(h) };
+            return None;
+        }
+        self.rx.recv_timeout(Self::WAIT).ok()
     }
 }
 
@@ -317,6 +399,8 @@ pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
     let mut list = Vec::new();
     let mut total = 0usize;
     let mut by_type: HashMap<String, usize> = HashMap::new();
+    let files = FileNamer::new();
+    let mut files_stuck = false;
     for i in 0..count {
         let e = 16 + i * 40;
         if e + 40 > buf.len() {
@@ -332,16 +416,28 @@ pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
             continue;
         }
         let hv = rd(e + 16, 8);
-        let name = match &dup_from {
-            Some(src) => unsafe {
+        // копируем только типы, у которых вообще бывает имя (EtwRegistration, IRTimer… — нет)
+        let dup = match &dup_from {
+            Some(src) if NAMED.contains(&kind.as_str()) && !(kind == "File" && files_stuck) => unsafe {
                 let mut d: HANDLE = ptr::null_mut();
-                if DuplicateHandle(src.raw(), hv as usize as HANDLE, me, &mut d, 0, 0, DUPLICATE_SAME_ACCESS) != 0 {
-                    let n = name_of(&kind, d);
-                    CloseHandle(d);
-                    n
-                } else {
+                (DuplicateHandle(src.raw(), hv as usize as HANDLE, me, &mut d, 0, 0, DUPLICATE_SAME_ACCESS) != 0).then_some(d)
+            },
+            _ => None,
+        };
+        let name = match dup {
+            // имя файла — в отдельном потоке с таймаутом: запрос к файлу, на котором висит
+            // синхронная операция (ReadDirectoryChangesW, чтение канала), ждёт её завершения
+            Some(d) if kind == "File" => match files.name(d) {
+                Some(n) => n,
+                None => {
+                    files_stuck = true;
                     String::new()
                 }
+            },
+            Some(d) => unsafe {
+                let n = name_of(&kind, d);
+                CloseHandle(d);
+                n
             },
             None => String::new(),
         };
@@ -349,7 +445,7 @@ pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
     }
     let mut by_type: Vec<_> = by_type.into_iter().collect();
     by_type.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    Ok(Handles { list, total, names: dup_from.is_some(), by_type })
+    Ok(Handles { list, total, names: dup_from.is_some(), by_type, files_skipped: files_stuck })
 }
 
 /// Текущая папка и переменные окружения процесса (из его PEB).
