@@ -1073,8 +1073,8 @@ function mapStatus(){
   setHTML(st,`<b>${esc(path)}${h.self?' · сам процесс, без дочерних':''}</b> — ${mapFmt(h.v)}${pct}${n&&!h.rest&&mapMetric()!=='cpu'?` · ЦП ${fmtPct(c)}`:''}${what}`);
 }
 const MAP_HINT='Наведите на плитку — здесь будет путь и размер · клик — выбрать · двойной клик — приблизить';
-function mapHl(k){if(MAP.hl===k)return;MAP.hl=k;const el=PANEL_EL.map;if(el&&MAP.nodes&&!MAP.from)mapFrames($('canvas',el),MAP.nodes,i=>MAP.nodes[i].r);}
-function mapHover(id){if(MAP.hover===id)return;MAP.hover=id;const el=PANEL_EL.map;if(el&&MAP.nodes&&!MAP.from)mapFrames($('canvas',el),MAP.nodes,i=>MAP.nodes[i].r);}
+function mapHl(k){if(MAP.hl===k)return;MAP.hl=k;const el=PANEL_EL.map;if(el&&MAP.nodes&&!MAP.from&&!MAP.fade)mapFrames($('canvas',el),MAP.nodes,i=>MAP.nodes[i].r);}
+function mapHover(id){if(MAP.hover===id)return;MAP.hover=id;const el=PANEL_EL.map;if(el&&MAP.nodes&&!MAP.from&&!MAP.fade)mapFrames($('canvas',el),MAP.nodes,i=>MAP.nodes[i].r);}
 function hitMap(cv,e){const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;const L=cv._rects||[];for(let i=L.length-1;i>=0;i--){const q=L[i];if(x>=q.x&&x<q.x+q.w&&y>=q.y&&y<q.y+q.h)return q;}return null;}
 /* plan — разбиение на ряды из прошлой раскладки: [[сколько плиток, вдоль ли ширины], …].
    С ним небольшое изменение значений только слегка меняет размеры, а не перекидывает плитки
@@ -1262,13 +1262,16 @@ function addRidge(r,s,h){const h4=4*h,wf=h4/r.w,hf=h4/r.h;s[2]+=wf*(r.x*2+r.w);s
    Подушки считаются попиксельно в отдельный холст, а заголовки, подписи и рамка выделения
    рисуются поверх — клик по плитке отзывается сразу, без пересчёта пикселей. */
 const MAP={sig:'',seq:-1,at:0,sm:new Map(),ghost:new Map(),order:new Map(),nodes:null,from:null,t0:0,raf:0,last:0,off:document.createElement('canvas')};
-const MAP_ANIM=450,MAP_TAU=3000,MAP_HDR=18,MAP_DEAD=4;
+const MAP_ANIM=450,MAP_TAU=3000,MAP_HDR=18,MAP_DEAD=4,MAP_GHOST_TAU=450,MAP_FADE=280;
 const easeOut=t=>1-Math.pow(1-t,3);
 function mapLayout(w,h){
   const root=mapTree(),now=performance.now(),first=!MAP.sm.size;
   /* нагрузка скачет сильнее памяти — сглаживаем дольше; средняя за часы и вовсе не должна «дышать» каждую секунду */
   const tau=mapMetric()==='mem'?MAP_TAU:S.range.ms>SPARKN*1000?20000:2*MAP_TAU;
-  const a=first?1:1-Math.exp(-Math.max(0,now-MAP.at)/tau);MAP.at=now;
+  const dt=first?0:Math.max(0,now-MAP.at),a=first?1:1-Math.exp(-dt/tau);MAP.at=now;
+  /* призрак завершившегося процесса гаснет за 1–2 замера, а не по сглаживанию живых плиток: с τ 3–6 с
+     большая плитка уменьшалась ~15 с, её дети по одной выпадали из видимых, и раскладка прыгала каждую секунду */
+  const ag=1-Math.exp(-dt/MAP_GHOST_TAU);
   const sm=new Map(),byKey=new Map(),par=new Map();
   const smooth=(m,pk)=>{const p=MAP.sm.has(m.key)?MAP.sm.get(m.key):m.self?MAP.sm.get('p'+m.key.slice(1)):undefined;m.raw=m.v;m.v=p!=null?p+(m.v-p)*a:first?m.v:m.v*a;
     sm.set(m.key,m.v);byKey.set(m.key,m);if(pk)par.set(m.key,pk);if(m.kids)m.kids.forEach(k=>smooth(k,m.key));};
@@ -1277,7 +1280,7 @@ function mapLayout(w,h){
   const ghost=new Map(),floor=(root.v||1)*1e-3;
   for(const [k,g] of [...MAP.ghost,...[...(MAP.byKey||new Map())].filter(([k])=>!MAP.ghost.has(k))]){
     if(byKey.has(k)||k==='root')continue;const pk=g.pk||MAP.par&&MAP.par.get(k),parent=pk&&byKey.get(pk),p=MAP.sm.get(k);
-    if(!parent||!parent.kids||p==null)continue;const v=p*(1-a);if(v<floor)continue;
+    if(!parent||!parent.kids||p==null)continue;const v=p*(1-ag);if(v<floor)continue;
     const t=g.t||{key:k,label:g.label,node:g.node,rep:g.rep,cat:g.cat,self:g.self,raw:0};
     const item={...t,v,raw:0,ghost:1};parent.kids.push(item);sm.set(k,v);ghost.set(k,{t,pk});}
   MAP.sm=sm;MAP.ghost=ghost;MAP.byKey=new Map([...byKey].map(([k,m])=>[k,{label:m.label,node:m.node,rep:m.rep,cat:m.cat,self:m.self}]));MAP.par=par;
@@ -1367,39 +1370,42 @@ function mapRectFn(nodes){
    Правый и нижний пиксель плитки — тёмная граница: соседние плитки разделены ровно одной
    чёткой линией (как в WizTree), даже если они одного цвета. */
 const MAP_LINE=0xff121212; // цвет всех линий сетки (ABGR)
-/* flat — кадры анимации: плитки ровным цветом, но в полном разрешении (половинное размывало сетку
-   до 2 px и давало тёмные дыры); подушки дорисовываются в последнем кадре */
-function mapPaint(cv,nodes,rect,scale,flat){
-  const w=cv.clientWidth,h=cv.clientHeight,k=(devicePixelRatio||1)*scale;
+/* Подушка плитки зависит только от положения точки внутри неё (u, v от 0 до 1), а не от размера:
+   нормаль nx = 4H·(2u−1), ny = 4H·(2v−1). Поэтому она считается один раз в две текстуры 128×128, а
+   каждая плитка — заливка цветом и текстуры поверх, их растягивает видеокарта: «умножение» на min(I, 1)
+   затемняет, «осветление» (color-dodge) на 1 − 1/I добавляет яркость в центре, где I > 1. Вместе это
+   ровно цвет × I с обрезкой по 255 в конце, как в прежнем попиксельном расчёте.
+   Раньше каждый кадр считал освещение для каждого пикселя карты: 12 мс на 0,4 Мпикс, 40–50 мс на
+   большом экране — анимация забирала весь поток, и окно проседало по FPS. */
+const [CUSH_MUL,CUSH_DODGE]=(()=>{const N=128,mk=()=>{const c=document.createElement('canvas');c.width=c.height=N;return c;},M=mk(),D=mk();
+  const xm=M.getContext('2d'),xd=D.getContext('2d'),im=xm.createImageData(N,N),id=xd.createImageData(N,N),[Lx,Ly,Lz]=CUSH.L,h4=4*CUSH.H;
+  for(let j=0;j<N;j++){const ny=h4*(2*(j+.5)/N-1);for(let i=0;i<N;i++){const nx=h4*(2*(i+.5)/N-1);
+    let ca=(nx*Lx+ny*Ly+Lz)/Math.sqrt(nx*nx+ny*ny+1);if(ca<0)ca=0;const I=(CUSH.IA+(1-CUSH.IA)*ca)*CUSH.BR,o=(j*N+i)*4;
+    im.data[o]=im.data[o+1]=im.data[o+2]=Math.round(Math.min(I,1)*255);im.data[o+3]=255;
+    id.data[o]=id.data[o+1]=id.data[o+2]=Math.round(Math.max(0,1-1/I)*255);id.data[o+3]=255;}}
+  xm.putImageData(im,0,0);xd.putImageData(id,0,0);return [M,D];})();
+function mapPaint(cv,nodes,rect){
+  const w=cv.clientWidth,h=cv.clientHeight,k=devicePixelRatio||1;
   const PW=Math.max(1,Math.round(w*k)),PH=Math.max(1,Math.round(h*k)),off=MAP.off;
   if(off.width!==PW||off.height!==PH){off.width=PW;off.height=PH;}
-  const ox=off.getContext('2d'),[Lx,Ly,Lz]=CUSH.L;
-  if(!MAP.img||MAP.img.width!==PW||MAP.img.height!==PH)MAP.img=ox.createImageData(PW,PH);
-  const img=MAP.img,d=new Uint32Array(img.data.buffer);MAP.draft=scale<1||!!flat;
-  d.fill(MAP_LINE);
-  const IA=CUSH.IA,BR=CUSH.BR,bw=Math.max(1,Math.round(k)),px8=(r,g,b)=>(0xff000000|(b>255?255:b|0)<<16|(g>255?255:g|0)<<8|(r>255?255:r|0))>>>0;
+  const x=off.getContext('2d');MAP.draft=false;
+  x.setTransform(1,0,0,1,0,0);x.globalCompositeOperation='source-over';x.imageSmoothingEnabled=true;
+  x.fillStyle='#121212';x.fillRect(0,0,PW,PH); // цвет всех линий сетки
+  const bw=Math.max(1,Math.round(k));
+  const tiles=[];
   for(let i=0;i<nodes.length;i++){
     const n=nodes[i];if(n.head)continue;const r=rect(i);
     const x0=Math.max(0,Math.round(r.x*k)),x1=Math.min(PW,Math.round((r.x+r.w)*k)),y0=Math.max(0,Math.round(r.y*k)),y1=Math.min(PH,Math.round((r.y+r.h)*k));
-    if(x1<=x0||y1<=y0)continue;
-    const s=[0,0,0,0];addRidge({x:r.x,y:r.y,w:Math.max(r.w,.5),h:Math.max(r.h,.5)},s,CUSH.H);
-    const R=n.rgb[0],G=n.rgb[1],B=n.rgb[2],s0=2*s[0],s1=2*s[1],s2=s[2],s3=s[3];
-    const xe=x1-x0>bw?x1-bw:x1,ye=y1-y0>bw?y1-bw:y1,line=MAP_LINE; // линия по каждой оси отдельно — тонкая полоска не сливается с соседом
-    for(let py=y0;py<y1;py++){
-      let o=py*PW+x0;
-      if(py>=ye){d.fill(line,o,o+(x1-x0));continue;}
-      if(flat){d.fill(px8(R*.97,G*.97,B*.97),o,o+(xe-x0));o+=xe-x0;if(xe<x1)d.fill(line,o,o+(x1-xe));continue;}
-      const ny=-(s1*(py+.5)/k+s3),ny2=ny*ny+1,cy=ny*Ly+Lz;
-      for(let px=x0;px<xe;px++,o++){
-        const nx=-(s0*(px+.5)/k+s2);
-        let ca=(nx*Lx+cy)/Math.sqrt(nx*nx+ny2);if(ca<0)ca=0;
-        const I=(IA+(1-IA)*ca)*BR;
-        d[o]=px8(R*I,G*I,B*I);
-      }
-      if(xe<x1)d.fill(line,o,o+(x1-xe));
-    }
+    /* правый и нижний пиксель плитки — линия сетки (по каждой оси отдельно: тонкая полоска не сливается с соседом) */
+    const xe=x1-x0>bw?x1-bw:x1,ye=y1-y0>bw?y1-bw:y1;if(xe<=x0||ye<=y0)continue;
+    x.fillStyle=`rgb(${n.rgb[0]},${n.rgb[1]},${n.rgb[2]})`;x.fillRect(x0,y0,xe-x0,ye-y0);
+    tiles.push(x0,y0,xe-x0,ye-y0);
   }
-  ox.putImageData(img,0,0);
+  x.globalCompositeOperation='multiply';
+  for(let i=0;i<tiles.length;i+=4)x.drawImage(CUSH_MUL,tiles[i],tiles[i+1],tiles[i+2],tiles[i+3]);
+  x.globalCompositeOperation='color-dodge';
+  for(let i=0;i<tiles.length;i+=4)x.drawImage(CUSH_DODGE,tiles[i],tiles[i+1],tiles[i+2],tiles[i+3]);
+  x.globalCompositeOperation='source-over';
 }
 const MAP_HEAD=['#262626','#323232','#3e3e3e','#4a4a4a']; // шаг 12 — соседние уровни различимы на глаз
 /* текст, не влезающий по ширине, — с многоточием, а не обрезанный посреди буквы */
@@ -1439,7 +1445,7 @@ function mapCompose(cv,nodes,rect){
     /* подпись: имя и размер от 70×32, только имя — от 40×16 */
     const two=r.w>70&&r.h>32;if(n.head||!(two||r.w>40&&r.h>16))continue;
     const q=D(r),lt=darkText(n.rgb),mw=q.w-2*pad-L;
-    x.save();x.fillStyle=lt?'#111':'#fff';if(!lt&&!MAP.draft){x.shadowColor='rgba(0,0,0,.85)';x.shadowBlur=3*dpr;} // в кадрах анимации без тени — дорого
+    x.save();x.fillStyle=lt?'#111':'#fff';if(!lt&&!MAP.from){x.shadowColor='rgba(0,0,0,.85)';x.shadowBlur=3*dpr;} // в кадрах анимации без тени — дорого
     x.fillText(fitText(x,m.self?`${m.label} · сам`:n.pre?`${n.pre} · ${m.label}`:m.label,mw),q.x+pad+L,two?q.y+Math.round(12*dpr):q.y+q.h/2);
     if(two){x.fillStyle=lt?'rgba(0,0,0,.72)':'rgba(255,255,255,.85)';x.fillText(fitText(x,mapFmt(m.raw),mw),q.x+pad+L,q.y+Math.round(27*dpr));}x.restore();
   }
@@ -1462,15 +1468,37 @@ function mapFrames(cv,nodes,rect){
   if(sel)frame(sel,2*L,'#fff');
   if(hov)frame(hov,L,'rgba(255,255,255,.95)');
 }
+/* плитка появилась или пропала — строение другое, и перетекать геометрией нельзя (плитки летели бы
+   друг через друга с чёрными дырами). Раньше карта в этот момент прыгала; теперь старая картинка
+   за 0,28 с растворяется в новой */
+function mapFadeStart(cv){
+  const F=MAP.fadeCv||(MAP.fadeCv=document.createElement('canvas'));
+  if(!cv.width||!cv.height)return;
+  if(F.width!==cv.width||F.height!==cv.height){F.width=cv.width;F.height=cv.height;}
+  const x=F.getContext('2d');x.setTransform(1,0,0,1,0,0);x.globalAlpha=1;x.drawImage(cv,0,0);MAP.fade=performance.now();
+}
+function mapFadeStep(){
+  cancelAnimationFrame(MAP.fraf);
+  const step=now=>{
+    const el=PANEL_EL.map,nodes=MAP.nodes;if(!MAP.fade||!vis(el)||!nodes){MAP.fade=0;return;}
+    const cv=$('canvas',el),t=(now-MAP.fade)/MAP_FADE;
+    mapFrames(cv,nodes,i=>nodes[i].r);
+    if(t>=1){MAP.fade=0;return;}
+    const x=cv.getContext('2d'),F=MAP.fadeCv;
+    if(F&&F.width===cv.width&&F.height===cv.height){x.globalAlpha=1-easeOut(clamp(t,0,1));x.drawImage(F,0,0);x.globalAlpha=1;}
+    MAP.fraf=requestAnimationFrame(step);
+  };
+  MAP.fraf=requestAnimationFrame(step);
+}
 function mapAnimate(){
   cancelAnimationFrame(MAP.raf);
   const step=now=>{
     const el=PANEL_EL.map,nodes=MAP.nodes;if(!vis(el)||!nodes||!MAP.from){MAP.from=null;return;}
     const cv=$('canvas',el);
-    if(now-MAP.t0>=MAP_ANIM){MAP.from=null;const r=i=>nodes[i].r;mapPaint(cv,nodes,r,1);mapCompose(cv,nodes,r);return;}
+    if(now-MAP.t0>=MAP_ANIM){MAP.from=null;const r=i=>nodes[i].r;mapPaint(cv,nodes,r);mapCompose(cv,nodes,r);return;}
     /* кадры — с подушками, как и неподвижная карта: плоские кадры на 0,45 с «гасили» тени при каждом сдвиге
        (≈ 8 мс на кадр при 1300×700) */
-    if(now-MAP.last>=30){MAP.last=now;const r=mapRectFn(nodes);mapPaint(cv,nodes,r,1);mapCompose(cv,nodes,r);}
+    {const r=mapRectFn(nodes);mapPaint(cv,nodes,r);mapCompose(cv,nodes,r);}
     MAP.raf=requestAnimationFrame(step);
   };
   MAP.raf=requestAnimationFrame(step);
@@ -1553,13 +1581,16 @@ function renderMap(force){
       const by=new Map(nodes.map(n=>[id(n),n]));
       for(const p of prev){const n=by.get(id(p));p.m=n.m;p.path=n.path;if(!p.head)p.rgb=n.rgb;}
       show=prev;
-      if(!MAP.from){const r=i=>prev[i].r;if(recolor||MAP.draft)mapPaint(cv,prev,r,1);mapCompose(cv,prev,r);}
+      if(!MAP.from){const r=i=>prev[i].r;if(recolor||MAP.draft)mapPaint(cv,prev,r);mapCompose(cv,prev,r);}
     }else{
       /* плитка появилась, пропала или соседи поменялись местами — сразу на место, без анимации */
       MAP.nodes=nodes;MAP.from=calm&&move>=MAP_DEAD?from:null;
       const r=i=>nodes[i].r;
-      if(MAP.from){MAP.t0=performance.now();MAP.last=0;mapAnimate();}
-      else{cancelAnimationFrame(MAP.raf);mapPaint(cv,nodes,r,1);mapCompose(cv,nodes,r);}
+      if(MAP.from){MAP.fade=0;MAP.t0=performance.now();MAP.last=0;mapAnimate();}
+      else{cancelAnimationFrame(MAP.raf);
+        /* строение сменилось на той же карте (не смена ресурса, приближения или размера) — растворение, а не прыжок */
+        const fade=prev&&!fresh&&cv.width>0;if(fade)mapFadeStart(cv);
+        mapPaint(cv,nodes,r);mapCompose(cv,nodes,r);if(fade)mapFadeStep();}
     }
     /* двойной клик — приблизить группу плитки (приложение или процесс с дочерними), если внутри больше
        одной плитки; иначе «приблизить нельзя» (раньше одиночный процесс открывался одной плиткой на всю карту) */
@@ -1572,7 +1603,7 @@ function renderMap(force){
     if(MAP.mouse){const h=hitMap(cv,MAP.mouse);mapHover(h&&h.id);}
     mapChrome(el); // «крошки» и легенда — по новой раскладке (имя приближенного, суммы программ); высота у них постоянная
     mapStatus();
-  }else if(MAP.nodes&&!MAP.from){const r=i=>MAP.nodes[i].r;if(MAP.draft){mapPaint(cv,MAP.nodes,r,1);mapCompose(cv,MAP.nodes,r);}else mapFrames(cv,MAP.nodes,r);} // выбор — только рамки
+  }else if(MAP.nodes&&!MAP.from){const r=i=>MAP.nodes[i].r;if(MAP.draft){mapPaint(cv,MAP.nodes,r);mapCompose(cv,MAP.nodes,r);}else mapFrames(cv,MAP.nodes,r);} // выбор — только рамки
 }
 
 /* =================================================================
