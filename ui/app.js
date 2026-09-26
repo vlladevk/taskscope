@@ -25,6 +25,10 @@ const ctToMs=ct=>(ct-116444736000000000)/10000;
 
 /* ----- связь с движком ----- */
 const TAURI=window.__TAURI__;
+/* ошибки окна — в журнал (%LOCALAPPDATA%\tm\logs): иначе в приложении без консоли их не найти */
+function logUi(msg){try{rpc('log',{msg:String(msg).slice(0,2000)}).catch(()=>{});}catch(e){}}
+addEventListener('error',e=>logUi(`${e.message} @ ${e.filename||''}:${e.lineno||0}:${e.colno||0}${e.error&&e.error.stack?'\n'+e.error.stack:''}`));
+addEventListener('unhandledrejection',e=>{const r=e.reason;const m=String(r&&r.message||r);if(/Failed to fetch|NetworkError|нет связи/i.test(m))return;logUi('promise: '+m+(r&&r.stack?'\n'+r.stack:''));});
 async function rpc(method,params={}){
   if(TAURI)return TAURI.core.invoke('rpc',{method,params});
   const r=await fetch('/rpc',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({method,params})});
@@ -1475,29 +1479,133 @@ function nodeSeries(n,m){
    Главная зона: вкладка отдельного процесса («открыть отдельно»)
    ================================================================= */
 const PROC_TABS=new Map();
+/* Вкладка процесса — как окно свойств в System Informer: обзор (графики, файл, подпись),
+   модули, потоки, дескрипторы, окружение. Разделы грузятся по запросу, потоки — раз в 2 с */
+const PT_VIEWS=[['over','Обзор'],['modules','Модули'],['threads','Потоки'],['handles','Дескрипторы'],['env','Окружение']];
+const THREAD_STATE={running:'выполняется',ready:'готов',waiting:'ожидает',suspended:'приостановлен',standby:'на очереди',terminated:'завершён',other:'—'};
 function mountProcTab(el,id){
   PROC_TABS.set(id,el);
-  el.innerHTML='<div class="scroll pt-body"></div>';
-  el.addEventListener('click',e=>{const j=e.target.closest('[data-go]');if(j)select(j.dataset.go,true);});
+  el._pt={view:'over',data:{},err:{},at:{},busy:{},q:'',named:true,prevT:null};
+  el.innerHTML=`<div class="pt-bar"><div class="seg pt-seg">${PT_VIEWS.map(([k,t])=>`<button data-v="${k}">${t}</button>`).join('')}</div>
+    <input class="search pt-q" placeholder="Фильтр…" style="display:none"><span class="caption pt-cnt"></span><div class="spacer"></div>
+    <label class="chk pt-named" style="display:none"><input type="checkbox" checked> только с именами</label><button class="btn subtle pt-ref" style="display:none">Обновить</button></div>
+    <div class="scroll pt-body"></div>`;
+  el.addEventListener('click',e=>{
+    const j=e.target.closest('[data-go]');if(j)return select(j.dataset.go,true);
+    const v=e.target.closest('.pt-seg [data-v]');if(v){el._pt.view=v.dataset.v;$('.pt-body',el)._m=0;renderProcTab(id,el,false);return;}
+    if(e.target.closest('.pt-ref')){el._pt.at[el._pt.view]=0;ptLoad(id,el,el._pt.view);return;}
+    const vt=e.target.closest('[data-vt]');if(vt)return openVirusTotal(vt.dataset.vt);
+  });
+  $('.pt-q',el).addEventListener('input',e=>{el._pt.q=e.target.value.trim().toLowerCase();ptTable(id,el);});
+  $('.pt-named input',el).addEventListener('change',e=>{el._pt.named=e.target.checked;ptTable(id,el);});
   el.addEventListener('mousemove',e=>{const cv=e.target.closest('canvas');if(cv)chartHover(cv,cv.nextElementSibling,e);});
   el.addEventListener('mouseout',e=>{if(e.target.tagName==='CANVAS'){S.hoverT=null;e.target.nextElementSibling.style.display='none';renderCharts();}});
 }
-function renderProcTabs(chartsOnly){
-  for(const [id,el] of PROC_TABS){
-    if(!vis(el))continue;const n=NODES.get(id),body=$('.pt-body',el);
-    if(!n){body.innerHTML='<div class="empty">Процесс завершился, данных больше нет</div>';continue;}
-    if((!chartsOnly||!body._m)&&!(body._m&&selIn(body))){
-      body._m=1;
-      body.innerHTML=`<div class="dt-h">${ico(n,1)}<div><h3>${esc(nameOf(n))}</h3><div class="caption">PID ${n.pid} · ${esc(n.exe)} · ${n.alive?'работает '+agoStr((NOW-ctToMs(n.ct))/1000):'завершён'} · вместе с дочерними: ${desc(n).length}</div></div></div>
-        <div class="crumbs"><span class="caption" style="margin-right:4px">Кто запустил:</span>${ancestors(n).map(a=>`<a data-go="${esc(a.id)}">${esc(nameOf(a))}</a>`).join('<span class="sep">›</span>')||'<span class="caption">система</span>'}</div>
-        <div class="pt-grid">${[['cpu','ЦП'],['mem','Память'],['dsk','Диск']].map(([m,t])=>`<div class="cell"><div class="caption"><span class="pt-cap" data-m="${m}">${t}</span></div><canvas data-m="${m}"></canvas><div class="pop"></div></div>`).join('')}</div>`;
-    }
-    for(const cv of body.querySelectorAll('canvas')){const m=cv.dataset.m,c=COLS.find(c=>c.m===m);
-      const s=nodeSeries(n,m);const cap=body.querySelector(`.pt-cap[data-m="${m}"]`);
-      if(cap)cap.textContent=`${c.t}${s&&s.caption?' · '+s.caption:''} · ${S.range.label}`;
-      if(!s){drawTS(cv,{series:[],t0:NOW,step:1000,fmt:c.fmt,empty:'Загружаю историю…'});continue;}
-      drawTS(cv,{series:[{name:c.t,color:PAL[{cpu:0,mem:2,dsk:4}[m]],data:s.data}],t0:s.t0,step:s.step,missing:s.missing,fmt:c.fmt,fill:true});}
+function ptLoad(id,el,what){
+  const n=NODES.get(id),st=el._pt;if(!n||!n.alive||st.busy[what])return;
+  st.busy[what]=true;
+  rpc('inspect',{pid:n.pid,create_time:n.ct,what}).then(d=>{
+    if(what==='threads'){const now=performance.now(),prev=st.prevT;const m=new Map();
+      for(const t of d.threads){const tot=t.kernel+t.user;const p=prev&&prev.m.get(t.tid);t.cpu=p!=null?Math.max(0,(tot-p)/((now-prev.t)*1e4*CPUS)*100):null;m.set(t.tid,tot);}
+      st.prevT={t:now,m};}
+    st.data[what]=d;st.err[what]=null;
+  }).catch(e=>{st.err[what]=String(e.message||e);}).finally(()=>{st.busy[what]=false;st.at[what]=Date.now();if(st.view===what)ptTable(id,el);});
+}
+/* подпись файла: один запрос на путь, результат держим до перезапуска окна */
+const SIGS=new Map();
+const SIG_TXT={signed:['подписан','ok'],unsigned:['без подписи','yel'],untrusted:['подпись недоверенная','red'],expired:['сертификат истёк','yel'],revoked:['сертификат отозван','red'],bad_digest:['подпись не совпадает с файлом — файл изменён','red'],distrusted:['подписавший недоверенный','red'],error:['подпись не проверить','yel']};
+function sigOf(path){
+  if(!path)return null;const k=path.toLowerCase();
+  if(!SIGS.has(k)){SIGS.set(k,{busy:true});rpc('signature',{path}).then(r=>SIGS.set(k,r)).catch(e=>SIGS.set(k,{error:String(e.message||e)})).finally(()=>{renderDetailsSoft();renderProcTabs(true);});}
+  return SIGS.get(k);
+}
+function sigHTML(path){
+  const s=sigOf(path);if(!s)return '';if(s.busy)return '<span class="caption">проверяю…</span>';
+  if(s.error)return `<span class="caption">${esc(s.error)}</span>`;
+  const [t,c]=SIG_TXT[s.status]||SIG_TXT.error;
+  return `<span class="sig ${c}">${t}</span>${s.signer?` · ${esc(s.signer)}`:''}${s.catalog?' <span class="caption">(каталог Windows)</span>':''}${s.sha256?` · <a class="lnk" data-vt="${s.sha256}" title="SHA-256 ${s.sha256}">проверить на VirusTotal</a>`:''}`;
+}
+function openVirusTotal(h){
+  if(!/^[0-9a-f]{64}$/i.test(h))return;
+  if(TAURI)rpc('web',{sha256:h}).catch(e=>toast(e.message||String(e),'red'));
+  else window.open('https://www.virustotal.com/gui/file/'+h,'_blank','noopener');
+}
+/* детали справа перерисовываются только при смене процесса — подпись дописываем на месте */
+function renderDetailsSoft(){const d=$('#details');const sg=d&&d.querySelector('.d-sig');const n=NODES.get(S.sel);if(sg&&n){const i=INFO.get(n.id)||{},p=(n.full&&n.full.path)||i.path;setHTML(sg,sigHTML(p));}}
+function ptTable(id,el){
+  const st=el._pt,body=$('.pt-body',el),v=st.view;if(v==='over')return;
+  const d=st.data[v],q=st.q;
+  if(st.err[v]&&!d){body.innerHTML=`<div class="empty">${esc(st.err[v])}${/администратор/.test(st.err[v])&&!isAdmin()?ADMIN_LINK:''}</div>`;$('.pt-cnt',el).textContent='';return;}
+  if(!d){body.innerHTML='<div class="empty">Загружаю…</div>';return;}
+  const has=s=>!q||String(s).toLowerCase().includes(q);
+  let head,rows,cnt,note='';
+  if(v==='modules'){
+    const l=d.modules.filter(m=>has(m.name+' '+m.path));cnt=`${l.length} из ${d.modules.length}`;
+    head='<col style="width:200px"><col style="width:150px"><col style="width:84px"><col>|Модуль|Адрес|Размер|Путь';
+    rows=l.map(m=>`<tr><td>${esc(m.name)}</td><td class="mono">0x${m.base.toString(16)}</td><td>${fmtMem(m.size/MB)}</td><td class="mono" title="${esc(m.path)}">${esc(m.path)}</td></tr>`);
+  }else if(v==='threads'){
+    const l=d.threads.filter(t=>has(t.tid+' '+(t.start||'')+' '+t.state)).sort((a,b)=>(b.cpu||0)-(a.cpu||0)||(b.kernel+b.user)-(a.kernel+a.user));cnt=`${l.length} из ${d.threads.length}`;
+    head='<col style="width:70px"><col style="width:64px"><col style="width:84px"><col style="width:90px"><col style="width:60px"><col style="width:116px"><col>|TID|ЦП|Время ЦП|Переключ.|Приор.|Состояние|Точка входа';
+    rows=l.map(t=>`<tr><td class="num">${t.tid}</td><td>${t.cpu==null?'<span class="caption">…</span>':t.cpu<.05?'<span style="color:var(--text-4)">—</span>':fmtPct(t.cpu)}</td><td>${agoStr((t.kernel+t.user)/1e7)}</td><td class="num">${t.switches.toLocaleString('ru')}</td><td class="num">${t.priority}</td><td>${THREAD_STATE[t.state]||t.state}</td><td class="mono">${esc(t.start||'')}</td></tr>`);
+    note='<p class="caption pt-note">ЦП потока — доля всего процессора, как у процессов. Точка входа — модуль и смещение функции, с которой поток начался.</p>';
+  }else if(v==='handles'){
+    const l=d.list.filter(h=>(!st.named||h.name)&&has(h.type+' '+h.name));cnt=`${l.length} из ${d.total}`;
+    head='<col style="width:130px"><col><col style="width:80px"><col style="width:100px">|Тип|Имя|Дескр.|Доступ';
+    rows=l.slice(0,3000).map(h=>`<tr><td>${esc(h.type)}</td><td class="mono" title="${esc(h.name)}">${esc(h.name)||'<span style="color:var(--text-4)">—</span>'}</td><td class="mono">0x${h.handle.toString(16)}</td><td class="mono">0x${h.access.toString(16).padStart(8,'0')}</td></tr>`);
+    note=`<p class="caption pt-note">${d.by_type.slice(0,12).map(([k,c])=>`${esc(k)} ${c}`).join(' · ')}${d.names?'':' — имена объектов недоступны: нужны права администратора'}${l.length>3000?' · показаны первые 3000':''}</p>`;
+  }else{
+    const l=d.vars.filter(([k,x])=>has(k+'='+x));cnt=`${l.length} из ${d.vars.length}`;
+    head='<col style="width:32%"><col>|Переменная|Значение';
+    rows=l.map(([k,x])=>`<tr><td class="mono">${esc(k)}</td><td class="mono" title="${esc(x)}">${esc(x)}</td></tr>`);
+    note=`<p class="caption pt-note">Папка: <span class="mono">${esc(d.cwd)}</span> · окружение, с которым процесс работает сейчас; здесь бывают пароли и токены.</p>`;
   }
+  $('.pt-cnt',el).textContent=cnt+(st.err[v]?' · '+st.err[v]:'');
+  const [cols,...ths]=head.split('|');
+  const wrap=body.querySelector('.pt-tbl'),top=body.scrollTop;
+  body.innerHTML=`${note}<table class="tbl left pt-tbl"><colgroup>${cols}</colgroup><thead><tr>${ths.map(t=>`<th style="cursor:default;text-align:left">${t}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${ths.length}" class="caption">Ничего не найдено</td></tr>`}</tbody></table>`;
+  if(wrap)body.scrollTop=top; /* обновление потоков не сбрасывает прокрутку */
+}
+function renderProcTab(id,el,chartsOnly){
+  const st=el._pt,n=NODES.get(id),body=$('.pt-body',el);
+  el.querySelectorAll('.pt-seg [data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===st.view));
+  const tbl=st.view!=='over';
+  /* display, а не hidden: у .btn и .chk свой display, он перебивает атрибут hidden */
+  const show=(sel,on)=>{$(sel,el).style.display=on?'':'none';};
+  show('.pt-q',tbl);show('.pt-ref',tbl&&st.view!=='threads');show('.pt-named',st.view==='handles');if(!tbl)$('.pt-cnt',el).textContent='';
+  show('.pt-seg',!(n&&PSEUDO[n.pid]));
+  if(!n){body.innerHTML='<div class="empty">Процесс завершился, данных больше нет</div>';return;}
+  if(tbl){
+    if(!n.alive){if(!st.data[st.view])body.innerHTML='<div class="empty">Процесс завершился</div>';return;}
+    /* потоки — живые, раз в 2 с; остальное — по кнопке «Обновить» */
+    const age=Date.now()-(st.at[st.view]||0);
+    if((!st.data[st.view]&&!st.err[st.view])||(st.view==='threads'&&age>2000))ptLoad(id,el,st.view);
+    if(body._m!==2){body._m=2;ptTable(id,el);}
+    return;
+  }
+  if((!chartsOnly||body._m!==1)&&!(body._m===1&&selIn(body))){
+    body._m=1;
+    const i=INFO.get(n.id)||{},f=n.full||{},path=f.path||i.path;
+    body.innerHTML=`<div class="dt-h">${ico(n,1)}<div><h3>${esc(nameOf(n))}</h3><div class="caption">${PSEUDO[n.pid]?'нагрузка ядра Windows, не процесс':`PID ${n.pid} · ${esc(n.exe)} · ${n.alive?'работает '+agoStr((NOW-ctToMs(n.ct))/1000):'завершён'} · вместе с дочерними: ${desc(n).length}`}</div></div></div>
+      ${PSEUDO[n.pid]?'':`<div class="crumbs"><span class="caption" style="margin-right:4px">Кто запустил:</span>${ancestors(n).map(a=>`<a data-go="${esc(a.id)}">${esc(nameOf(a))}</a>`).join('<span class="sep">›</span>')||'<span class="caption">система</span>'}</div>`}
+      <div class="pt-grid">${(PSEUDO[n.pid]?[['cpu','ЦП']]:[['cpu','ЦП'],['mem','Память'],['dsk','Диск']]).map(([m,t])=>`<div class="cell"><div class="caption"><span class="pt-cap" data-m="${m}">${t}</span></div><canvas data-m="${m}"></canvas><div class="pop"></div></div>`).join('')}</div>
+      ${PSEUDO[n.pid]?'':`<dl class="kv pt-kv">
+        <dt>Файл</dt><dd class="mono">${path?esc(path):'нет доступа — нужны права администратора'}</dd>
+        ${path?`<dt>Подпись</dt><dd class="pt-sig">${sigHTML(path)}</dd>`:''}
+        ${f.cmdline?`<dt>Командная строка</dt><dd class="mono">${esc(f.cmdline)}</dd>`:''}
+        ${i.description?`<dt>Описание</dt><dd>${esc(i.description)}</dd>`:''}${i.company?`<dt>Издатель</dt><dd>${esc(i.company)}</dd>`:''}
+        <dt>Потоки · дескрипторы</dt><dd>${n.threads} · ${(n.handles||0).toLocaleString('ru')}</dd>
+      </dl>`}`;
+    if(!n.full&&n.alive&&!PSEUDO[n.pid])info(n,true).then(()=>{body._m=0;renderProcTab(id,el,false);});
+  }
+  const sg=body.querySelector('.pt-sig');if(sg){const i=INFO.get(n.id)||{},p=(n.full&&n.full.path)||i.path;setHTML(sg,sigHTML(p));}
+  for(const cv of body.querySelectorAll('canvas')){const m=cv.dataset.m,c=COLS_ALL.find(c=>c.m===m);
+    const s=nodeSeries(n,m);const cap=body.querySelector(`.pt-cap[data-m="${m}"]`);
+    if(cap)cap.textContent=`${c.t}${s&&s.caption?' · '+s.caption:''} · ${S.range.label}`;
+    if(!s){drawTS(cv,{series:[],t0:NOW,step:1000,fmt:c.fmt,empty:'Загружаю историю…'});continue;}
+    drawTS(cv,{series:[{name:c.t,color:PAL[{cpu:0,mem:2,dsk:4}[m]],data:s.data}],t0:s.t0,step:s.step,missing:s.missing,fmt:c.fmt,fill:true});}
+}
+function renderProcTabs(chartsOnly){
+  for(const [id,el] of PROC_TABS){if(vis(el))renderProcTab(id,el,chartsOnly);}
 }
 function openProcTab(id){
   const n=NODES.get(id);if(!n)return;const pid='proc:'+id;
@@ -1926,6 +2034,7 @@ function renderDetails(){
      <dt>Запущен</dt><dd>${agoStr(Math.max(0,NOW-started)/1000)} назад · ${new Date(started).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</dd>
      ${i.description?`<dt>Описание</dt><dd>${esc(i.description)}</dd>`:''}
      <dt>Путь</dt><dd class="mono">${i.path?esc(i.path):`нет доступа — нужны права администратора.${isAdmin()?'':ADMIN_LINK}`}</dd>
+     ${i.path||f.path?`<dt>Подпись</dt><dd class="d-sig">${sigHTML(f.path||i.path)}</dd>`:''}
      ${f.cmdline?`<dt>Командная строка</dt><dd class="mono">${esc(f.cmdline)}</dd>`:''}
      ${i.company?`<dt>Издатель</dt><dd>${esc(i.company)} <span class="caption">(из свойств файла)</span></dd>`:''}
      <dt>ЦП всего</dt><dd>${agoStr(n.cpuMs/1000)}</dd>
@@ -1952,6 +2061,7 @@ function renderDetailChart(){
 }
 $('#details').addEventListener('click',e=>{
   if(e.target.closest('.d-max')){setMax('detail');return;}
+  const vt=e.target.closest('[data-vt]');if(vt){openVirusTotal(vt.dataset.vt);return;}
   const a=e.target.closest('[data-a]');
   if(a){if(a.dataset.a==='more'){const r=a.getBoundingClientRect();openMenu(r.left,r.bottom+4,[S.sel]);}else if(a.dataset.a==='open')openProcTab(S.sel);else act(a.dataset.a,[S.sel]);return;}
   const j=e.target.closest('[data-go]');if(j)select(j.dataset.go,true);
