@@ -13,7 +13,7 @@ const nf=(v,d=1)=>v.toFixed(d).replace('.',',');
 const MB=1048576;
 const fmtMem=mb=>mb>=1024?nf(mb/1024,mb>=10240?1:2)+' ГБ':mb>=10?Math.round(mb)+' МБ':nf(mb,1)+' МБ';
 const fmtPct=v=>v<0.05?'0 %':v<10?nf(v)+' %':Math.round(v)+' %';
-const fmtMBs=v=>v<0.005?'0 МБ/с':v<0.1?Math.round(v*1024)+' КБ/с':v<10?nf(v)+' МБ/с':Math.round(v)+' МБ/с';
+const fmtMBs=v=>v<0.005?'0':v<0.1?Math.round(v*1024)+' КБ/с':v<10?nf(v)+' МБ/с':Math.round(v)+' МБ/с';
 const fmtMbit=v=>v<0.005?'0 Мбит/с':v<0.1?Math.round(v*1000)+' Кбит/с':v<10?nf(v)+' Мбит/с':Math.round(v)+' Мбит/с';
 const hexA=(hex,a)=>{const n=parseInt(hex.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`;};
 const agoStr=s=>s<60?Math.round(s)+' с':s<3600?Math.round(s/60)+' мин':s<86400?Math.floor(s/3600)+' ч '+Math.round(s%3600/60)+' мин':Math.floor(s/86400)+' д '+Math.floor(s%86400/3600)+' ч';
@@ -369,6 +369,8 @@ async function info(n,full){
   return INFO.get(n.id);
 }
 async function act(a,ids){
+  /* прерывания и DPC — строки нагрузки ядра: действовать не над чем, кроме отдельной вкладки */
+  if(a!=='open')ids=ids.filter(id=>!PSEUDO[(NODES.get(id)||{}).pid]);
   const nodes=ids.map(id=>NODES.get(id)).filter(alive);if(!nodes.length)return;
   const n=nodes[0];
   if(a==='kill')return runAct('kill',nodes);
@@ -399,6 +401,9 @@ function openMenu(x,y,ids){
   const n=NODES.get(ids[0]);if(!n)return;menuIds=ids;
   const many=ids.length>1,sp=n.susp,hasKids=aliveKids(n).length>0;
   const it=[];
+  if(!many&&PSEUDO[n.pid]){
+    it.push({h:nameOf(n)},{t:'Открыть отдельной вкладкой',a:'open'});
+  }else{
   it.push({h:many?`Выбрано: ${ids.length}`:`${nameOf(n)} · PID ${n.pid}`});
   it.push({t:many?'Завершить выбранные':'Завершить',a:'kill',k:'Del',d:1});
   if(hasKids)it.push({t:'Завершить вместе с дочерними',a:'tree',k:'Shift+Del',d:1});
@@ -407,10 +412,11 @@ function openMenu(x,y,ids){
   it.push({t:'Перезапустить',a:'restart',d:1});
   it.push('-',{h:'Приоритет'},...['idle','below_normal','normal','above_normal','high'].map(p=>({t:PRIO_NAMES[p],a:'prio:'+p,c:n.prio===p})));
   it.push('-',{t:'Открыть отдельной вкладкой',a:'open'},{t:'Открыть расположение файла',a:'folder'},{t:'Копировать командную строку',a:'copycmd'},{t:'Что это за процесс?',a:'web'},{t:isProt(n)?'Снять защиту':'Защитить от завершения',a:'protect'});
+  }
   menu.innerHTML=it.map(i=>i==='-'?'<div class="sep"></div>':i.h?`<div class="mh">${esc(i.h)}</div>`:`<div class="mi${i.d?' danger':''}" data-a="${i.a}"><span>${i.c?'✓ ':''}${esc(i.t)}</span>${i.k?`<kbd>${i.k}</kbd>`:''}</div>`).join('');
   menu.style.display='block';const r=menu.getBoundingClientRect();
   menu.style.left=Math.min(x,innerWidth-r.width-8)+'px';menu.style.top=Math.max(8,Math.min(y,innerHeight-r.height-8))+'px';
-  if(!n.prio)info(n,true);
+  if(!n.prio&&!PSEUDO[n.pid])info(n,true);
 }
 const closeMenu=()=>{menu.style.display='none';menuIds=null;};
 document.addEventListener('pointerdown',e=>{if(!menu.contains(e.target))closeMenu();},true);
@@ -432,11 +438,13 @@ const stepStr=ms=>ms<60e3?Math.round(ms/1000)+' с':Math.round(ms/60e3)+' мин
 /* o: {series:[{name,color,data,key?,nodeId?}], t0, step, stacked, fmt, max, fill, missing} */
 function drawTS(cv,o){
   const [x,w,h]=prep(cv);if(!x)return;
-  const n=Math.max(2,o.series.reduce((m,s)=>Math.max(m,s.data.length),0)),padL=52,padR=6,padT=6,padB=20,W=w-padL-padR,H=h-padT-padB;
+  const n=Math.max(2,o.series.reduce((m,s)=>Math.max(m,s.data.length),0));
   let mx=0;
   for(let i=0;i<n;i++){let s=0;for(const se of o.series){const v=se.data[i]||0;s=o.stacked?s+v:Math.max(s,v);}mx=Math.max(mx,s);}
   const max=o.max||niceMax(mx*1.08||1);
   x.font='12px "Segoe UI Variable Text","Segoe UI",sans-serif';
+  /* слева — по самой широкой подписи шкалы: «375 МБ/с» не влезала в фиксированные 52 px */
+  const padL=Math.max(40,Math.ceil(Math.max(...[1,.75,.5,.25].map(k=>x.measureText(o.fmt(max*k)).width)))+12),padR=6,padT=6,padB=20,W=w-padL-padR,H=h-padT-padB;
   if(!o.series.length||(mx<1e-6&&!o.max)){x.fillStyle='rgba(255,255,255,.5442)';x.textAlign='center';x.textBaseline='middle';x.strokeStyle='#424650';x.beginPath();x.moveTo(padL,Math.round(padT+H)+.5);x.lineTo(padL+W,Math.round(padT+H)+.5);x.stroke();x.fillText(o.empty||'Нет активности за период',padL+W/2,padT+H/2);cv._g=null;return;}
   x.textBaseline='middle';x.strokeStyle='#424650';x.lineWidth=1;x.fillStyle='#c6c6cd';x.textAlign='right';
   const TK=H<90?2:4;for(let k=0;k<=TK;k++){const y=Math.round(padT+H-H*k/TK)+.5;x.beginPath();x.moveTo(padL,y);x.lineTo(padL+W,y);x.stroke();x.fillText(o.fmt(max*k/TK),padL-6,y);}
@@ -535,15 +543,19 @@ function resList(){
     {id:'cpu',name:'Процессор',m:'cpu',col:0,max:100,fmt:fmtPct,sub:SYSINFO&&SYSINFO.cpu_name,hist:['system','cpu'],
      now:()=>SYS.cpu,line:v=>`${fmtPct(v)} · ${procCount()} процессов`,
      keys:v=>[`${CPUS} логических процессоров`,`${procCount()} процессов`,`потоков ${SYS.threads.toLocaleString('ru')}`],
-     more:()=>[['Процессы',procCount()],['Потоки',SYS.threads.toLocaleString('ru')],['Дескрипторы',SYS.handles.toLocaleString('ru')],['Прерывания',fmtPct(SYS.interrupt_cpu||0)],['Отложенные вызовы (DPC)',fmtPct(SYS.dpc_cpu||0)],['Время работы',agoStr(SYS.uptime_ms/1000)],['Логических процессоров',CPUS],['Как считается',SYS.by_cycles?'по тактам процессора, как в System Informer':'по времени (счётчик тактов недоступен)']]},
+     more:()=>[['Дескрипторы',SYS.handles.toLocaleString('ru')],['Прерывания',fmtPct(SYS.interrupt_cpu||0)],['Отложенные вызовы (DPC)',fmtPct(SYS.dpc_cpu||0)],['Время работы',agoStr(SYS.uptime_ms/1000)]],
+     get note(){return SYS.by_cycles
+       ?'Загрузка считается по тактам процессора, как в System Informer: точнее, чем по времени, и не теряет процессы, завершившиеся между замерами. Прерывания и DPC — отдельными строками в списке процессов.'
+       :'Загрузка считается по времени процессора: счётчик тактов недоступен (виртуальная машина или больше 64 процессоров). Прерывания и DPC — отдельными строками в списке процессов.';}},
     {id:'mem',name:'Память',m:'mem',col:2,max:TOTAL_MB,fmt:fmtMem,sub:`${nf(TOTAL_MB/1024,1)} ГБ`,hist:['system','mem'],
      now:()=>m.used/MB,line:v=>`${nf(v/1024,1)} / ${nf(TOTAL_MB/1024,1)} ГБ (${m.load_pct} %)`,
      keys:v=>[`${m.load_pct} % занято`,`доступно ${fmtMem(m.available/MB)}`,`выделено ${nf(m.commit_used/MB/1024,1)} / ${nf(m.commit_limit/MB/1024,1)} ГБ`],
-     more:()=>[['Занято',fmtMem(m.used/MB)],['Доступно',fmtMem(m.available/MB)],['Выделено (commit)',fmtMem(m.commit_used/MB)],['Предел выделения',fmtMem(m.commit_limit/MB)],['Процессы (частная)',fmtMem(privateMB())],
+     more:()=>[['Занято',fmtMem(m.used/MB)],['Доступно',fmtMem(m.available/MB)],
+       ...(MEMD&&MEMD.standby?[['· резерв (кэш)',fmtMem(MEMD.standby/MB)],['· свободно',fmtMem((MEMD.free||0)/MB)]]:[]),['Выделено (commit)',fmtMem(m.commit_used/MB)],['Предел выделения',fmtMem(m.commit_limit/MB)],['Процессы (частная)',fmtMem(privateMB())],
        ...memParts().map(p=>[p.label,fmtMem(p.v)+(p.warn?' — больше обычного':'')]),
-       ...(MEMD&&MEMD.standby?[['Сжато (в памяти)',fmtMem((MEMD.compressed||0)/MB)],['Резерв — кэш, отдаётся программам по требованию',fmtMem(MEMD.standby/MB)],['Свободно',fmtMem((MEMD.free||0)/MB)]]:[]),
+       ...(MEMD&&MEMD.compressed?[['Сжатая память (входит в занятое)',fmtMem(MEMD.compressed/MB)]]:[]),
        ...POOLA.map(a=>['Тревога в ядре',a.text.split('. ')[0]+' — вкладка «Пул ядра»'])],
-     note:'«Память» процесса — его частный рабочий набор, как в диспетчере Windows. Остальное занятое: пулы ядра (память драйверов), файловый кэш и общая память программ — библиотеки DLL и общие буферы, которыми пользуются сразу несколько процессов (особенно браузеры и Electron-приложения). Невыгружаемый пул больше 1 ГБ бывает при утечке памяти в драйвере — какой драйвер растёт, видно во вкладке «Пул ядра».'},
+     note:'Доступно = резерв + свободно: резерв — файловый кэш из недавно прочитанных файлов, Windows отдаёт его программам по первому требованию. Сжатая память — страницы, которые Windows сжала вместо выгрузки на диск; она уже входит в «Занято». «Память» процесса — его частный рабочий набор, как в диспетчере Windows. Остальное занятое: пулы ядра (память драйверов), файловый кэш и общая память программ — библиотеки DLL и общие буферы, которыми пользуются сразу несколько процессов (особенно браузеры и Electron-приложения). Невыгружаемый пул больше 1 ГБ бывает при утечке памяти в драйвере — какой драйвер растёт, видно во вкладке «Пул ядра».'},
     ...GPUS.map(g=>{
       const short=g.name.replace(/\((TM|R)\)/g,'').replace(/^(NVIDIA GeForce|NVIDIA|AMD|Intel) /,'').trim();
       return {id:'gpu:'+g.key,name:GPUS.length>1?'Видеокарта · '+short:'Видеокарта',m:'gpu',gpu:g,col:3,max:100,fmt:fmtPct,sub:g.name,hist:['gpu','gpu','gpu:'+g.key],
@@ -552,11 +564,11 @@ function resList(){
         more:()=>[['Загрузка',fmtPct(g.util)],['Самый занятый блок',g.engine||'—'],['Выделенная видеопамять',`${fmtMem(g.mem_used/MB)} из ${fmtMem(g.mem_total/MB)}`],['Общая память',fmtMem(g.shared_used/MB)]],
         note:'Загрузка — самый занятый блок видеокарты (3D, видео, копирование, вычисления), как в диспетчере Windows. Процессу приписывается его самый занятый блок, поэтому сумма по процессам может быть больше загрузки карты. Разбивка по приложениям — общая для всех видеокарт.'};
     }),
-    {id:'disk',name:'Диск',m:'dsk',col:4,fmt:fmtMBs,sub:'чтение и запись диска процессами',hist:['system','io'],
+    {id:'disk',name:'Диск',m:'dsk',col:4,fmt:fmtMBs,hist:['system','io'],
      now:()=>ioR+ioW,line:v=>`↓ ${fmtMBs(ioR)} ↑ ${fmtMBs(ioW)}`,
      keys:v=>[`чтение ${fmtMBs(ioR)}`,`запись ${fmtMBs(ioW)}`],
      more:()=>[['Чтение',fmtMBs(ioR)],['Запись',fmtMBs(ioW)]],
-     note:'Сколько процессы читают и пишут: файлы на диске, каналы, устройства. Кэш файловой системы не учитывается — это нагрузка, которую создают программы.'},
+     note:'Сколько процессы читают и пишут на диск — по дисковым счётчикам ядра, как в System Informer: чтение из кэша, каналы и устройства сюда не входят. На старых Windows без этих счётчиков — весь ввод-вывод процесса.'},
   ];
   for(const a of NETS){
     const rx=a.rx_bps*8/1e6,tx=a.tx_bps*8/1e6,vpn=a.kind==='vpn';
@@ -713,7 +725,7 @@ $('#btabs').addEventListener('click',e=>{const b=e.target.closest('[data-t]');if
 const COLS_ALL=[
   {k:'cpu',t:'ЦП',m:'cpu',fmt:fmtPct,bar:100,w:76},
   {k:'mem',t:'Память',m:'mem',fmt:fmtMem,bar:4096,w:88},
-  {k:'dsk',t:'Диск',m:'dsk',fmt:fmtMBs,bar:50,w:100},
+  {k:'dsk',t:'Диск',m:'dsk',fmt:fmtMBs,bar:50,w:84},
   {k:'net',t:'Сеть',m:'net',fmt:fmtMbit,bar:100,w:96},
   {k:'gpu',t:'ГП',m:'gpu',fmt:fmtPct,bar:100,w:64},
 ];
@@ -812,6 +824,8 @@ function renderProcs(){
   const rows=procRows();
   if(!S.freeze||!S.order)S.order=new Map(rows.map((r,i)=>[r.n.id,i]));
   const core=100/CPUS;
+  /* имени — не меньше 180 px: в узкой панели таблица прокручивается вбок, а не сжимает имена до значка */
+  $('table',el).style.minWidth=180+COLS.reduce((a,c)=>a+c.w,0)+88+'px';
   /* рисуем только видимые строки (плюс запас): все ~400 строк делали каждый кадр
      перетаскивания границ и каждое обновление заметно тяжелее */
   const wrap=$('.tbl-wrap',el),hd=$('thead',el).offsetHeight||33;
@@ -823,13 +837,13 @@ function renderProcs(){
     const cells=COLS.map(c=>{const sh=S.incl?shortOf(n,c.m):0,vi=cur(n,c.m,S.incl&&kids.length>0)+sh,vo=cur(n,c.m,false),bw=clamp(vi/c.bar,0,1)*100;
       const other=aliveKids(n).length>kids.length;
       return {c:c.k===act?'act':'',t:kids.length||other?`Сам процесс: ${c.fmt(vo)}${kids.length?`\nС дочерними процессами приложения: ${c.fmt(cur(n,c.m,true))}`:''}${other?`\nСо всем, что запущено из него (другие приложения — отдельными строками): ${c.fmt(curAll(n,c.m))}`:''}${sh>=.05?`\nКороткие процессы, которые оно запускает (в списке не видны): ${c.fmt(sh)}`:''}`:'',
-        h:`<span class="cell-bar" style="width:${bw.toFixed(1)}%"></span><span class="cell-v">${vi<.05&&c.k!=='mem'?'<span style="color:var(--text-4)">—</span>':c.fmt(vi)}</span>`};});
+        h:`<span class="cell-bar" style="width:${bw.toFixed(1)}%"></span><span class="cell-v">${(vi<.05&&c.k!=='mem')||(PSEUDO[n.pid]&&c.k==='mem')?'<span style="color:var(--text-4)">—</span>':c.fmt(vi)}</span>`};});
     const sd=S.incl&&kids.length?sparkSum(n):rtail(n.rc,120);
     const spk=sparkSVG(sd,Math.max(core*1.2,5),PAL[0]);
     const nm=nameOf(n),showExe=nm.toLowerCase()!==n.exe.toLowerCase().replace(/\.exe$/,'');
     const name=`<div class="nm" style="padding-left:${d*18}px"><span class="tw${S.open.has(n.id)?' open':''}" style="${kids.length?'':'visibility:hidden'}">${CHEV}</span>${ico(n)}
         <span class="n1">${esc(nm)}</span>${lvl?`<span class="dot ${lvl}" title="${esc(iss.map(i=>i.txt).join('\n'))}"></span>`:w?`<span class="dot ring ${w}" title="Внутри есть проблема — раскройте"></span>`:''}
-        <span class="n2">${showExe?esc(n.exe)+' · ':''}${n.pid}${kids.length&&!S.open.has(n.id)?` · ${appDesc(n).length-1} доч.`:''}${from&&S.procMode==='tree'?` · из ${esc(from)}`:''}</span>
+        <span class="n2">${PSEUDO[n.pid]?'нагрузка ядра, не процесс':(showExe?esc(n.exe)+' · ':'')+n.pid}${kids.length&&!S.open.has(n.id)?` · ${appDesc(n).length-1} доч.`:''}${from&&S.procMode==='tree'?` · из ${esc(from)}`:''}</span>
         ${sp?'<span class="chip">приостановлен</span>':''}${isProt(n)?'<span class="chip">защищён</span>':''}${n.prio==='idle'||n.prio==='below_normal'?'<span class="chip">низкий приоритет</span>':''}</div>`;
     return {id:n.id,cls:`${S.sel===n.id||S.multi.has(n.id)?'sel':''}${sp?' susp':''}`,cells:[{h:name},...cells,{h:spk}]};
   }),{top:i0*ROW_H,bot:(rows.length-i1)*ROW_H,cols:COLS.length+2});
@@ -970,7 +984,7 @@ function mapTree(){
   /* процесс старше периода — его средняя за всю жизнь (время ЦП / возраст): точная и не дёргается,
      в отличие от последних 5 минут (после запуска движка там ещё пусто) */
   const rangeCpu=n=>{const age=Math.max(1,(NOW-(n.ct/1e4-11644473600000))/1000);return (n.cpuMs||0)/10/(Math.min(age,rangeS)*CPUS)*(age<=rangeS?Math.min(age,rangeS)/rangeS:1);};
-  const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?n.net:m==='cpu'&&long?rangeCpu(n):ownAvg(n,m);
+  const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?n.net:m==='cpu'&&long&&!PSEUDO[n.pid]?rangeCpu(n):ownAvg(n,m); /* у прерываний и DPC нет времени создания и накопленного ЦП — только история */
   /* приблизить можно процесс (id «pid:время») или группу-приложение («a…», «mWIN»). Внутри —
      ровно то, что было в группе на общей карте: процессы того же приложения. Программы, запущенные
      из него, — свои группы (раньше «Проводник» 100 МБ приближался в дерево на 3 ГБ из чужих программ) */
@@ -1645,6 +1659,16 @@ function renderDetails(){
   const mm=r.m==='net'?'cpu':r.m,c=COLS.find(c=>c.m===mm);
   const kidsHTML=kids.slice().sort((a,b)=>cur(b,mm,true)-cur(a,mm,true)).slice(0,10).map(k=>`<div class="kid" data-go="${esc(k.id)}">${ico(k)}<span>${esc(nameOf(k))}${ISS.has(k.id)?` <span class="dot ${ISS.get(k.id).some(i=>i.lvl==='red')?'red':'yel'}"></span>`:''}</span><span class="v">${c.fmt(cur(k,mm,true))}</span><span class="v">${fmtMem(cur(k,'mem',true))}</span></div>`).join('');
   const started=ctToMs(n.ct);
+  if(PSEUDO[n.pid]){
+    /* не процесс: ни пути, ни времени запуска, ни действий — только объяснение и график */
+    body.innerHTML=`<div class="dt-h">${ico(n,1)}<div style="min-width:0"><h3>${esc(nameOf(n))}</h3><div class="caption">нагрузка ядра Windows, не процесс</div></div></div>
+     <div class="dchart"><div class="caption"><span class="d-cap"></span><span><span class="num d-now"></span><button class="ib d-max"></button></span></div><canvas class="d-cv"></canvas><div class="pop"></div></div>
+     <p class="caption" style="padding:0 16px;line-height:1.5">${n.pid===4294967293
+       ?'Время, которое процессоры тратят на обработку прерываний от устройств: сеть, диски, USB, звук. Больше 5–10 % долго — обычно драйвер устройства.'
+       :'Отложенные вызовы процедур (DPC): вторая половина обработки прерываний, работа драйверов. Постоянно высокая доля — признак проблемного драйвера (часто сеть, звук или видеокарта).'}
+     Как и в System Informer, эта нагрузка показана отдельной строкой, а не приписана процессу «System».</p>`;
+    renderDetailChart();return;
+  }
   body.innerHTML=`
    <div class="dt-h">${ico(n,1)}<div style="min-width:0"><h3>${esc(nameOf(n))}</h3><div class="caption">${esc(n.exe)} · PID ${n.pid}${i.company?' · '+esc(i.company):''}</div></div></div>
    ${dead?`<div class="dead-note">Процесс завершён ${agoStr((NOW-n.deadAt)/1000)} назад.</div>`:''}
