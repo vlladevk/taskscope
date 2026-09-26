@@ -228,6 +228,10 @@ tr.susp .n1{color:var(--text-3)}
 /* шапка карты не рассыпается на узкой ширине: описание сокращается многоточием, «Цвет» — рядом с переключателем */
 .m-desc{min-width:0;flex:1 1 140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .m-cw{display:flex;align-items:center;gap:8px;flex:none}
+/* легенда и «крошки» — в одну строку: перенос менял высоту карты сразу после отрисовки */
+.maplegend.m-leg{flex-wrap:nowrap;overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 40px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 40px),transparent)}
+.m-crumbs{white-space:nowrap;overflow:hidden;min-width:0;flex:0 1 auto}
+.maplegend.m-leg>*{flex:none}
 .maplegend .lk{cursor:default}
 .maplegend .lk:hover{color:var(--text-1)}
 .mapstat{padding:6px 14px 0;font-size:12px;line-height:18px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none}
