@@ -178,10 +178,13 @@ function sparkSum(n){
   return a.spark=s;
 }
 function ancestors(n){const a=[];const seen=new Set([n]);for(let p=n.parent;p&&!seen.has(p);p=p.parent){seen.add(p);a.unshift(p);}return a;}
-const procCount=()=>{let c=0;for(const n of NODES.values())if(n.alive)c++;return c;};
+/* псевдопроцессы движка: время ЦП на прерывания и отложенные вызовы (DPC) — не программы */
+const PSEUDO={4294967293:'Прерывания',4294967294:'Отложенные вызовы (DPC)'};
+const procCount=()=>{let c=0;for(const n of NODES.values())if(n.alive&&!PSEUDO[n.pid])c++;return c;};
 const appOf=n=>n&&n.appKey?APPS.get(n.appKey):null;
 function catOf(n){const a=appOf(n);const i=INFO.get(n.id);return catOfExe(a?a.key:n.exe,i?i.path:(a&&a.path));}
 function nameOf(n){
+  if(PSEUDO[n.pid])return PSEUDO[n.pid];
   const i=INFO.get(n.id),a=appOf(n);
   if(i&&i.role)return i.role;
   if(a&&a.rootPid===n.pid&&a.key!=='windows')return a.title;
@@ -532,12 +535,13 @@ function resList(){
     {id:'cpu',name:'Процессор',m:'cpu',col:0,max:100,fmt:fmtPct,sub:SYSINFO&&SYSINFO.cpu_name,hist:['system','cpu'],
      now:()=>SYS.cpu,line:v=>`${fmtPct(v)} · ${procCount()} процессов`,
      keys:v=>[`${CPUS} логических процессоров`,`${procCount()} процессов`,`потоков ${SYS.threads.toLocaleString('ru')}`],
-     more:()=>[['Процессы',procCount()],['Потоки',SYS.threads.toLocaleString('ru')],['Дескрипторы',SYS.handles.toLocaleString('ru')],['Время работы',agoStr(SYS.uptime_ms/1000)],['Логических процессоров',CPUS]]},
+     more:()=>[['Процессы',procCount()],['Потоки',SYS.threads.toLocaleString('ru')],['Дескрипторы',SYS.handles.toLocaleString('ru')],['Прерывания',fmtPct(SYS.interrupt_cpu||0)],['Отложенные вызовы (DPC)',fmtPct(SYS.dpc_cpu||0)],['Время работы',agoStr(SYS.uptime_ms/1000)],['Логических процессоров',CPUS],['Как считается',SYS.by_cycles?'по тактам процессора, как в System Informer':'по времени (счётчик тактов недоступен)']]},
     {id:'mem',name:'Память',m:'mem',col:2,max:TOTAL_MB,fmt:fmtMem,sub:`${nf(TOTAL_MB/1024,1)} ГБ`,hist:['system','mem'],
      now:()=>m.used/MB,line:v=>`${nf(v/1024,1)} / ${nf(TOTAL_MB/1024,1)} ГБ (${m.load_pct} %)`,
      keys:v=>[`${m.load_pct} % занято`,`доступно ${fmtMem(m.available/MB)}`,`выделено ${nf(m.commit_used/MB/1024,1)} / ${nf(m.commit_limit/MB/1024,1)} ГБ`],
      more:()=>[['Занято',fmtMem(m.used/MB)],['Доступно',fmtMem(m.available/MB)],['Выделено (commit)',fmtMem(m.commit_used/MB)],['Предел выделения',fmtMem(m.commit_limit/MB)],['Процессы (частная)',fmtMem(privateMB())],
        ...memParts().map(p=>[p.label,fmtMem(p.v)+(p.warn?' — больше обычного':'')]),
+       ...(MEMD&&MEMD.standby?[['Сжато (в памяти)',fmtMem((MEMD.compressed||0)/MB)],['Резерв — кэш, отдаётся программам по требованию',fmtMem(MEMD.standby/MB)],['Свободно',fmtMem((MEMD.free||0)/MB)]]:[]),
        ...POOLA.map(a=>['Тревога в ядре',a.text.split('. ')[0]+' — вкладка «Пул ядра»'])],
      note:'«Память» процесса — его частный рабочий набор, как в диспетчере Windows. Остальное занятое: пулы ядра (память драйверов), файловый кэш и общая память программ — библиотеки DLL и общие буферы, которыми пользуются сразу несколько процессов (особенно браузеры и Electron-приложения). Невыгружаемый пул больше 1 ГБ бывает при утечке памяти в драйвере — какой драйвер растёт, видно во вкладке «Пул ядра».'},
     ...GPUS.map(g=>{
@@ -548,7 +552,7 @@ function resList(){
         more:()=>[['Загрузка',fmtPct(g.util)],['Самый занятый блок',g.engine||'—'],['Выделенная видеопамять',`${fmtMem(g.mem_used/MB)} из ${fmtMem(g.mem_total/MB)}`],['Общая память',fmtMem(g.shared_used/MB)]],
         note:'Загрузка — самый занятый блок видеокарты (3D, видео, копирование, вычисления), как в диспетчере Windows. Процессу приписывается его самый занятый блок, поэтому сумма по процессам может быть больше загрузки карты. Разбивка по приложениям — общая для всех видеокарт.'};
     }),
-    {id:'disk',name:'Ввод-вывод',m:'dsk',col:4,fmt:fmtMBs,sub:'чтение и запись процессов',hist:['system','io'],
+    {id:'disk',name:'Диск',m:'dsk',col:4,fmt:fmtMBs,sub:'чтение и запись диска процессами',hist:['system','io'],
      now:()=>ioR+ioW,line:v=>`↓ ${fmtMBs(ioR)} ↑ ${fmtMBs(ioW)}`,
      keys:v=>[`чтение ${fmtMBs(ioR)}`,`запись ${fmtMBs(ioW)}`],
      more:()=>[['Чтение',fmtMBs(ioR)],['Запись',fmtMBs(ioW)]],
@@ -709,7 +713,7 @@ $('#btabs').addEventListener('click',e=>{const b=e.target.closest('[data-t]');if
 const COLS_ALL=[
   {k:'cpu',t:'ЦП',m:'cpu',fmt:fmtPct,bar:100,w:76},
   {k:'mem',t:'Память',m:'mem',fmt:fmtMem,bar:4096,w:88},
-  {k:'dsk',t:'Ввод-вывод',m:'dsk',fmt:fmtMBs,bar:50,w:100},
+  {k:'dsk',t:'Диск',m:'dsk',fmt:fmtMBs,bar:50,w:100},
   {k:'net',t:'Сеть',m:'net',fmt:fmtMbit,bar:100,w:96},
   {k:'gpu',t:'ГП',m:'gpu',fmt:fmtPct,bar:100,w:64},
 ];
@@ -1465,7 +1469,7 @@ function renderProcTabs(chartsOnly){
       body._m=1;
       body.innerHTML=`<div class="dt-h">${ico(n,1)}<div><h3>${esc(nameOf(n))}</h3><div class="caption">PID ${n.pid} · ${esc(n.exe)} · ${n.alive?'работает '+agoStr((NOW-ctToMs(n.ct))/1000):'завершён'} · вместе с дочерними: ${desc(n).length}</div></div></div>
         <div class="crumbs"><span class="caption" style="margin-right:4px">Кто запустил:</span>${ancestors(n).map(a=>`<a data-go="${esc(a.id)}">${esc(nameOf(a))}</a>`).join('<span class="sep">›</span>')||'<span class="caption">система</span>'}</div>
-        <div class="pt-grid">${[['cpu','ЦП'],['mem','Память'],['dsk','Ввод-вывод']].map(([m,t])=>`<div class="cell"><div class="caption"><span class="pt-cap" data-m="${m}">${t}</span></div><canvas data-m="${m}"></canvas><div class="pop"></div></div>`).join('')}</div>`;
+        <div class="pt-grid">${[['cpu','ЦП'],['mem','Память'],['dsk','Диск']].map(([m,t])=>`<div class="cell"><div class="caption"><span class="pt-cap" data-m="${m}">${t}</span></div><canvas data-m="${m}"></canvas><div class="pop"></div></div>`).join('')}</div>`;
     }
     for(const cv of body.querySelectorAll('canvas')){const m=cv.dataset.m,c=COLS.find(c=>c.m===m);
       const s=nodeSeries(n,m);const cap=body.querySelector(`.pt-cap[data-m="${m}"]`);
