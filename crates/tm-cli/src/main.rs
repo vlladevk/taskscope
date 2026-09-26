@@ -53,6 +53,11 @@ tm — диспетчер задач для терминала и ИИ-аген�
                                системные — только с --force; --dry-run — проверить, выйдет ли)
   conns [цель]               Сетевые подключения и открытые порты (--listen — только ожидающие)
   who <путь>                 Кто держит файл или файлы в папке открытыми
+  inspect <цель> modules|threads|handles|env
+                             Процесс изнутри: модули, потоки с точками входа, дескрипторы
+                               (--type File|Key|… — только этого типа), окружение и папка
+  sig <путь|цель>            Подпись файла (в том числе через каталог Windows), SHA-256
+                               и ссылка на VirusTotal; код возврата 0 — подписан
   docker [действие имя]      Контейнеры Docker: ЦП, память, сеть, диск.
                                Действия: start|stop|restart|pause|unpause|kill <имя|id>
   pool                       Пул ядра по меткам: память драйверов и объектов ядра, рост в час,
@@ -98,7 +103,7 @@ struct Args {
     flags: HashMap<String, String>,
 }
 
-const VALUED: &[&str] = &["sort", "by", "n", "depth", "interval", "range", "port", "root", "wait", "max-targets"];
+const VALUED: &[&str] = &["sort", "by", "n", "depth", "interval", "range", "port", "root", "wait", "max-targets", "type"];
 
 impl Args {
     fn parse(raw: impl Iterator<Item = String>) -> Result<Self, String> {
@@ -1109,6 +1114,8 @@ fn run() -> Res<bool> {
         "svc" | "services" => cmd_svc(&args),
         "conns" | "ports" => cmd_conns(&args),
         "who" => cmd_who(&args),
+        "inspect" => cmd_inspect(&args),
+        "sig" | "signature" => cmd_sig(&args),
         "pool" => cmd_pool(&args).map(|_| true),
         "mcp" => mcp::run(args.has("allow-actions")).map(|_| true).map_err(io_err),
         "daemon" => cmd_daemon(&args),
@@ -1122,6 +1129,7 @@ fn run() -> Res<bool> {
 }
 
 fn main() -> ExitCode {
+    tm_core::logs::init("tm");
     let json_mode = std::env::args().any(|a| a == "--json");
     match run() {
         Ok(true) => ExitCode::SUCCESS,
@@ -1471,4 +1479,133 @@ fn cmd_who(args: &Args) -> Res<bool> {
         println!("Пропущено файлов без доступа: {} (проверить их — от администратора).", r.skipped);
     }
     Ok(true)
+}
+
+// ───────────────────────────── процесс изнутри, подпись ─────────────────────────────
+
+/// Ровно один процесс по цели: для просмотра «изнутри» несколько совпадений — ошибка.
+fn one_proc(args: &Args, target: &str, any: bool) -> Res<ProcStat> {
+    let snap = Snap::take(args, false)?;
+    let found = snap.resolve(target)?;
+    if found.len() > 1 && !any {
+        let pids: Vec<String> = found.iter().take(8).map(|&i| snap.procs()[i].pid.to_string()).collect();
+        return Err(Fail::Error(format!("«{target}» — {} процессов (PID {}…): укажите PID", found.len(), pids.join(", "))));
+    }
+    Ok(snap.procs()[found[0]].clone())
+}
+
+fn access_err(e: std::io::Error) -> Fail {
+    if e.raw_os_error() == Some(5) {
+        Fail::Error("нет доступа к процессу — нужны права администратора".into())
+    } else {
+        io_err(e)
+    }
+}
+
+/// `tm inspect <цель> modules|threads|handles|env` — процесс изнутри, как окно свойств System Informer.
+fn cmd_inspect(args: &Args) -> Res<bool> {
+    use tm_core::inspect;
+    let (Some(target), Some(what)) = (args.pos.first(), args.pos.get(1)) else {
+        return usage("tm inspect <цель> modules|threads|handles|env");
+    };
+    let p = one_proc(args, target, false)?;
+    let (pid, ct) = (p.pid, p.create_time);
+    let json = args.has("json");
+    match what.as_str() {
+        "modules" | "mod" => {
+            let list = inspect::modules(pid, ct).map_err(access_err)?;
+            if json {
+                print_json(&list);
+                return Ok(true);
+            }
+            println!("{:<18} {:>10}  {:<28} ПУТЬ", "АДРЕС", "РАЗМЕР", "МОДУЛЬ");
+            for m in &list {
+                println!("0x{:<16x} {:>10}  {:<28} {}", m.base, bytes(m.size as u64), m.name, m.path);
+            }
+            println!("\n{} ({}): модулей {}", p.name, pid, list.len());
+        }
+        "threads" | "thr" => {
+            let list = inspect::threads(pid, ct).map_err(access_err)?;
+            if json {
+                print_json(&list);
+                return Ok(true);
+            }
+            println!("{:>7} {:>10} {:>9} {:>4} {:<10} ТОЧКА ВХОДА", "TID", "ЦП", "ПЕРЕКЛ.", "ПРИО", "СОСТОЯНИЕ");
+            let mut list = list;
+            list.sort_by_key(|t| std::cmp::Reverse(t.kernel + t.user));
+            for t in &list {
+                let cpu = Duration::from_nanos(((t.kernel + t.user).max(0) as u64) * 100);
+                println!("{:>7} {:>9.2}с {:>9} {:>4} {:<10} {}", t.tid, cpu.as_secs_f64(), t.switches, t.priority, t.state, t.start.as_deref().unwrap_or(""));
+            }
+            println!("\n{} ({}): потоков {}", p.name, pid, list.len());
+        }
+        "handles" | "h" => {
+            let h = inspect::handles(pid, ct).map_err(access_err)?;
+            if json {
+                print_json(&h);
+                return Ok(true);
+            }
+            let only = args.get("type").map(str::to_lowercase);
+            for x in h.list.iter().filter(|x| only.as_ref().is_none_or(|t| x.kind.to_lowercase() == *t)) {
+                println!("0x{:<6x} {:<14} 0x{:08x}  {}", x.handle, x.kind, x.access, x.name);
+            }
+            let sum: Vec<String> = h.by_type.iter().take(10).map(|(k, n)| format!("{k} {n}")).collect();
+            println!("\n{} ({}): дескрипторов {} — {}", p.name, pid, h.total, sum.join(", "));
+            if !h.names {
+                println!("Имена объектов недоступны: нет права копировать дескрипторы (нужны права администратора).");
+            }
+        }
+        "env" | "environment" => {
+            let e = inspect::environment(pid, ct).map_err(access_err)?;
+            if json {
+                print_json(&e);
+                return Ok(true);
+            }
+            println!("Папка: {}", e.cwd);
+            for (k, v) in &e.vars {
+                println!("{k}={v}");
+            }
+        }
+        w => return usage(format!("неизвестный раздел «{w}»: modules, threads, handles, env")),
+    }
+    Ok(true)
+}
+
+/// `tm sig <путь|цель>` — подпись файла и ссылка на VirusTotal.
+fn cmd_sig(args: &Args) -> Res<bool> {
+    let Some(t) = args.pos.first() else { return usage("tm sig <путь к файлу | цель>") };
+    let path = if std::path::Path::new(t).is_file() {
+        t.clone()
+    } else {
+        // у одноимённых процессов (36 × brave.exe) файл один — хватит любого
+        let p = one_proc(args, t, true)?;
+        tm_core::info::InfoCache::default()
+            .get(p.key())
+            .path
+            .clone()
+            .ok_or_else(|| Fail::Error(format!("путь к файлу {} недоступен — нужны права администратора", p.name)))?
+    };
+    let s = tm_core::signature::check(&path).map_err(io_err)?;
+    if args.has("json") {
+        // для JSON (и MCP) «без подписи» — ответ, а не ошибка
+        print_json(&json!({ "path": path, "signature": s }));
+        return Ok(true);
+    }
+    let what = match s.status {
+        "signed" => "подписан",
+        "unsigned" => "без подписи",
+        "untrusted" => "подпись недоверенная",
+        "expired" => "сертификат подписи истёк",
+        "revoked" => "сертификат отозван",
+        "bad_digest" => "подпись НЕ совпадает с файлом (файл изменён после подписи)",
+        "distrusted" => "подписавший в списке недоверенных",
+        _ => "подпись не проверить",
+    };
+    println!("{path}");
+    println!("  {what}{}{}", s.signer.as_deref().map(|n| format!(": {n}")).unwrap_or_default(), if s.catalog { " (каталог Windows)" } else { "" });
+    if let Some(h) = &s.sha256 {
+        println!("  SHA-256 {h}");
+        println!("  https://www.virustotal.com/gui/file/{h}");
+    }
+    Ok(s.status == "signed")
 }

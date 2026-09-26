@@ -120,6 +120,19 @@ fn tools(allow_actions: bool) -> Value {
             "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
         },
         {
+            "name": "inspect",
+            "description": "Процесс изнутри: modules — загруженные DLL, threads — потоки (время ЦП, состояние, точка входа «модуль+смещение»), handles — открытые дескрипторы (файлы, ключи реестра…). Цель — PID или PID:create_time, если имя неоднозначно. Окружение процесса агенту не отдаётся: там бывают пароли и токены.",
+            "inputSchema": { "type": "object", "properties": {
+                "target": { "type": "string" },
+                "what": { "type": "string", "enum": ["modules", "threads", "handles"] }
+            }, "required": ["target", "what"] }
+        },
+        {
+            "name": "signature",
+            "description": "Подпись исполняемого файла процесса или файла по пути (WinVerifyTrust, включая каталоги Windows) и SHA-256 для проверки на VirusTotal.",
+            "inputSchema": { "type": "object", "properties": { "target": { "type": "string", "description": "путь к файлу, PID или имя процесса" } }, "required": ["target"] }
+        },
+        {
             "name": "service_act",
             "description": "Запустить, остановить или перезапустить службу Windows (обычно нужны права администратора). Системные службы (RPC, DCOM, питание и т.п.) агенту не остановить.",
             "inputSchema": { "type": "object", "properties": {
@@ -238,6 +251,20 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
         "who" => {
             v.push("who".into());
             v.push(s("path").ok_or("нужен path")?);
+        }
+        "inspect" => {
+            let what = s("what").ok_or("нужен what")?;
+            // окружение — только для человека в окне и CLI: в нём бывают секреты
+            if !matches!(what.as_str(), "modules" | "threads" | "handles") {
+                return Err(format!("раздел «{what}» агенту недоступен: modules, threads, handles"));
+            }
+            v.push("inspect".into());
+            v.push(s("target").ok_or("нужен target")?);
+            v.push(what);
+        }
+        "signature" => {
+            v.push("sig".into());
+            v.push(s("target").ok_or("нужен target")?);
         }
         "service_act" => {
             if !allow_actions {
