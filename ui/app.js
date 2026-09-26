@@ -26,7 +26,8 @@ const ctToMs=ct=>(ct-116444736000000000)/10000;
 /* ----- связь с движком ----- */
 const TAURI=window.__TAURI__;
 /* ошибки окна — в журнал (%LOCALAPPDATA%\tm\logs): иначе в приложении без консоли их не найти */
-function logUi(msg){try{rpc('log',{msg:String(msg).slice(0,2000)}).catch(()=>{});}catch(e){}}
+const LOGGED=new Map(); /* одна и та же ошибка из цикла отрисовки — раз в минуту */
+function logUi(msg){msg=String(msg).slice(0,2000);const t=Date.now();if(t-(LOGGED.get(msg)||0)<60e3)return;LOGGED.set(msg,t);if(LOGGED.size>200)LOGGED.clear();try{rpc('log',{msg}).catch(()=>{});}catch(e){}}
 addEventListener('error',e=>logUi(`${e.message} @ ${e.filename||''}:${e.lineno||0}:${e.colno||0}${e.error&&e.error.stack?'\n'+e.error.stack:''}`));
 addEventListener('unhandledrejection',e=>{const r=e.reason;const m=String(r&&r.message||r);if(/Failed to fetch|NetworkError|нет связи/i.test(m))return;logUi('promise: '+m+(r&&r.stack?'\n'+r.stack:''));});
 async function rpc(method,params={}){
@@ -220,8 +221,10 @@ const S={
   map:{color:'exe',root:null},chartMode:'apps',rail:true,main:true,right:true,bottom:true,btab:'chart',more:false,bh:300,rw:360,
 };
 try{const r=RANGES.find(r=>r.key===localStorage.getItem('tm-range'));if(r)S.range=r;}catch(e){}
-try{const u=JSON.parse(localStorage.getItem('tm-ui')||'{}');for(const k of ['chartMode','rail','main','right','bottom','btab','res','bh','rw','more','procMode','incl'])if(k in u)S[k]=u[k];}catch(e){}
-const saveUI=()=>{try{localStorage.setItem('tm-ui',JSON.stringify({chartMode:S.chartMode,rail:S.rail,main:S.main,right:S.right,bottom:S.bottom,btab:S.btab,res:S.res,bh:S.bh,rw:S.rw,more:S.more,procMode:S.procMode,incl:S.incl}));}catch(e){}};
+try{const u=JSON.parse(localStorage.getItem('tm-ui')||'{}');for(const k of ['chartMode','rail','main','right','bottom','btab','res','bh','rw','more','procMode','incl','sort','dir'])if(k in u)S[k]=u[k];
+  /* старые или испорченные значения — к умолчаниям, иначе ни одна кнопка режима не подсвечена */
+  if(S.procMode!=='tree'&&S.procMode!=='apps')S.procMode='tree';if(S.dir!==1&&S.dir!==-1)S.dir=-1;if(typeof S.sort!=='string')S.sort='cpu';}catch(e){}
+const saveUI=()=>{try{localStorage.setItem('tm-ui',JSON.stringify({chartMode:S.chartMode,rail:S.rail,main:S.main,right:S.right,bottom:S.bottom,btab:S.btab,res:S.res,bh:S.bh,rw:S.rw,more:S.more,procMode:S.procMode,incl:S.incl,sort:S.sort,dir:S.dir}));}catch(e){}};
 /* настройки общие с CLI и MCP (%LOCALAPPDATA%	msettings.json): защищённые процессы, подтверждение */
 let SETTINGS={protected:[],confirm_kill:true};
 const stem=x=>String(x).toLowerCase().replace(/\.exe$/,'');
@@ -741,7 +744,7 @@ const COLS_ALL=[
   {k:'handles',t:'Дескрипторы',m:'handles',fmt:v=>v.toLocaleString('ru'),w:96,own:1,extra:1},
   {k:'ws',t:'Рабочий набор',m:'ws',fmt:fmtMem,w:104,own:1,extra:1},
   {k:'priv',t:'Выделено',m:'priv',fmt:fmtMem,w:88,own:1,extra:1},
-  {k:'started',t:'Запущен',m:'ct',fmt:ct=>{const t=new Date(ctToMs(ct));return (Date.now()-t<864e5?'':t.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})+' ')+t.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});},w:96,own:1,extra:1},
+  {k:'started',t:'Запущен',m:'ct',fmt:ct=>{const t=new Date(ctToMs(ct));return (t.toDateString()===new Date().toDateString()?'':t.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})+' ')+t.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});},w:96,own:1,extra:1},
 ];
 const COLS_KEY='tm-cols';
 let COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
@@ -760,7 +763,7 @@ function mountProcs(el){
       <button class="btn subtle p-who" title="Какие процессы держат файл или папку открытыми (не удаляется, «занят другим процессом»)">Кто держит файл…</button>
     </div>
     <div class="p-short" hidden></div>
-    <div class="tbl-wrap"><table class="tbl"><colgroup></colgroup><thead></thead><tbody></tbody></table></div>
+    <div class="tbl-wrap"><table class="tbl procs"><colgroup></colgroup><thead></thead><tbody></tbody></table></div>
     <div class="foot p-foot"></div>`;
   $('.p-q',el).addEventListener('input',e=>{S.q=e.target.value.trim().toLowerCase();S.order=null;renderProcs();});
   $('.p-who',el).addEventListener('click',whoHolds);
@@ -779,6 +782,8 @@ function mountProcs(el){
   const tb=$('tbody',el);
   tb.addEventListener('pointerdown',e=>{
     if(e.button!==0)return;const tr=e.target.closest('tr');if(!tr)return;const id=tr.dataset.id;
+    /* строки не берут фокус: снимаем его с нажатой ранее кнопки, чтобы стрелки шли в список */
+    const f=document.activeElement;if(f&&f!==document.body&&f.blur)f.blur();
     if(e.target.closest('.tw')){S.open.has(id)?S.open.delete(id):S.open.add(id);S.order=null;renderProcs();return;}
     if(e.ctrlKey){S.multi.has(id)?S.multi.delete(id):S.multi.add(id);S.sel=id;S.anchor=id;renderAll();return;}
     if(e.shiftKey&&S.anchor){e.preventDefault();selectRange(S.anchor,id);return;}
@@ -811,25 +816,31 @@ const foreignRoot=n=>!n.parent||n.parent.appKey!==n.appKey;
 const LAUNCHERS=new Set(['windows','explorer.exe','svchost.exe','services.exe','wininit.exe','winlogon.exe','userinit.exe','sihost.exe','smss.exe','csrss.exe','system','sihost','explorer']);
 function walkRows(roots){
   const out=[],keep=n=>!S.q||appDesc(n).some(matchQ);
-  const walk=(n,d)=>{if(!keep(n))return;out.push({n,d});if(S.open.has(n.id)||S.q){sortNodes(sameApp(n).slice()).forEach(k=>walk(k,d+1));for(const g of GHOSTS)if(g.ghostOf===n.id&&g.appKey===n.appKey)out.push({n:g,d:d+1});}};
+  const walk=(n,d)=>{if(!keep(n))return;out.push({n,d});if(S.open.has(n.id)||S.q){sortNodes(sameApp(n).slice()).forEach(k=>walk(k,d+1));for(const g of GHOSTS)if((g.ghostOf===n.id||GHOST_TOP.get(g)===n)&&g.appKey===n.appKey)out.push({n:g,d:d+1});}};
   sortNodes(roots).forEach(r=>walk(r,0));return out;
 }
 /* завершившийся процесс ещё 2,5 с виден на своём месте красной строкой, новый — зелёной (как в System Informer) */
 const GONE_MS=2500;
 const isGhost=n=>!n.alive&&n.deadAt&&NOW-n.deadAt<GONE_MS&&!PSEUDO[n.pid];
 const isFresh=n=>n.alive&&n.bornAt&&NOW-n.bornAt<GONE_MS;
-let GHOSTS=[];
+let GHOSTS=[],GHOST_TOP=new Map();
 function procRows(){
   const all=[...NODES.values()],live=all.filter(alive);
-  GHOSTS=all.filter(isGhost);
-  /* призрак без живого родителя — отдельной строкой верхнего уровня */
-  const ghostRoots=GHOSTS.filter(g=>{const p=g.ghostOf&&NODES.get(g.ghostOf);return !p||!p.alive;});
+  GHOSTS=all.filter(isGhost).filter(matchQ);
+  /* призрак без живого родителя — отдельной строкой верхнего уровня. Но если у его приложения есть
+     живая строка (Claude с десятками git и conhost), он показывается внутри неё и только в раскрытой:
+     иначе под свёрнутым приложением мелькали красные строки, которых зелёными никто не видел */
+  const tops=new Map();for(const n of live)if(n.appKey&&foreignRoot(n)&&!tops.has(n.appKey))tops.set(n.appKey,n);
+  GHOST_TOP=new Map();
+  const ghostRoots=GHOSTS.filter(g=>{const p=g.ghostOf&&NODES.get(g.ghostOf);if(p&&p.alive&&p.appKey===g.appKey)return false;
+    const t=g.appKey&&tops.get(g.appKey);if(t){GHOST_TOP.set(g,t);return false;}return true;});
   if(S.procMode==='tree')return walkRows([...live.filter(foreignRoot),...ghostRoots]);
   const out=[],groups=new Map();
   for(const n of [...live,...ghostRoots]){const k=n.appKey||n.exe;if(!groups.has(k))groups.set(k,[]);if(!n.alive||!n.parent||n.parent.appKey!==n.appKey)groups.get(k).push(n);}
   const apps=[...groups.entries()].map(([k,tops])=>({k,tops})).filter(a=>a.tops.length);
   const c=colByK(S.sort);
-  const tot=a=>S.sort==='name'?nameOf(a.tops[0]).toLowerCase():c&&c.own?sortKey(a.tops[0]):a.tops.reduce((s,n)=>s+cur(n,(c||colByK('cpu')).m,true),0);
+  /* имя, PID, потоки… — ключ группы по первому после сортировки процессу (для ресурсов — сумма) */
+  const tot=a=>S.sort==='name'||(c&&c.own)?sortKey(sortNodes(a.tops)[0]):a.tops.reduce((s,n)=>s+cur(n,(c||colByK('cpu')).m,true),0);
   const key=new Map(apps.map(a=>[a,tot(a)]));
   apps.sort((a,b)=>S.dir*sortCmp(key.get(a),key.get(b)));
   for(const a of apps)out.push(...walkRows(a.tops));
@@ -869,7 +880,7 @@ menu.addEventListener('click',e=>{
   else COL_ON.add(k);
   try{localStorage.setItem(COLS_KEY,JSON.stringify([...COL_ON]));}catch(x){}
   if(k==='-')closeMenu();else{const cb=mi.querySelector('input');if(cb)cb.checked=COL_ON.has(k);}
-  if(S.sort!=='name'&&!COL_ON.has(S.sort))S.sort='cpu';
+  if(S.sort!=='name'&&!COL_ON.has(S.sort)){S.sort='cpu';S.dir=-1;S.order=null;}
   renderProcs();
 },true);
 /* выделение диапазоном (Shift+клик, Shift+стрелки) — по видимому порядку строк */
@@ -881,8 +892,11 @@ function selectRange(from,to){
    Enter — отдельная вкладка, Ctrl+C — копировать строки, Ctrl+A — выделить все */
 function procKeys(e){
   const el=PANEL_EL.procs;if(!vis(el))return false;
+  /* только когда фокус в списке процессов или нигде: кнопкам, полям и другим панелям клавиши свои */
+  const f=document.activeElement;
+  if(f&&f!==document.body&&(!el.contains(f)||f.matches('button,select,textarea,input,[contenteditable],a')))return false;
   const rows=procRows(),ids=rows.map(r=>r.n.id);if(!ids.length)return false;
-  const i=Math.max(0,ids.indexOf(S.sel)),page=Math.max(1,Math.floor(($('.tbl-wrap',el).clientHeight||320)/ROW_H)-1);
+  const at=ids.indexOf(S.sel),i=Math.max(0,at),page=Math.max(1,Math.floor(($('.tbl-wrap',el).clientHeight||320)/ROW_H)-1);
   const go=j=>{j=clamp(j,0,ids.length-1);const id=ids[j];
     if(e.shiftKey){if(!S.anchor)S.anchor=S.sel||id;selectRange(S.anchor,id);}else{S.anchor=id;select(id);}
     revealRow(id);};
@@ -890,7 +904,7 @@ function procKeys(e){
   if(e.ctrlKey&&(e.code==='KeyC')){if(getSelection()&&!getSelection().isCollapsed)return false;copyRows();return true;}
   if(e.ctrlKey&&e.code==='KeyA'){S.multi=new Set(ids);renderAll();return true;}
   if(e.ctrlKey||e.altKey||e.metaKey)return false;
-  if(k==='ArrowDown'){go(S.sel?i+1:0);return true;}
+  if(k==='ArrowDown'){go(at<0?0:i+1);return true;} /* выбранного нет в списке (свёрнут, завершился) — с начала */
   if(k==='ArrowUp'){go(i-1);return true;}
   if(k==='PageDown'){go(i+page);return true;}
   if(k==='PageUp'){go(i-page);return true;}
@@ -909,10 +923,12 @@ function copyRows(){
   const cs=COLS.filter(c=>c.k!=='pid'); /* PID и так второй колонкой */
   const head=['Имя','PID',...cs.map(c=>c.t),'Путь'].join('\t');
   const lines=sorted.map(id=>NODES.get(id)).filter(Boolean).map(n=>{const i=INFO.get(n.id)||{};
-    return [nameOf(n),n.pid,...cs.map(c=>c.own?c.fmt(n[c.m]||0):c.fmt(cur(n,c.m,false))),i.path||''].join('\t');});
+    const incl=S.incl&&sameApp(n).length>0; /* как в таблице: с Σ по приложению, если она включена */
+    return [nameOf(n),n.pid,...cs.map(c=>c.own?c.fmt(n[c.m]||0):c.fmt(cur(n,c.m,incl)+(S.incl?shortOf(n,c.m):0))),i.path||''].join('\t');});
   const text=(lines.length>1?head+'\n':'')+lines.join('\n');
   (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject()).then(()=>toast(lines.length>1?`Скопировано строк: ${lines.length}`:'Строка скопирована','info',1500)).catch(()=>{
-    const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);t.select();try{document.execCommand('copy');}catch(x){}t.remove();});
+    const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);t.select();let ok=false;try{ok=document.execCommand('copy');}catch(x){}t.remove();
+    toast(ok?(lines.length>1?`Скопировано строк: ${lines.length}`:'Строка скопирована'):'Не удалось скопировать: буфер обмена недоступен',ok?'info':'red',ok?1500:undefined);});
 }
 function renderProcs(){
   const el=PANEL_EL.procs;if(!vis(el)||!SYS)return;
@@ -1579,26 +1595,33 @@ const PT_VIEWS=[['over','Обзор'],['modules','Модули'],['threads','П�
 const THREAD_STATE={running:'выполняется',ready:'готов',waiting:'ожидает',suspended:'приостановлен',standby:'на очереди',terminated:'завершён',other:'—'};
 function mountProcTab(el,id){
   PROC_TABS.set(id,el);
-  el._pt={view:'over',data:{},err:{},at:{},busy:{},q:'',named:true,prevT:null};
+  el._pt={view:'over',data:{},err:{},at:{},busy:{},q:'',qs:{},named:true,prevT:null,hov:false,tOrder:null};
   el.innerHTML=`<div class="pt-bar"><div class="seg pt-seg">${PT_VIEWS.map(([k,t])=>`<button data-v="${k}">${t}</button>`).join('')}</div>
     <input class="search pt-q" placeholder="Фильтр…" style="display:none"><span class="caption pt-cnt"></span><div class="spacer"></div>
     <label class="chk pt-named" style="display:none"><input type="checkbox" checked> только с именами</label><button class="btn subtle pt-ref" style="display:none">Обновить</button></div>
     <div class="scroll pt-body"></div>`;
   el.addEventListener('click',e=>{
     const j=e.target.closest('[data-go]');if(j)return select(j.dataset.go,true);
-    const v=e.target.closest('.pt-seg [data-v]');if(v){el._pt.view=v.dataset.v;$('.pt-body',el)._m=0;renderProcTab(id,el,false);return;}
+    const v=e.target.closest('.pt-seg [data-v]');if(v){if(el._pt.view==='threads'&&v.dataset.v!=='threads')el._pt.prevT=null; /* иначе при возврате ЦП потока — среднее за всё время отсутствия */
+      /* у каждого раздела свой фильтр: «ntdll» из модулей не должен пустить таблицу окружения */
+      el._pt.qs[el._pt.view]=el._pt.q;el._pt.view=v.dataset.v;el._pt.q=el._pt.qs[el._pt.view]||'';$('.pt-q',el).value=el._pt.q;
+      $('.pt-body',el)._m=0;renderProcTab(id,el,false);return;}
     if(e.target.closest('.pt-ref')){el._pt.at[el._pt.view]=0;ptLoad(id,el,el._pt.view);return;}
-    const vt=e.target.closest('[data-vt]');if(vt)return openVirusTotal(vt.dataset.vt);
+    const vt=e.target.closest('[data-vt]');if(vt){e.preventDefault();return openVirusTotal(vt.dataset.vt);}
   });
   $('.pt-q',el).addEventListener('input',e=>{el._pt.q=e.target.value.trim().toLowerCase();ptTable(id,el);});
   $('.pt-named input',el).addEventListener('change',e=>{el._pt.named=e.target.checked;ptTable(id,el);});
+  /* потоки пересортировываются раз в 2 с — пока курсор над таблицей, порядок стоит (как у процессов) */
+  const ptb=$('.pt-body',el);ptb.addEventListener('mouseenter',()=>{el._pt.hov=true;});ptb.addEventListener('mouseleave',()=>{el._pt.hov=false;});
   el.addEventListener('mousemove',e=>{const cv=e.target.closest('canvas');if(cv)chartHover(cv,cv.nextElementSibling,e);});
   el.addEventListener('mouseout',e=>{if(e.target.tagName==='CANVAS'){S.hoverT=null;e.target.nextElementSibling.style.display='none';renderCharts();}});
 }
 function ptLoad(id,el,what){
   const n=NODES.get(id),st=el._pt;if(!n||!n.alive||st.busy[what])return;
   st.busy[what]=true;
-  rpc('inspect',{pid:n.pid,create_time:n.ct,what}).then(d=>{
+  /* запрос мог зависнуть (файл с незавершённой операцией) — через 20 с кнопка снова работает */
+  const timeout=new Promise((_,rej)=>setTimeout(()=>rej(new Error('движок не ответил за 20 с — попробуйте «Обновить»')),20000));
+  Promise.race([rpc('inspect',{pid:n.pid,create_time:n.ct,what}),timeout]).then(d=>{
     if(what==='threads'){const now=performance.now(),prev=st.prevT;const m=new Map();
       for(const t of d.threads){const tot=t.kernel+t.user;const p=prev&&prev.m.get(t.tid);t.cpu=p!=null?Math.max(0,(tot-p)/((now-prev.t)*1e4*CPUS)*100):null;m.set(t.tid,tot);}
       st.prevT={t:now,m};}
@@ -1608,16 +1631,32 @@ function ptLoad(id,el,what){
 /* подпись файла: один запрос на путь, результат держим до перезапуска окна */
 const SIGS=new Map();
 const SIG_TXT={signed:['подписан','ok'],unsigned:['без подписи','yel'],untrusted:['подпись недоверенная','red'],expired:['сертификат истёк','yel'],revoked:['сертификат отозван','red'],bad_digest:['подпись не совпадает с файлом — файл изменён','red'],distrusted:['подписавший недоверенный','red'],error:['подпись не проверить','yel']};
+/* путь, который сейчас на экране (выбранный процесс или открытая вкладка) */
+function sigWanted(k){
+  const has=n=>{if(!n)return false;const i=INFO.get(n.id)||{},p=(n.full&&n.full.path)||i.path;return !!p&&p.toLowerCase()===k;};
+  if(has(NODES.get(S.sel)))return true;for(const id of PROC_TABS.keys())if(has(NODES.get(id)))return true;return false;
+}
 function sigOf(path){
-  if(!path)return null;const k=path.toLowerCase();
-  if(!SIGS.has(k)){SIGS.set(k,{busy:true});rpc('signature',{path}).then(r=>SIGS.set(k,r)).catch(e=>SIGS.set(k,{error:String(e.message||e)})).finally(()=>{renderDetailsSoft();renderProcTabs(true);});}
+  if(!path)return null;const k=path.toLowerCase(),c=SIGS.get(k);
+  /* ошибки — повторяем через 30 с; результат — держим 10 минут (файл могли обновить) */
+  const stale=c&&!c.busy&&!c.wait&&Date.now()-(c.at||0)>(c.error?30e3:600e3);
+  if(!c||stale){
+    if(SIGS.size>500)SIGS.clear();
+    SIGS.set(k,{wait:true,at:Date.now()});
+    /* при листании стрелками не хешируем каждый файл: запрос — если через 0,4 с он ещё на экране */
+    setTimeout(()=>{
+      if(!sigWanted(k)){SIGS.delete(k);return;}
+      SIGS.set(k,{busy:true});
+      rpc('signature',{path}).then(r=>SIGS.set(k,{...r,at:Date.now()})).catch(e=>SIGS.set(k,{error:String(e.message||e),at:Date.now()})).finally(()=>{renderDetailsSoft();renderProcTabs(true);});
+    },400);
+  }
   return SIGS.get(k);
 }
 function sigHTML(path){
-  const s=sigOf(path);if(!s)return '';if(s.busy)return '<span class="caption">проверяю…</span>';
+  const s=sigOf(path);if(!s)return '';if(s.busy||s.wait)return '<span class="caption">проверяю…</span>';
   if(s.error)return `<span class="caption">${esc(s.error)}</span>`;
   const [t,c]=SIG_TXT[s.status]||SIG_TXT.error;
-  return `<span class="sig ${c}">${t}</span>${s.signer?` · ${esc(s.signer)}`:''}${s.catalog?' <span class="caption">(каталог Windows)</span>':''}${s.sha256?` · <a class="lnk" data-vt="${s.sha256}" title="SHA-256 ${s.sha256}">проверить на VirusTotal</a>`:''}`;
+  return `<span class="sig ${c}">${t}</span>${s.signer?` · ${esc(s.signer)}`:''}${s.catalog?' <span class="caption">(каталог Windows)</span>':''}${s.sha256?` · <a class="lnk" href="#" role="button" data-vt="${s.sha256}" title="SHA-256 ${s.sha256}">проверить на VirusTotal</a>`:''}`;
 }
 function openVirusTotal(h){
   if(!/^[0-9a-f]{64}$/i.test(h))return;
@@ -1632,31 +1671,37 @@ function ptTable(id,el){
   if(st.err[v]&&!d){body.innerHTML=`<div class="empty">${esc(st.err[v])}${/администратор/.test(st.err[v])&&!isAdmin()?ADMIN_LINK:''}</div>`;$('.pt-cnt',el).textContent='';return;}
   if(!d){body.innerHTML='<div class="empty">Загружаю…</div>';return;}
   const has=s=>!q||String(s).toLowerCase().includes(q);
-  let head,rows,cnt,note='';
+  let head,rows,cnt,note='',minW=0,empty='';
   if(v==='modules'){
     const l=d.modules.filter(m=>has(m.name+' '+m.path));cnt=`${l.length} из ${d.modules.length}`;
-    head='<col style="width:200px"><col style="width:150px"><col style="width:84px"><col>|Модуль|Адрес|Размер|Путь';
-    rows=l.map(m=>`<tr><td>${esc(m.name)}</td><td class="mono">0x${m.base.toString(16)}</td><td>${fmtMem(m.size/MB)}</td><td class="mono" title="${esc(m.path)}">${esc(m.path)}</td></tr>`);
+    head='<col style="width:190px"><col style="width:132px"><col style="width:84px"><col>|Модуль|Адрес|>Размер|Путь';minW=620;
+    rows=l.map(m=>`<tr><td>${esc(m.name)}</td><td class="mono">0x${m.base.toString(16)}</td><td class="num">${fmtMem(m.size/MB)}</td><td class="mono" title="${esc(m.path)}">${esc(m.path)}</td></tr>`);
   }else if(v==='threads'){
-    const l=d.threads.filter(t=>has(t.tid+' '+(t.start||'')+' '+t.state)).sort((a,b)=>(b.cpu||0)-(a.cpu||0)||(b.kernel+b.user)-(a.kernel+a.user));cnt=`${l.length} из ${d.threads.length}`;
-    head='<col style="width:70px"><col style="width:64px"><col style="width:84px"><col style="width:90px"><col style="width:60px"><col style="width:116px"><col>|TID|ЦП|Время ЦП|Переключ.|Приор.|Состояние|Точка входа';
-    rows=l.map(t=>`<tr><td class="num">${t.tid}</td><td>${t.cpu==null?'<span class="caption">…</span>':t.cpu<.05?'<span style="color:var(--text-4)">—</span>':fmtPct(t.cpu)}</td><td>${agoStr((t.kernel+t.user)/1e7)}</td><td class="num">${t.switches.toLocaleString('ru')}</td><td class="num">${t.priority}</td><td>${THREAD_STATE[t.state]||t.state}</td><td class="mono">${esc(t.start||'')}</td></tr>`);
+    const l=d.threads.filter(t=>has(t.tid+' '+(t.start||'')+' '+t.state));cnt=`${l.length} из ${d.threads.length}`;
+    const o=st.hov&&st.tOrder;
+    if(o)l.sort((a,b)=>(o.has(a.tid)?o.get(a.tid):1e9)-(o.has(b.tid)?o.get(b.tid):1e9));
+    else{l.sort((a,b)=>(b.cpu||0)-(a.cpu||0)||(b.kernel+b.user)-(a.kernel+a.user)||a.tid-b.tid);st.tOrder=new Map(l.map((t,i)=>[t.tid,i]));}
+    head='<col style="width:70px"><col style="width:64px"><col style="width:84px"><col style="width:90px"><col style="width:60px"><col style="width:104px"><col>|>TID|>ЦП|>Время ЦП|>Переключ.|>Приор.|Состояние|Точка входа';minW=660;
+    empty='Нет доступных потоков';
+    rows=l.map(t=>`<tr><td class="num">${t.tid}</td><td class="num">${t.cpu==null?'<span class="caption">…</span>':t.cpu<.05?'<span style="color:var(--text-4)">—</span>':fmtPct(t.cpu)}</td><td class="num">${agoStr((t.kernel+t.user)/1e7)}</td><td class="num">${t.switches.toLocaleString('ru')}</td><td class="num">${t.priority}</td><td>${THREAD_STATE[t.state]||t.state}</td><td class="mono">${esc(t.start||'')}</td></tr>`);
     note='<p class="caption pt-note">ЦП потока — доля всего процессора, как у процессов. Точка входа — модуль и смещение функции, с которой поток начался.</p>';
   }else if(v==='handles'){
     const l=d.list.filter(h=>(!st.named||h.name)&&has(h.type+' '+h.name));cnt=`${l.length} из ${d.total}`;
-    head='<col style="width:130px"><col><col style="width:80px"><col style="width:100px">|Тип|Имя|Дескр.|Доступ';
+    head='<col style="width:130px"><col><col style="width:80px"><col style="width:100px">|Тип|Имя|Дескр.|Доступ';minW=560;
+    empty=st.named&&d.list.length?'Нет дескрипторов с именами — снимите «только с именами»':'Нет дескрипторов';
     rows=l.slice(0,3000).map(h=>`<tr><td>${esc(h.type)}</td><td class="mono" title="${esc(h.name)}">${esc(h.name)||'<span style="color:var(--text-4)">—</span>'}</td><td class="mono">0x${h.handle.toString(16)}</td><td class="mono">0x${h.access.toString(16).padStart(8,'0')}</td></tr>`);
-    note=`<p class="caption pt-note">${d.by_type.slice(0,12).map(([k,c])=>`${esc(k)} ${c}`).join(' · ')}${d.names?'':' — имена объектов недоступны: нужны права администратора'}${l.length>3000?' · показаны первые 3000':''}</p>`;
+    note=`<p class="caption pt-note">${d.by_type.slice(0,12).map(([k,c])=>`${esc(k)} ${c}`).join(' · ')}${d.names?'':' — имена объектов недоступны: нужны права администратора'}${d.files_skipped?' — имя одного из файлов не ответило (на нём висит операция), имена остальных файлов не запрашивались':''}${l.length>3000?' · показаны первые 3000':''}</p>`;
   }else{
     const l=d.vars.filter(([k,x])=>has(k+'='+x));cnt=`${l.length} из ${d.vars.length}`;
-    head='<col style="width:32%"><col>|Переменная|Значение';
+    head='<col style="width:32%"><col>|Переменная|Значение';minW=480;empty='Окружение пустое';
     rows=l.map(([k,x])=>`<tr><td class="mono">${esc(k)}</td><td class="mono" title="${esc(x)}">${esc(x)}</td></tr>`);
     note=`<p class="caption pt-note">Папка: <span class="mono">${esc(d.cwd)}</span> · окружение, с которым процесс работает сейчас; здесь бывают пароли и токены.</p>`;
   }
   $('.pt-cnt',el).textContent=cnt+(st.err[v]?' · '+st.err[v]:'');
   const [cols,...ths]=head.split('|');
   const wrap=body.querySelector('.pt-tbl'),top=body.scrollTop;
-  body.innerHTML=`${note}<table class="tbl left pt-tbl"><colgroup>${cols}</colgroup><thead><tr>${ths.map(t=>`<th style="cursor:default;text-align:left">${t}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${ths.length}" class="caption">Ничего не найдено</td></tr>`}</tbody></table>`;
+  /* «>» в заголовке — числовая колонка, выровнена вправо вместе с числами */
+  body.innerHTML=`${note}<table class="tbl left pt-tbl" style="min-width:${minW}px"><colgroup>${cols}</colgroup><thead><tr>${ths.map(t=>`<th style="cursor:default;text-align:${t[0]==='>'?'right':'left'}">${t.replace(/^>/,'')}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${ths.length}" class="caption">${q?'Ничего не найдено':empty||'Пусто'}</td></tr>`}</tbody></table>`;
   if(wrap)body.scrollTop=top; /* обновление потоков не сбрасывает прокрутку */
 }
 function renderProcTab(id,el,chartsOnly){
@@ -1679,7 +1724,7 @@ function renderProcTab(id,el,chartsOnly){
   if((!chartsOnly||body._m!==1)&&!(body._m===1&&selIn(body))){
     body._m=1;
     const i=INFO.get(n.id)||{},f=n.full||{},path=f.path||i.path;
-    body.innerHTML=`<div class="dt-h">${ico(n,1)}<div><h3>${esc(nameOf(n))}</h3><div class="caption">${PSEUDO[n.pid]?'нагрузка ядра Windows, не процесс':`PID ${n.pid} · ${esc(n.exe)} · ${n.alive?'работает '+agoStr((NOW-ctToMs(n.ct))/1000):'завершён'} · вместе с дочерними: ${desc(n).length}`}</div></div></div>
+    body.innerHTML=`<div class="dt-h">${ico(n,1)}<div><h3>${esc(nameOf(n))}</h3><div class="caption">${PSEUDO[n.pid]?'нагрузка ядра Windows, не процесс':`PID ${n.pid} · ${esc(n.exe)} · ${n.alive?'работает '+agoStr((NOW-ctToMs(n.ct))/1000):'завершён'}${desc(n).length?` · дочерних процессов: ${desc(n).length}`:''}`}</div></div></div>
       ${PSEUDO[n.pid]?'':`<div class="crumbs"><span class="caption" style="margin-right:4px">Кто запустил:</span>${ancestors(n).map(a=>`<a data-go="${esc(a.id)}">${esc(nameOf(a))}</a>`).join('<span class="sep">›</span>')||'<span class="caption">система</span>'}</div>`}
       <div class="pt-grid">${(PSEUDO[n.pid]?[['cpu','ЦП']]:[['cpu','ЦП'],['mem','Память'],['dsk','Диск']]).map(([m,t])=>`<div class="cell"><div class="caption"><span class="pt-cap" data-m="${m}">${t}</span></div><canvas data-m="${m}"></canvas><div class="pop"></div></div>`).join('')}</div>
       ${PSEUDO[n.pid]?'':`<dl class="kv pt-kv">
@@ -1704,7 +1749,7 @@ function renderProcTabs(chartsOnly){
 function openProcTab(id){
   const n=NODES.get(id);if(!n)return;const pid='proc:'+id;
   const ex=dock.getPanel(pid);if(ex){ex.api.setActive();return;}
-  dock.addPanel({id:pid,component:'proc',title:nameOf(n),params:{id}});
+  dock.addPanel({id:pid,component:'proc',title:PSEUDO[n.pid]?nameOf(n):`${nameOf(n)} · ${n.pid}`,params:{id}});
   requestAnimationFrame(()=>{renderAll();flushNeeds();});
 }
 
@@ -2132,7 +2177,7 @@ function renderDetails(){
      ${f.cmdline?`<dt>Командная строка</dt><dd class="mono">${esc(f.cmdline)}</dd>`:''}
      ${i.company?`<dt>Издатель</dt><dd>${esc(i.company)} <span class="caption">(из свойств файла)</span></dd>`:''}
      <dt>ЦП всего</dt><dd>${agoStr(n.cpuMs/1000)}</dd>
-     <dt>Память</dt><dd>${fmtMem(n.mem)} частная · ${fmtMem(n.ws)} рабочий набор · ${fmtMem(n.priv)} выделено</dd>
+     <dt>Память</dt><dd>${fmtMem(n.mem)} частный рабочий набор · ${fmtMem(n.ws)} весь рабочий набор · ${fmtMem(n.priv)} выделено (commit)</dd>
      ${NETPP?`<dt>Сеть</dt><dd>↓ ${fmtMbit(n.nrx)} · ↑ ${fmtMbit(n.ntx)}</dd>`:''}
      ${n.gpu>=.05||n.gmem>=1?`<dt>Видеокарта</dt><dd>${fmtPct(n.gpu)} · видеопамять ${fmtMem(n.gmem)}</dd>`:''}
      <dt>Потоки</dt><dd class="num">${n.threads}</dd><dt>Дескрипторы</dt><dd class="num">${n.handles.toLocaleString('ru')}</dd>
@@ -2155,7 +2200,7 @@ function renderDetailChart(){
 }
 $('#details').addEventListener('click',e=>{
   if(e.target.closest('.d-max')){setMax('detail');return;}
-  const vt=e.target.closest('[data-vt]');if(vt){openVirusTotal(vt.dataset.vt);return;}
+  const vt=e.target.closest('[data-vt]');if(vt){e.preventDefault();openVirusTotal(vt.dataset.vt);return;}
   const a=e.target.closest('[data-a]');
   if(a){if(a.dataset.a==='more'){const r=a.getBoundingClientRect();openMenu(r.left,r.bottom+4,[S.sel]);}else if(a.dataset.a==='open')openProcTab(S.sel);else act(a.dataset.a,[S.sel]);return;}
   const j=e.target.closest('[data-go]');if(j)select(j.dataset.go,true);

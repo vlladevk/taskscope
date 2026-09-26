@@ -204,6 +204,14 @@ button,input{font:inherit;color:inherit}
 .tbl th.on{color:var(--text-1)}
 .tbl td{padding:0 10px;height:32px;white-space:nowrap;text-align:right;position:relative}
 .tbl.left td{text-align:left}
+.tbl.left td.num{text-align:right}
+/* имя процесса остаётся на месте при прокрутке вбок (с дополнительными колонками таблица шире панели) */
+.tbl.procs td:first-child,.tbl.procs th:first-child{position:sticky;left:0;z-index:1;background:var(--layer)}
+.tbl.procs th:first-child{z-index:3}
+.tbl.procs tbody tr.new td:first-child{background:linear-gradient(rgba(108,203,95,.14),rgba(108,203,95,.14)),var(--layer)}
+.tbl.procs tbody tr.gone td:first-child{background:linear-gradient(rgba(255,153,164,.14),rgba(255,153,164,.14)),var(--layer)}
+.tbl.procs tbody tr:hover td:first-child{background:linear-gradient(var(--subtle-hover),var(--subtle-hover)),var(--layer)}
+.tbl.procs tbody tr.sel td:first-child{background:linear-gradient(var(--accent-sel),var(--accent-sel)),var(--layer)}
 .tbl td:first-child{text-align:left}
 .tbl tbody tr{cursor:default}
 .tbl tbody tr:hover td{background:var(--subtle-hover)}
@@ -218,6 +226,8 @@ button,input{font:inherit;color:inherit}
 .nm .tw svg{transition:transform .12s}
 .nm .tw.open svg{transform:rotate(90deg)}
 .nm .n1{overflow:hidden;text-overflow:ellipsis}
+/* пометки («низкий приоритет», «приостановлен») сжимаются первыми — имя процесса не пропадает */
+.nm .n1{min-width:min(60px,40%)}.nm .chip{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .nm .n2{color:var(--text-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;flex-shrink:20}
 .kid2{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:4px 8px;font-size:12px}
 .kid2>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -419,7 +429,8 @@ tr.susp .n1{color:var(--text-3)}
 .pt-tbl td{font-size:12px}
 .pt-kv{padding:0 14px 14px}
 .sig.ok{color:var(--success)}.sig.yel{color:var(--caution)}.sig.red{color:var(--critical);font-weight:600}
-.lnk{color:var(--accent);cursor:pointer;text-decoration:none}.lnk:hover{text-decoration:underline}
+.lnk{color:var(--accent);cursor:pointer;text-decoration:none;white-space:nowrap}.lnk:hover{text-decoration:underline}
+.d-sig,.pt-sig{word-break:normal;overflow-wrap:anywhere}
 tr.new td{background:rgba(108,203,95,.14)}
 tr.gone td{background:rgba(255,153,164,.14);color:var(--text-3)}
 tr.gone .n1{text-decoration:line-through;text-decoration-color:rgba(255,153,164,.6)}
