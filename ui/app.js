@@ -556,6 +556,7 @@ function mountChart(el){
   cv.addEventListener('mousemove',e=>chartHover(cv,pop,e));
   cv.addEventListener('mouseleave',()=>{S.hoverT=null;pop.style.display='none';renderCharts();});
   cv.addEventListener('click',()=>{const h=cv._hit;if(h&&h.nodeId)select(h.nodeId,true);});
+  cv.addEventListener('dblclick',()=>setMax('bottom'));
   $('.c-mode',el).addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;S.chartMode=b.dataset.m;S.hl=null;saveUI();renderCharts();flushNeeds();});
   $('.c-more-t',el).addEventListener('click',()=>{S.more=!S.more;saveUI();renderCharts();});
   const leg=$('.c-leg',el);
@@ -586,6 +587,12 @@ function renderChart(){
   const hi=S.hoverT!=null?clamp(Math.round((S.hoverT-d.meta.t0)/d.meta.step),0,n-1):n-1;
   setHTML($('.c-leg',el),d.series.length<2?'':d.series.map(s=>`<span class="lg" data-k="${esc(s.key||s.name)}" ${s.nodeId?`data-id="${esc(s.nodeId)}"`:''} ${s.tip?`title="${esc(s.tip)}"`:''}><i style="background:${s.color}"></i>${esc(s.name)} <b class="num">${r.fmt(s.data[hi]||0)}</b></span>`).join(''));
 }
+/* «Развернуть»: нижняя панель или график процесса занимают всё окно; Esc / повторный клик — обратно */
+const IC_MAX='<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M7 1.5h3.5V5M5 10.5H1.5V7M10.5 1.5L7 5M1.5 10.5L5 7"/></svg>';
+const IC_RESTORE='<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M10.5 5H7V1.5M1.5 7H5v3.5M7 5l3.5-3.5M5 7l-3.5 3.5"/></svg>';
+function maxMark(el,cls,on,btn){el.classList.toggle(cls,on);if(btn&&btn._on!==on){btn._on=on;btn.innerHTML=on?IC_RESTORE:IC_MAX;btn.title=on?'Свернуть обратно · Esc':'Развернуть на всё окно · двойной клик по графику';}}
+function setMax(v){S.max=S.max===v?null:v;if(S.max==='bottom'&&!S.bottom)S.bottom=true;
+  maxMark($('#shell'),'max-bottom',S.max==='bottom',$('#maxBottom'));applyShell();requestAnimationFrame(()=>requestAnimationFrame(renderCharts));}
 function renderCharts(){renderChart();renderDetailChart();renderProcTabs(true);}
 
 /* журнал */
@@ -1219,7 +1226,7 @@ function renderDetails(){
      <button class="btn subtle" data-a="open" title="Открыть историю процесса отдельной вкладкой">Открыть отдельно</button>
      <button class="btn subtle" data-a="more" title="Все действия">Ещё…</button></div>`}
    ${ancestors(n).length?`<div class="crumbs"><span class="caption" style="margin-right:4px">Кто запустил:</span>${ancestors(n).map(a=>`<a data-go="${esc(a.id)}">${esc(nameOf(a))}</a>`).join('<span class="sep">›</span>')}</div>`:''}
-   <div class="dchart"><div class="caption"><span class="d-cap"></span><span class="num d-now"></span></div><canvas class="d-cv"></canvas><div class="pop"></div></div>
+   <div class="dchart"><div class="caption"><span class="d-cap"></span><span><span class="num d-now"></span><button class="ib d-max"></button></span></div><canvas class="d-cv"></canvas><div class="pop"></div></div>
    ${kids.length?`<details class="dsec" data-s="kids" ${secOpen('kids')}><summary>${CHEV}Дочерние процессы<span class="caption">${kids.length}</span></summary><div class="kids">${kidsHTML}${kids.length>10?`<div class="caption" style="padding:2px 8px">и ещё ${kids.length-10}</div>`:''}</div></details>`:''}
    <details class="dsec" data-s="info" ${secOpen('info')}><summary>${CHEV}Сведения</summary>
    <dl class="kv">
@@ -1243,6 +1250,7 @@ function renderDetails(){
 function renderDetailChart(){
   const body=$('#details');if(!S.right||!vis(body))return;
   const cv=$('.d-cv',body),n=NODES.get(S.sel);if(!cv||!n)return;
+  maxMark(cv.parentElement,'max',S.max==='detail',$('.d-max',body));
   const r=curRes(),mm=r.m==='net'?'cpu':r.m,c=COLS.find(c=>c.m===mm);
   $('.d-now',body).textContent=c.fmt(cur(n,mm,true));
   const s=nodeSeries(n,mm);
@@ -1251,11 +1259,13 @@ function renderDetailChart(){
   drawTS(cv,{series:[{name:c.t,color:PAL[r.m==='net'?0:r.col],data:s.data}],t0:s.t0,step:s.step,missing:s.missing,fmt:c.fmt,fill:true});
 }
 $('#details').addEventListener('click',e=>{
+  if(e.target.closest('.d-max')){setMax('detail');return;}
   const a=e.target.closest('[data-a]');
   if(a){if(a.dataset.a==='more'){const r=a.getBoundingClientRect();openMenu(r.left,r.bottom+4,[S.sel]);}else if(a.dataset.a==='open')openProcTab(S.sel);else act(a.dataset.a,[S.sel]);return;}
   const j=e.target.closest('[data-go]');if(j)select(j.dataset.go,true);
 });
 $('#details').addEventListener('toggle',e=>{const d=e.target.closest('.dsec');if(d)SEC[d.dataset.s]=d.open;},true);
+$('#details').addEventListener('dblclick',e=>{if(e.target.closest('.d-cv'))setMax('detail');});
 $('#details').addEventListener('mousemove',e=>{const cv=e.target.closest('canvas');if(cv)chartHover(cv,cv.nextElementSibling,e);});
 $('#details').addEventListener('mouseout',e=>{if(e.target.tagName==='CANVAS'){S.hoverT=null;e.target.nextElementSibling.style.display='none';renderCharts();}});
 
@@ -1319,10 +1329,11 @@ function applyShell(){
   $('#bChart').hidden=S.btab!=='chart';$('#bLog').hidden=S.btab!=='log';
   requestAnimationFrame(()=>{relayout();renderAll();flushNeeds();});
 }
-const toggleBottom=v=>{S.bottom=v==null?!S.bottom:v;saveUI();applyShell();};
+const toggleBottom=v=>{S.bottom=v==null?!S.bottom:v;if(!S.bottom&&S.max==='bottom'){S.max=null;maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));}saveUI();applyShell();};
 const toggleRail=v=>{S.rail=v==null?!S.rail:v;saveUI();applyShell();};
 const toggleRight=v=>{S.right=v==null?!S.right:v;saveUI();applyShell();};
 $('#tglBottom').addEventListener('click',()=>toggleBottom());
+$('#maxBottom').addEventListener('click',()=>setMax('bottom'));maxMark($('#shell'),'max-bottom',false,$('#maxBottom'));
 $('#tglRight').addEventListener('click',()=>toggleRight());
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.dataset.close==='bottom'?toggleBottom(false):toggleRight(false)));
 function sash(id,apply){
@@ -1381,7 +1392,7 @@ document.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.code==='KeyF'){const q=PANEL_EL.procs&&$('.p-q',PANEL_EL.procs);if(q){e.preventDefault();q.focus();q.select();}return;}
   if(e.target.matches('input'))return;
   if(e.key==='Delete'&&S.sel)act(e.shiftKey?'tree':'kill',[...(S.multi.size?S.multi:[S.sel])]);
-  if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(TAURI)appCmd('hide').catch(()=>{});}
+  if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(S.max)setMax(S.max);else if(TAURI)appCmd('hide').catch(()=>{});}
 });
 
 function renderAll(){if(!SYS)return;RES=resList();renderTop();renderRail();renderChart();renderLog();renderProcs();renderMap();renderDocker();renderPool();renderDetails();renderProcTabs();}
