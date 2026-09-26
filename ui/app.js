@@ -1630,7 +1630,7 @@ function ptLoad(id,el,what){
 }
 /* подпись файла: один запрос на путь, результат держим до перезапуска окна */
 const SIGS=new Map();
-const SIG_TXT={signed:['подписан','ok'],unsigned:['без подписи','yel'],untrusted:['подпись недоверенная','red'],expired:['сертификат истёк','yel'],revoked:['сертификат отозван','red'],bad_digest:['подпись не совпадает с файлом — файл изменён','red'],distrusted:['подписавший недоверенный','red'],error:['подпись не проверить','yel']};
+const SIG_TXT={signed:['подписан','ok'],unsigned:['без подписи','yel'],untrusted:['подпись недоверенная','red'],expired:['сертификат истёк','yel'],revoked:['сертификат отозван','red'],bad_digest:['подпись не совпадает с файлом — файл изменён','red'],distrusted:['подписавший недоверенный','red'],not_applicable:['не программа — подписи у таких файлов не бывает','dim'],error:['подпись не проверить','yel']};
 /* путь, который сейчас на экране (выбранный процесс или открытая вкладка) */
 function sigWanted(k){
   const has=n=>{if(!n)return false;const i=INFO.get(n.id)||{},p=(n.full&&n.full.path)||i.path;return !!p&&p.toLowerCase()===k;};

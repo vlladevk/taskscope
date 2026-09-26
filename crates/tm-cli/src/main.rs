@@ -1621,6 +1621,7 @@ fn cmd_sig(args: &Args) -> Res<bool> {
         "revoked" => "сертификат отозван",
         "bad_digest" => "подпись НЕ совпадает с файлом (файл изменён после подписи)",
         "distrusted" => "подписавший в списке недоверенных",
+        "not_applicable" => "не программа — у файлов такого формата подписи не бывает",
         _ => "подпись не проверить",
     };
     println!("{path}");
@@ -1629,5 +1630,6 @@ fn cmd_sig(args: &Args) -> Res<bool> {
         println!("  SHA-256 {h}");
         println!("  https://www.virustotal.com/gui/file/{h}");
     }
-    Ok(s.status == "signed")
+    // код 1 — «с подписью что-то не так»; у не-программ подписи и не должно быть
+    Ok(matches!(s.status, "signed" | "not_applicable"))
 }

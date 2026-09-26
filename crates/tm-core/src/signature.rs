@@ -36,6 +36,8 @@ const WTD_STATEACTION_VERIFY: u32 = 1;
 const WTD_STATEACTION_CLOSE: u32 = 2;
 const WTD_CACHE_ONLY_URL_RETRIEVAL: u32 = 0x1000;
 const TRUST_E_NOSIGNATURE: i32 = 0x800B_0100_u32 as i32;
+/// Формат файла без встроенной подписи (текст, картинка, архив): подписывать тут нечего.
+const TRUST_E_SUBJECT_FORM_UNKNOWN: i32 = 0x800B_0003_u32 as i32;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Signature {
@@ -60,6 +62,8 @@ fn status_of(code: i32) -> &'static str {
         0x800B_010C => "revoked",
         0x8009_6010 => "bad_digest",
         0x800B_0111 => "distrusted",
+        // не программа и не в каталоге Windows — «не применимо», а не ошибка проверки
+        0x800B_0003 => "not_applicable",
         _ => "error",
     }
 }
@@ -199,10 +203,12 @@ pub fn check(path: &str) -> std::io::Result<Signature> {
         fi.cbStruct = size_of::<WINTRUST_FILE_INFO>() as u32;
         fi.pcwszFilePath = wpath.as_ptr();
         let (code, signer) = verify(WTD_CHOICE_FILE, (&mut fi as *mut WINTRUST_FILE_INFO).cast());
-        if code == TRUST_E_NOSIGNATURE {
+        // файлы без встроенной подписи (и не программы: .inf, .ps1 без подписи) бывают в каталоге
+        if code == TRUST_E_NOSIGNATURE || code == TRUST_E_SUBJECT_FORM_UNKNOWN {
             match verify_catalog(&wpath, &file) {
                 Some((c, s)) => (c, s, true),
-                None => (code, None, false),
+                None if code == TRUST_E_NOSIGNATURE => (code, None, false),
+                None => (TRUST_E_SUBJECT_FORM_UNKNOWN, None, false),
             }
         } else {
             (code, signer, false)
