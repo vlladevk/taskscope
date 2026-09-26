@@ -24,7 +24,7 @@ pub struct Service {
 }
 
 pub fn is_mutating(method: &str) -> bool {
-    matches!(method, "act" | "reveal" | "web" | "docker_act" | "settings_set")
+    matches!(method, "act" | "reveal" | "web" | "docker_act" | "settings_set" | "service_act")
 }
 
 fn arg<T: for<'de> Deserialize<'de>>(params: &Value) -> Result<T, String> {
@@ -222,6 +222,42 @@ impl Service {
             }
             // контейнеры Docker и их нагрузка (пока смотрят — обновляется раз в 2 с)
             "docker" => Ok(serde_json::to_value(self.docker.get()).map_err(|e| e.to_string())?),
+            // службы Windows: details — ещё тип запуска и описание (дольше, но кэшируется)
+            "services" => {
+                let details = params.get("details").and_then(Value::as_bool).unwrap_or(true);
+                let list = crate::services::list(details).map_err(|e| e.to_string())?;
+                Ok(json!({ "services": list, "elevated": crate::system::is_elevated() }))
+            }
+            "service_act" => {
+                #[derive(Deserialize)]
+                struct P {
+                    name: String,
+                    action: String,
+                    #[serde(default)]
+                    force: bool,
+                }
+                let p: P = arg(params)?;
+                let what = match p.action.as_str() {
+                    "start" => crate::services::Control::Start,
+                    "stop" => crate::services::Control::Stop,
+                    "restart" => crate::services::Control::Restart,
+                    o => return Err(format!("неизвестное действие со службой «{o}»")),
+                };
+                let state = crate::services::control(&p.name, what, p.force).map_err(|e| e.to_string())?;
+                self.engine.log("info", format!("Служба {}: {} → {state}", p.name, p.action), None);
+                Ok(json!({ "ok": true, "state": state }))
+            }
+            // сетевые подключения и открытые порты (pid — только этого процесса)
+            "connections" => {
+                let pid = params.get("pid").and_then(Value::as_u64).map(|p| p as u32);
+                let list: Vec<_> = crate::conns::list().into_iter().filter(|c| pid.is_none_or(|p| c.pid == p)).collect();
+                Ok(json!({ "connections": list }))
+            }
+            // кто держит файл или файлы в папке (Restart Manager)
+            "file_holders" => {
+                let path = params.get("path").and_then(Value::as_str).ok_or("нужен path")?;
+                Ok(json!({ "holders": crate::locks::holders(path).map_err(|e| e.to_string())? }))
+            }
             "docker_act" => {
                 #[derive(Deserialize)]
                 struct P {

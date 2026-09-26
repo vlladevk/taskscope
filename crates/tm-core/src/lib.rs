@@ -3,11 +3,13 @@
 
 pub mod actions;
 pub mod apps;
+pub mod conns;
 pub mod engine;
 pub mod docker;
 pub mod gpu;
 pub mod handle;
 pub mod info;
+pub mod locks;
 pub mod history;
 pub mod icons;
 pub mod net;
@@ -18,6 +20,7 @@ pub mod pool;
 pub mod sampler;
 pub mod sysmem;
 pub mod service;
+pub mod services;
 pub mod settings;
 pub mod system;
 pub mod tree;
