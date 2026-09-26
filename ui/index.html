@@ -225,6 +225,11 @@ tr.susp .n1{color:var(--text-3)}
 /* ===== Карта памяти ===== */
 .map-wrap{flex:1;min-height:0;position:relative;margin:0 14px}
 .map-wrap canvas{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
+/* шапка карты не рассыпается на узкой ширине: описание сокращается многоточием, «Цвет» — рядом с переключателем */
+.m-desc{min-width:0;flex:1 1 140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-cw{display:flex;align-items:center;gap:8px;flex:none}
+.maplegend .lk{cursor:default}
+.maplegend .lk:hover{color:var(--text-1)}
 .mapstat{padding:6px 14px 0;font-size:12px;line-height:18px;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:none}
 .mapstat b{color:var(--text-1);font-weight:600}
 .maplegend{display:flex;flex-wrap:wrap;gap:4px 14px;padding:8px 14px 10px;font-size:12px;color:var(--text-2);flex:none}
