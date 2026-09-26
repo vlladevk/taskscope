@@ -1463,6 +1463,8 @@ function nodeSeries(n,m){
     const v=SP(keys,BY[m]==='io'?'io':BY[m],pts);if(!v)return null;
     const data=v[0].map(conv(m));return {t0:NOW-(data.length-1)*1000,step:1000,data,caption:appDesc(n).length>1?'с дочерними процессами приложения':''};
   }
+  /* у прерываний и DPC долгой истории нет, а «всё приложение Windows» — не они: последние 5 минут */
+  if(PSEUDO[n.pid]){const data=rtail(m==='cpu'?n.rc:n.rio,SPARKN);return {t0:NOW-(data.length-1)*1000,step:1000,data,caption:'последние 5 минут'};}
   const a=appOf(n);if(!a)return {t0:NOW,step:1000,data:[],caption:''};
   const h=H('apps',BY[m],1,[a.key]);if(!h)return null;
   const s=h.series[0];const data=s?s.values.map(conv(m)):new Array(h.points).fill(0);
@@ -1670,12 +1672,14 @@ function fetchSvcs(force){
   rpc('services',{details:true}).then(d=>{SVCS=d;indexSvcs(d.services);}).catch(e=>{SVCS={error:e.message||String(e),services:[]};})
     .finally(()=>{svcBusy=false;svcAt=Date.now();renderSvcs(true);});
 }
-const nodeByPid=pid=>{for(const n of NODES.values())if(n.alive&&n.pid===pid)return n;return null;};
+/* PID → живой узел: карта на полсекунды, а не проход по всем узлам на каждую строку служб и подключений */
+let PIDM=null;
+const nodeByPid=pid=>{const t=performance.now();if(!PIDM||t-PIDM.t>500){const m=new Map();for(const n of NODES.values())if(n.alive)m.set(n.pid,n);PIDM={t,m};}return PIDM.m.get(pid)||null;};
 function mountSvcs(el){
-  el.innerHTML=`<div class="ph"><input class="search sv-q" placeholder="Поиск службы: имя или название…">
+  el.innerHTML=`<div class="ph"><input class="search sv-q" placeholder="Поиск службы…">
       <label class="chk"><input type="checkbox" class="sv-all"> и остановленные</label>
       <div class="spacer"></div><span class="caption sv-head">Читаю список служб…</span></div>
-    <div class="tbl-wrap"><table class="tbl left" style="min-width:680px"><colgroup><col><col style="width:116px"><col style="width:156px"><col style="width:168px"><col style="width:40px"></colgroup>
+    <div class="tbl-wrap"><table class="tbl left" style="min-width:540px"><colgroup><col><col style="width:108px"><col style="width:112px"><col style="width:136px"><col style="width:40px"></colgroup>
     <thead><tr><th style="cursor:default;text-align:left">Служба</th><th style="cursor:default;text-align:left">Состояние</th><th style="cursor:default;text-align:left">Запуск</th><th style="cursor:default;text-align:left">Процесс</th><th style="cursor:default"></th></tr></thead><tbody></tbody></table></div>
     <div class="caption sv-foot" style="padding:6px 14px 8px"></div>`;
   $('.sv-q',el).addEventListener('input',e=>{SV.q=e.target.value.trim().toLowerCase();renderSvcs(true);});
@@ -1684,8 +1688,12 @@ function mountSvcs(el){
     const s=SVCS&&SVCS.services.find(x=>x.name===name);if(!s)return;
     const on=s.state==='running',off=s.state==='stopped';
     const it=[];
-    if(off)it.push(`<div class="mi" data-sva="start" data-name="${esc(s.name)}"><span>Запустить</span></div>`);
-    if(on&&s.can_stop)it.push(`<div class="mi danger" data-sva="stop" data-name="${esc(s.name)}"><span>Остановить</span></div>`,`<div class="mi danger" data-sva="restart" data-name="${esc(s.name)}"><span>Перезапустить</span></div>`);
+    /* без прав администратора Windows не даст управлять службами: пункты видны, но недоступны */
+    const off2=SVCS.elevated?'':' off';
+    if(!SVCS.elevated&&(off||(on&&s.can_stop)))it.push('<div class="mh">Нужны права администратора</div>');
+    if(off)it.push(`<div class="mi${off2}" data-sva="start" data-name="${esc(s.name)}"><span>Запустить</span></div>`);
+    if(on&&s.can_stop)it.push(`<div class="mi danger${off2}" data-sva="stop" data-name="${esc(s.name)}"><span>Остановить</span></div>`,`<div class="mi danger${off2}" data-sva="restart" data-name="${esc(s.name)}"><span>Перезапустить</span></div>`);
+    if(!SVCS.elevated&&(off||(on&&s.can_stop))&&TAURI)it.push('<div class="mi" data-svadm="1"><span>Перезапустить диспетчер от администратора…</span></div>');
     if(s.pid&&nodeByPid(s.pid))it.push('<div class="sep"></div>',`<div class="mi" data-svgo="${s.pid}"><span>Перейти к процессу</span></div>`);
     if(!it.length)it.push('<div class="mh">Служба не принимает команды</div>');
     menuIds=null;
@@ -1700,6 +1708,7 @@ function mountSvcs(el){
   el.addEventListener('contextmenu',e=>{const tr=e.target.closest('tr[data-id]');if(!tr)return;e.preventDefault();open(e,tr.dataset.id);});
 }
 menu.addEventListener('click',async e=>{
+  if(e.target.closest('[data-svadm]')){closeMenu();try{await runAdmin();}catch(err){toast(err.message||String(err),'red');}return;}
   const g=e.target.closest('[data-svgo]');
   if(g){closeMenu();const n=nodeByPid(+g.dataset.svgo);if(n){dock.getPanel('procs')?.api.setActive();select(n.id,true);}return;}
   const b=e.target.closest('[data-sva]');if(!b)return;closeMenu();
@@ -1744,7 +1753,7 @@ function renderSvcs(fromFetch){
       {h:`<span class="sv-st"><span class="dot" style="${dot(s.state)}"></span>${SVC_STATE[s.state]||s.state}</span>`},
       {h:`<span class="caption">${SVC_START[s.start]||'—'}</span>`},
       {h:n?`<a data-go="${esc(n.id)}" class="sv-proc">${esc(n.exe)} · ${s.pid}</a>`:s.pid?`<span class="caption">PID ${s.pid}</span>`:'<span style="color:var(--text-4)">—</span>'},
-      {h:`<button class="ib" data-svm="${esc(s.name)}" title="Действия">⋯</button>`},
+      {h:`<button class="ib" data-svm="${esc(s.name)}" title="Действия">⋯</button>`,c:'stick'},
     ]};
   }));
   setHTML($('.sv-foot',el),list.length?`Показано: ${list.length}. Правый клик или «⋯» — запустить, остановить, перезапустить.`:'Ничего не найдено.');
@@ -1754,23 +1763,26 @@ function renderSvcs(fromFetch){
    Подключения и открытые порты (GetExtendedTcpTable / GetExtendedUdpTable)
    ================================================================= */
 let CONNS=null,connBusy=false,connAt=0;
-const CN={q:'',listen:false};
+const CN={q:'',listen:false,closed:false};
 const CONN_STATE={listen:'ожидает',established:'установлено',time_wait:'закрывается',close_wait:'закрывается',syn_sent:'подключается',syn_received:'подключается',fin_wait1:'закрывается',fin_wait2:'закрывается',closing:'закрывается',last_ack:'закрывается',closed:'закрыто'};
 const hostPort=(a,p)=>a.includes(':')?`[${a}]:${p}`:`${a}:${p}`;
 function fetchConns(){
   if(connBusy||Date.now()-connAt<2000)return;
   connBusy=true;
-  rpc('connections').then(d=>{CONNS=d.connections;}).catch(e=>{CONNS=null;toast('Подключения: '+(e.message||e),'red');})
+  rpc('connections').then(d=>{CONNS=d.connections;fetchConns.err=null;}).catch(e=>{CONNS=null;const m=e.message||String(e);if(fetchConns.err!==m){fetchConns.err=m;toast('Подключения: '+m,'red');}})
     .finally(()=>{connBusy=false;connAt=Date.now();renderConns(true);});
 }
 function mountConns(el){
   el.innerHTML=`<div class="ph"><input class="search cn-q" placeholder="Поиск: процесс, адрес, порт…">
       <label class="chk"><input type="checkbox" class="cn-l"> только открытые порты</label>
+      <label class="chk" title="Соединения в состоянии TIME_WAIT: процесс их уже закрыл, Windows держит адрес ещё пару минут"><input type="checkbox" class="cn-cl"> <span class="cn-c">и закрытые</span></label>
       <div class="spacer"></div><span class="caption cn-head"></span></div>
-    <div class="tbl-wrap"><table class="tbl left" style="min-width:800px"><colgroup><col><col style="width:56px"><col style="width:220px"><col style="width:240px"><col style="width:120px"></colgroup>
-    <thead><tr><th style="cursor:default;text-align:left">Процесс</th><th style="cursor:default;text-align:left">Прот.</th><th style="cursor:default;text-align:left">Локальный адрес</th><th style="cursor:default;text-align:left">Удалённый адрес</th><th style="cursor:default;text-align:left">Состояние</th></tr></thead><tbody></tbody></table></div>`;
+    <div class="tbl-wrap"><table class="tbl left" style="min-width:640px"><colgroup><col><col style="width:52px"><col style="width:170px"><col style="width:190px"><col style="width:100px"></colgroup>
+    <thead><tr><th style="cursor:default;text-align:left">Процесс</th><th style="cursor:default;text-align:left">Прот.</th><th style="cursor:default;text-align:left">Локальный адрес</th><th style="cursor:default;text-align:left">Удалённый адрес</th><th style="cursor:default;text-align:left">Состояние</th></tr></thead><tbody></tbody></table></div>
+    <div class="caption cn-foot" style="padding:6px 14px 8px"></div>`;
   $('.cn-q',el).addEventListener('input',e=>{CN.q=e.target.value.trim().toLowerCase();renderConns(true);});
   $('.cn-l',el).addEventListener('change',e=>{CN.listen=e.target.checked;renderConns(true);});
+  $('.cn-cl',el).addEventListener('change',e=>{CN.closed=e.target.checked;renderConns(true);});
   el.addEventListener('click',e=>{const g=e.target.closest('[data-go]');if(g)select(g.dataset.go,true);});
 }
 function renderConns(fromFetch){
@@ -1778,20 +1790,23 @@ function renderConns(fromFetch){
   if(!fromFetch)fetchConns();
   if(!CONNS)return;
   const q=CN.q;
-  const rows=CONNS.filter(c=>!CN.listen||c.state==='listen'||c.proto==='udp').map(c=>({c,n:nodeByPid(c.pid)}))
-    .filter(({c,n})=>!q||String(c.pid).includes(q)||c.local.includes(q)||c.remote.includes(q)||String(c.local_port)===q||String(c.remote_port)===q||(n&&(nameOf(n).toLowerCase().includes(q)||n.exe.toLowerCase().includes(q))));
-  /* PID 0 — закрытые соединения в TIME_WAIT, у них уже нет процесса: вниз, чтобы не заслоняли живые */
-  const rank=({c,n})=>c.pid===0?2:n?0:1;
-  rows.sort((a,b)=>rank(a)-rank(b)||(a.n?nameOf(a.n):'').localeCompare(b.n?nameOf(b.n):'')||a.c.local_port-b.c.local_port);
-  const est=CONNS.filter(c=>c.state==='established').length,lis=CONNS.filter(c=>c.state==='listen').length;
-  setHTML($('.cn-head',el),`установлено ${est} · открытых TCP-портов ${lis} · UDP ${CONNS.filter(c=>c.proto==='udp').length}`);
-  patchRows($('tbody',el),rows.slice(0,800).map(({c,n},i)=>({id:`${c.proto}|${c.local}|${c.local_port}|${c.remote}|${c.remote_port}|${c.pid}`,cls:'',cells:[
-    {h:n?`<div class="nm">${ico(n)}<a data-go="${esc(n.id)}" class="n1">${esc(nameOf(n))}</a><span class="n2">${c.pid}</span></div>`:`<span class="caption">${c.pid?'PID '+c.pid:'процесс уже завершил соединение'}</span>`},
+  /* PID 0 — закрытые соединения в TIME_WAIT: процесса у них уже нет, по умолчанию скрыты */
+  const closed=CONNS.filter(c=>c.pid===0).length;
+  const rows=dedupConns(CONNS.filter(c=>(CN.closed||c.pid!==0)&&(!CN.listen||c.state==='listen'||c.proto==='udp'))).map(x=>{const n=nodeByPid(x.c.pid);return {...x,nd:n,nm:n?nameOf(n):''};})
+    .filter(({c,nd})=>!q||String(c.pid).includes(q)||c.local.includes(q)||c.remote.includes(q)||String(c.local_port)===q||String(c.remote_port)===q||(nd&&(nameOf(nd).toLowerCase().includes(q)||nd.exe.toLowerCase().includes(q))));
+  const rank=({c,nd})=>c.pid===0?2:nd?0:1;
+  rows.sort((a,b)=>rank(a)-rank(b)||a.nm.localeCompare(b.nm)||a.c.local_port-b.c.local_port);
+  const live=CONNS.filter(c=>c.pid!==0),est=live.filter(c=>c.state==='established').length,lis=live.filter(c=>c.state==='listen').length;
+  setHTML($('.cn-head',el),`установлено ${est} · открытых TCP-портов ${lis} · UDP ${live.filter(c=>c.proto==='udp').length}`);
+  $('.cn-c',el).textContent=`и закрытые (${closed})`;
+  patchRows($('tbody',el),rows.slice(0,800).map(({c,n,nd})=>({id:`${c.proto}|${c.local}|${c.local_port}|${c.remote}|${c.remote_port}|${c.state}|${c.pid}`,cls:c.pid===0?'dim':'',cells:[
+    {h:nd?`<div class="nm">${ico(nd)}<a data-go="${esc(nd.id)}" class="n1">${esc(nameOf(nd))}</a><span class="n2">${c.pid}</span></div>`:`<span class="caption">${c.pid?'PID '+c.pid:'завершено'}</span>`},
     {h:`<span class="caption">${c.proto.toUpperCase()}</span>`},
     {h:`<span class="mono">${esc(hostPort(c.local,c.local_port))}</span>`},
     {h:c.remote?`<span class="mono">${esc(hostPort(c.remote,c.remote_port))}</span>`:'<span style="color:var(--text-4)">—</span>'},
-    {h:`<span class="caption">${c.proto==='udp'?'открыт':CONN_STATE[c.state]||c.state}</span>`},
+    {h:`<span class="caption">${c.proto==='udp'?'открыт':CONN_STATE[c.state]||c.state}${n>1?` ×${n}`:''}</span>`,t:n>1?`${n} одинаковых сокетов`:''},
   ]})));
+  setHTML($('.cn-foot',el),!rows.length?'Ничего не найдено.':rows.length>800?`Показаны первые 800 из ${rows.length} — уточните поиск.`:`Показано: ${rows.length}.`);
 }
 
 /* =================================================================
@@ -1799,24 +1814,30 @@ function renderConns(fromFetch){
    ================================================================= */
 async function whoHolds(){
   if(DIALOG)return;
-  const bg=document.createElement('div');bg.className='modal-bg';
+  const bg=document.createElement('div');bg.className='modal-bg top'; /* сверху: поле ввода не прыгает, когда меняется высота результата */
   bg.innerHTML=`<div class="modal" role="dialog" aria-modal="true" aria-labelledby="wh-t"><h3 id="wh-t">Кто держит файл</h3>
     <p class="m-lead">Путь к файлу или папке, которые не удаляются, не переименовываются или заняты «другим процессом».</p>
     <div class="wh-row"><input class="search wh-p" placeholder="C:\\путь\\к\\файлу или папке" spellcheck="false"><button class="btn primary wh-go">Найти</button></div>
     <div class="m-body scroll wh-res"></div>
     <div class="m-acts"><button class="btn" data-r="0">Закрыть</button></div></div>`;
-  const close=()=>{bg.remove();DIALOG=null;document.removeEventListener('keydown',key,true);};
-  const key=e=>{e.stopImmediatePropagation();if(e.key==='Escape'){e.preventDefault();close();}else if(e.key==='Enter'&&e.target.matches('.wh-p')){e.preventDefault();go();}};
+  const prevFocus=document.activeElement;
+  const close=()=>{bg.remove();DIALOG=null;document.removeEventListener('keydown',key,true);if(prevFocus&&prevFocus.focus)prevFocus.focus();};
+  const key=e=>{e.stopImmediatePropagation();if(e.key==='Escape'){e.preventDefault();close();}else if(e.key==='Enter'&&e.target.matches('.wh-p')){e.preventDefault();go();}
+    else if(e.key==='Tab'){const f=[...bg.querySelectorAll('button:not(:disabled),input')];const i=f.indexOf(document.activeElement);e.preventDefault();f[(i+(e.shiftKey?f.length-1:1))%f.length].focus();}};
   const res=$('.wh-res',bg);
   const go=async()=>{
     const path=$('.wh-p',bg).value.trim().replace(/^"|"$/g,'');if(!path)return;
-    res.innerHTML='<p class="caption">Ищу…</p>';
+    const btn=$('.wh-go',bg);if(btn.disabled)return;btn.disabled=true;
+    res.innerHTML='<p class="caption">Ищу… в большой папке проверка занимает несколько секунд.</p>';
     try{
       const r=await rpc('file_holders',{path});
-      if(!r.holders.length){res.innerHTML='<p class="m-lead">Никто не держит этот путь открытым. Если удалить всё равно нельзя — дело в правах или атрибуте «только чтение».</p>';return;}
-      res.innerHTML=`<div class="m-list">${r.holders.map(h=>{const n=NODES.get(h.pid+':'+h.create_time)||nodeByPid(h.pid);
+      const note=(r.truncated?`<p class="caption">Папка большая: проверены только ${r.files} файлов верхних уровней — для точного ответа укажите вложенную папку или файл.</p>`:'')
+        +(r.skipped?`<p class="caption">Пропущено файлов без доступа: ${r.skipped}.${isAdmin()?'':ADMIN_LINK}</p>`:'');
+      if(!r.holders.length){res.innerHTML=(r.truncated?'<p class="m-lead">В проверенной части папки файлы никто не держит.</p>':'<p class="m-lead">Никто не держит этот путь открытым. Если удалить всё равно нельзя — дело в правах или атрибуте «только чтение».</p>')+note;return;}
+      res.innerHTML=note+`<div class="m-list">${r.holders.map(h=>{const n=NODES.get(h.pid+':'+h.create_time); /* только точное совпадение: PID мог достаться другому процессу */
         return `<div class="m-row wh-h">${n?ico(n):'<span class="m-ico"></span>'}<span class="m-n">${esc(n?nameOf(n):h.app)}${h.service?` <span class="caption">· служба ${esc(h.service)}</span>`:''}</span><span class="caption num">${h.pid}</span>${n?`<button class="btn danger wh-k" data-id="${esc(n.id)}">Завершить</button>`:'<span></span>'}</div>`;}).join('')}</div>`;
-    }catch(e){res.innerHTML=`<p class="m-lead warn-t">${esc(e.message||String(e))}</p>`;}
+    }catch(e){const m=String(e.message||e);res.innerHTML=`<p class="m-lead warn-t">${esc(m.charAt(0).toUpperCase()+m.slice(1))}</p>`;}
+    finally{btn.disabled=false;}
   };
   bg.addEventListener('click',e=>{
     if(e.target.closest('[data-r="0"]')||e.target===bg)return close();
@@ -1830,23 +1851,32 @@ async function whoHolds(){
 /* =================================================================
    Детали процесса: службы внутри и сетевые подключения
    ================================================================= */
-let DCONN={pid:0,at:0,list:null,busy:false};
+let DCONN={at:0,list:null,busy:false};
+/* одинаковые сокеты (десяток UDP 5353 у браузера) — одной строкой с «×N» */
+function dedupConns(list){
+  const m=new Map();
+  for(const c of list){const k=`${c.proto}|${c.local}|${c.local_port}|${c.remote}|${c.remote_port}|${c.state}|${c.pid}`;const x=m.get(k);if(x)x.n++;else m.set(k,{c,n:1});}
+  return [...m.values()];
+}
 function detailExtras(n,secOpen){
   const svcs=SVC_BY_PID.get(n.pid)||[];
-  if(DCONN.pid!==n.pid||Date.now()-DCONN.at>3000){
-    if(!DCONN.busy){DCONN.busy=true;const pid=n.pid;
-      rpc('connections',{pid}).then(d=>{DCONN={pid,at:Date.now(),list:d.connections,busy:false};renderDetails();}).catch(()=>{DCONN.busy=false;});}
-  }
-  const conns=DCONN.pid===n.pid&&DCONN.list?DCONN.list:[];
+  /* сеть — всего приложения: у браузера соединения держит дочерний «сетевой» процесс, а не главный */
+  if(Date.now()-DCONN.at>3000&&!DCONN.busy){DCONN.busy=true;
+    rpc('connections').then(d=>{DCONN={at:Date.now(),list:d.connections,busy:false};renderDetails();}).catch(()=>{DCONN={at:Date.now(),list:DCONN.list,busy:false};});}
+  const tree=appDesc(n),pids=new Set(tree.map(x=>x.pid));
+  const conns=DCONN.list?DCONN.list.filter(c=>pids.has(c.pid)):[];
   let h='';
   if(svcs.length)h+=`<details class="dsec" data-s="svcs" ${secOpen('svcs')}><summary>${CHEV}Службы в процессе<span class="caption">${svcs.length}</span></summary>
-    <div class="kids">${svcs.slice(0,20).map(s=>`<div class="kid"><span>${esc(s.display)}</span><span class="v caption">${esc(s.name)}</span></div>`).join('')}${svcs.length>20?`<div class="caption" style="padding:2px 8px">и ещё ${svcs.length-20}</div>`:''}</div></details>`;
+    <div class="kids">${svcs.slice(0,20).map(s=>`<div class="kid2"><span>${esc(s.display)}</span><span class="caption">${esc(s.name)}</span></div>`).join('')}${svcs.length>20?`<div class="caption" style="padding:2px 8px">и ещё ${svcs.length-20}</div>`:''}</div></details>`;
   if(conns.length){
-    const lis=conns.filter(c=>c.state==='listen'||c.proto==='udp'),est=conns.filter(c=>c.state!=='listen'&&c.proto==='tcp');
-    h+=`<details class="dsec" data-s="net" ${secOpen('net')}><summary>${CHEV}Сеть<span class="caption">${est.length} подкл. · ${lis.length} портов</span></summary><div class="kids">
-      ${lis.slice(0,8).map(c=>`<div class="kid"><span class="mono">${c.proto.toUpperCase()} ${esc(hostPort(c.local,c.local_port))}</span><span class="v caption">открыт</span></div>`).join('')}
-      ${est.slice(0,12).map(c=>`<div class="kid"><span class="mono">→ ${esc(hostPort(c.remote,c.remote_port))}</span><span class="v caption">${CONN_STATE[c.state]||c.state}</span></div>`).join('')}
-      ${lis.length>8||est.length>12?'<div class="caption" style="padding:2px 8px">остальное — во вкладке «Подключения»</div>':''}</div></details>`;
+    const lis=dedupConns(conns.filter(c=>c.state==='listen'||c.proto==='udp')),est=dedupConns(conns.filter(c=>c.state!=='listen'&&c.proto==='tcp'&&c.pid!==0));
+    const ne=est.reduce((a,x)=>a+x.n,0),nl=lis.length;
+    const who=x=>tree.length>1&&x.c.pid!==n.pid?` <span class="caption">· ${x.c.pid}</span>`:'';
+    const times=x=>x.n>1?` ×${x.n}`:'';
+    h+=`<details class="dsec" data-s="net" ${secOpen('net')}><summary>${CHEV}Сеть${tree.length>1?' приложения':''}<span class="caption">${ne} ${plural(ne,'подключение','подключения','подключений')} · ${nl} ${plural(nl,'порт','порта','портов')}</span></summary><div class="kids">
+      ${lis.slice(0,8).map(x=>`<div class="kid2"><span class="mono">${x.c.proto.toUpperCase()} ${esc(hostPort(x.c.local,x.c.local_port))}${who(x)}</span><span class="caption">${x.c.proto==='udp'?'открыт':'ожидает'}${times(x)}</span></div>`).join('')}
+      ${est.slice(0,12).map(x=>`<div class="kid2"><span class="mono">→ ${esc(hostPort(x.c.remote,x.c.remote_port))}${who(x)}</span><span class="caption">${CONN_STATE[x.c.state]||x.c.state}${times(x)}</span></div>`).join('')}
+      ${lis.length>8||est.length>12?'<div class="caption" style="padding:2px 8px">остальное — во вкладке «Сеть»</div>':''}</div></details>`;
   }
   return h;
 }
@@ -1973,7 +2003,7 @@ function defaultLayout(){
   dock.addPanel({id:'docker',component:'docker',tabComponent:'fixed',title:'Docker',position:{referencePanel:'procs',direction:'within'},inactive:true});
   dock.addPanel({id:'pool',component:'pool',tabComponent:'fixed',title:'Пул ядра',position:{referencePanel:'procs',direction:'within'},inactive:true});
   dock.addPanel({id:'svcs',component:'svcs',tabComponent:'fixed',title:'Службы',position:{referencePanel:'procs',direction:'within'},inactive:true});
-  dock.addPanel({id:'conns',component:'conns',tabComponent:'fixed',title:'Подключения',position:{referencePanel:'procs',direction:'within'},inactive:true});
+  dock.addPanel({id:'conns',component:'conns',tabComponent:'fixed',title:'Сеть',position:{referencePanel:'procs',direction:'within'},inactive:true});
 }
 const LAYOUT_KEY='tm-layout-3';
 let restored=false;
@@ -1981,8 +2011,10 @@ try{const j=localStorage.getItem(LAYOUT_KEY);if(j){const L=JSON.parse(j);delete 
 if(!restored)defaultLayout();
 /* основная вкладка могла остаться в выкинутом плавающем окне — возвращаем её в общую группу */
 function ensureFixed(){const ref=FIXED.map(k=>dock.getPanel(k)).find(Boolean);
-  for(const [k,t] of [['procs','Процессы'],['map','Карта'],['docker','Docker'],['pool','Пул ядра'],['svcs','Службы'],['conns','Подключения']])if(!dock.getPanel(k))dock.addPanel({id:k,component:k,tabComponent:'fixed',title:t,inactive:!!ref,...(ref?{position:{referencePanel:ref.id,direction:'within'}}:{})});}
+  for(const [k,t] of [['procs','Процессы'],['map','Карта'],['docker','Docker'],['pool','Пул ядра'],['svcs','Службы'],['conns','Сеть']])if(!dock.getPanel(k))dock.addPanel({id:k,component:k,tabComponent:'fixed',title:t,inactive:!!ref,...(ref?{position:{referencePanel:ref.id,direction:'within'}}:{})});}
 ensureFixed();
+/* сохранённая раскладка помнит старые названия вкладок */
+{const c=dock.getPanel('conns');if(c&&c.title!=='Сеть')c.api.setTitle('Сеть');}
 dock.onDidLayoutChange(()=>{try{localStorage.setItem(LAYOUT_KEY,JSON.stringify(dock.toJSON()));}catch(e){}});
 dock.onDidActivePanelChange(()=>requestAnimationFrame(()=>{renderAll();flushNeeds();}));
 
