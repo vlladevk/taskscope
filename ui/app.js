@@ -46,7 +46,7 @@ const CATS={
   vpn:{n:'Сеть и VPN',c:'#5aa33b'},
   security:{n:'Безопасность',c:'#9e4a2f'},
   system:{n:'Windows',c:'#6b7785'},
-  other:{n:'Другое',c:'#4f6d8f'},
+  other:{n:'Другое',c:'#7d746a'},
 };
 const CAT_RULES=[
   ['browser',/^(chrome|msedge|firefox|brave|opera|opera_gx|vivaldi|arc|browser|yandex|thorium|librewolf|waterfox|zen)\.exe$/],
@@ -770,7 +770,8 @@ const mapSecs=()=>Math.min(SPARKN,Math.round(S.range.ms/1000));
 function mapDesc(){
   const m=mapMetric(),p=S.range.label;
   if(m==='mem')return 'размер — занятая память сейчас';
-  if(m==='net')return 'размер — сетевой трафик процессов сейчас';
+  if(m==='net')return 'размер — сетевой трафик процессов сейчас, все адаптеры вместе';
+  if(curRes().m==='net')return 'трафик по процессам виден только с правами администратора — показана загрузка ЦП';
   if(m==='gpu')return S.range.ms>SPARKN*1000?`размер — средняя загрузка видеокарты за ${p}`:'размер — загрузка видеокарты сейчас';
   const h=H('system',BY[m],0);const avg=h?h.total.avg:0;
   return m==='cpu'?`размер — средняя загрузка ЦП за ${p} · простой ${fmtPct(Math.max(0,100-avg))}`:`размер — средний ввод-вывод за ${p}`;
@@ -789,27 +790,32 @@ function mountMap(el){
   $('.m-color',el).addEventListener('click',e=>{const b=e.target.closest('button');if(b){S.map.color=b.dataset.c;renderMap(true);}});
   $('.m-crumbs',el).addEventListener('click',e=>{const a=e.target.closest('[data-z]');if(a){S.map.root=a.dataset.z==='root'?null:a.dataset.z;renderMap(true);}});
   /* как в WizTree: путь и размер плитки под курсором — строкой под картой, плитка обведена */
-  cv.addEventListener('mousemove',e=>{const h=hitMap(cv,e);mapHover(h&&h.id);mapStatus();});
-  cv.addEventListener('mouseleave',()=>{mapHover(null);mapStatus();});
+  cv.addEventListener('mousemove',e=>{MAP.mouse={clientX:e.clientX,clientY:e.clientY};const h=hitMap(cv,e);mapHover(h&&h.id);mapStatus();});
+  cv.addEventListener('mouseleave',()=>{MAP.mouse=null;mapHover(null);mapStatus();});
   const leg=$('.m-leg',el);
   leg.addEventListener('mouseover',e=>{const s=e.target.closest('[data-k]');mapHl(s?s.dataset.k:null);});
   leg.addEventListener('mouseleave',()=>mapHl(null));
   $('.m-stat',el).textContent=MAP_HINT;
   cv.addEventListener('click',e=>{const h=hitMap(cv,e);if(h&&h.node)select(h.node.id,true);});
+  cv.addEventListener('mouseup',e=>{if(e.button===3&&mapUp())e.preventDefault();});
   cv.addEventListener('dblclick',e=>{const h=hitMap(cv,e);if(h&&h.zoom){S.map.root=h.zoom;renderMap(true);}});
 }
+const plural=(n,a,b,c)=>{const t=n%100,u=n%10;return t>10&&t<20?c:u===1?a:u>1&&u<5?b:c;}; // 1 процесс, 3 процесса, 12 процессов
 /* строка под картой — по плитке под курсором; обновляется и на каждом замере, даже если мышь стоит */
+/* на уровень вверх — как предпоследняя «крошка» */
+function mapUp(){const el=PANEL_EL.map;if(!S.map.root||!vis(el))return false;const a=[...el.querySelectorAll('.m-crumbs a[data-z]')].pop();if(!a)return false;a.click();return true;}
 function mapStatus(){
   const el=PANEL_EL.map;if(!el)return;const st=$('.m-stat',el),cv=$('canvas',el),h=MAP.hover&&(cv._rects||[]).find(q=>q.id===MAP.hover);
-  if(!h){st.textContent=MAP_HINT;return;}const n=h.node,c=n&&(h.self?n.cpu:cur(n,'cpu',true));
+  if(!h){st.textContent=MAP_HINT;return;}const n=h.node,c=h.cpu;
   const path=h.path.split(' › ').filter((s,i,a)=>!i||s!==a[i-1]).join(' › '); // «WizTree › WizTree» → «WizTree»
   const pv=MAP.total>0?h.v/MAP.total*100:null;
   const pct=pv!=null?` · ${pv<.1?'<0,1 %':fmtPct(pv)} ${S.map.root?`от «${esc(MAP.rootLabel)}»`:'от всего'}`:'';
   /* плитка «ещё N» — что в ней; плитка-группа — что PID только у главного процесса, размер — вместе с дочерними */
   const cnt=h.rest&&[...h.rest.reduce((m,s)=>m.set(s,(m.get(s)||0)+1),new Map())].map(([s,c])=>c>1?`${s} ×${c}`:s); // «svchost ×12», а не двенадцать раз
   const what=h.rest?` · ${esc(cnt.slice(0,6).join(', '))}${cnt.length>6?'…':''}`
-    :n?` · ${esc(n.exe)} · PID ${n.pid}${h.grp?` и ещё ${h.grp-1} дочерних`:''}`:'';
-  setHTML(st,`<b>${esc(path)}${h.self?' · сам процесс, без дочерних':''}</b> — ${mapFmt(h.v)}${pct}${n&&!h.rest&&mapMetric()!=='cpu'?` · ЦП ${fmtPct(c)}`:''}${what}${h.zoom?'':' · приблизить нельзя'}`);
+    :h.procs>1?(h.own?` · ${esc(n.exe)} · PID ${n.pid} и ещё ${h.procs-1} ${plural(h.procs-1,'дочерний','дочерних','дочерних')}`:` · ${h.procs} ${plural(h.procs,'процесс','процесса','процессов')}`)
+    :n?` · ${esc(n.exe)} · PID ${n.pid}`:'';
+  setHTML(st,`<b>${esc(path)}${h.self?' · сам процесс, без дочерних':''}</b> — ${mapFmt(h.v)}${pct}${n&&!h.rest&&mapMetric()!=='cpu'?` · ЦП ${fmtPct(c)}`:''}${what}`);
 }
 const MAP_HINT='Наведите на плитку — здесь будет путь и размер · клик — выбрать · двойной клик — приблизить';
 function mapHl(k){if(MAP.hl===k)return;MAP.hl=k;const el=PANEL_EL.map;if(el&&MAP.nodes&&!MAP.from)mapFrames($('canvas',el),MAP.nodes,i=>MAP.nodes[i].r);}
@@ -863,7 +869,7 @@ function mapTree(){
     if(appAvg){const target=appAvg.get(k)||0;if(v>0){const f=target/v;kids.forEach(x=>scaleTree(x,f));}else if(target>0&&kids.length){kids.forEach(x=>scaleTree(x,0));kids[0].v=target;}v=target;}
     const a=APPS.get(k),root=tops.find(t=>a&&t.pid===a.rootPid)||tops[0];
     const flat=kids.filter(x=>x.v>eps);
-    return {key:'a'+k,label:mapLabel(a?a.title:k),v,kids:flat.length===1&&flat[0].kids?flat[0].kids:flat,node:flat.length===1?flat[0].node:null,rep:root,cat:root?catOf(root):'other',zoomId:'a'+k};
+    return {key:'a'+k,label:mapLabel(a?a.title:k),v,kids:flat,node:flat.length===1?flat[0].node:null,rep:root,cat:root?catOf(root):'other',zoomId:'a'+k};
   });
   /* приближенное приложение не выкидывает к общему виду, когда оно затихло (в режиме ЦП) */
   if(S.map.root&&!procRoot){const g=apps.find(a=>a.key===S.map.root);if(g&&g.kids&&g.kids.length)return g;}
@@ -879,6 +885,7 @@ function mapTree(){
   MAP.exeName=new Map();
   for(const [k,tops] of groups){const a=APPS.get(k);if(!a)continue;const r=tops.find(t=>t.pid===a.rootPid)||tops[0];
     if(r&&INFO.has(r.id)){const e=mapExe({node:r});if(!MAP.exeName.has(e))MAP.exeName.set(e,mapLabel(a.title));}}
+  for(const n of live)if(INFO.has(n.id)){const e=mapExe({node:n});if(!MAP.exeName.has(e))MAP.exeName.set(e,mapLabel(nameOf(n)));} // как на плитках: «OpenJDK Platform binary», а не «java»
   return {key:'root',label:'Всё',v:apps.reduce((s,a)=>s+a.v,0),kids:apps};
 }
 /* «По программе» — как типы файлов в WizTree: у каждой программы свой цвет.
@@ -910,7 +917,7 @@ const COLORS=(()=>{let o={};try{o=JSON.parse(localStorage.getItem(COLOR_KEY)||'{
     if(!Array.isArray(v)||!Number.isInteger(v[0])||v[0]<0||v[0]>=EXE_PAL.length||seen.has(v[0])||greyKey(k))continue;
     seen.add(v[0]);c[k]=[v[0],+v[1]||0];}
   return c;})();
-let colorsDirty=false,colorsSeq=-1,colorsAt=0;const W_EMA=new Map();
+const SEEN=new Map();let colorsInit=false,colorsDirty=false,colorsSeq=-1,colorsAt=0;const W_EMA=new Map();
 const saveColors=()=>{colorsDirty=false;try{localStorage.setItem(COLOR_KEY,JSON.stringify({c:COLORS}));}catch(e){}};
 addEventListener('pagehide',()=>{if(colorsDirty)saveColors();});
 setInterval(()=>{if(colorsDirty)saveColors();},30e3);
@@ -923,18 +930,20 @@ function updateExeColors(){
     mem.set(k,(mem.get(k)||0)+(n.mem||0));cpu.set(k,(cpu.get(k)||0)+(n.cpu||0));mt+=n.mem||0;ct+=n.cpu||0;
   }
   const now=Date.now(),a=colorsAt?1-Math.exp(-(now-colorsAt)/180e3):1;colorsAt=now;
-  for(const k of mem.keys()){const w=(mt?mem.get(k)/mt:0)+cpu.get(k)/Math.max(ct,25),p=W_EMA.get(k);/* ЦП — от не меньше 25 % машины: на простое 0,5 % фоновой службы не весят как гигабайты */W_EMA.set(k,p==null?w:p+(w-p)*a);}
+  for(const k of mem.keys()){const w=(mt?mem.get(k)/mt:0)+cpu.get(k)/Math.max(ct,25),p=W_EMA.get(k);/* ЦП — от не меньше 25 % машины: на простое 0,5 % фоновой службы не весят как гигабайты */W_EMA.set(k,p==null?(colorsInit?w*a:w):p+(w-p)*a);if(!SEEN.has(k))SEEN.set(k,colorsInit?now:0);}
+  for(const k of SEEN.keys())if(!mem.has(k))SEEN.delete(k);colorsInit=true; // новая программа набирает вес постепенно: всплеск сборки не отбирает цвета
   for(const [k,p] of W_EMA)if(!mem.has(k)){const q=p*(1-a);if(q<1e-4)W_EMA.delete(k);else W_EMA.set(k,q);}
   const rank=[...W_EMA.keys()].sort((p,q)=>W_EMA.get(q)-W_EMA.get(p)),N=EXE_PAL.length,near=new Set(rank.slice(0,N));
   for(const k of near)if(COLORS[k]&&COLORS[k][1]<now-60e3){COLORS[k][1]=now;colorsDirty=true;} // время — сохраним позже
+  const liveE=new Set();for(const n of NODES.values())if(alive(n))liveE.add(n.exe.toLowerCase());
   rank.slice(0,N).forEach((k,r)=>{
     if(COLORS[k])return;
     const used=new Set(Object.values(COLORS).map(v=>v[0]));let idx=EXE_PAL.findIndex((c,i)=>!used.has(i));
     if(idx<0){/* палитра занята — забираем у той, что дольше всех не входила в первые 14, но не раньше чем через 10 минут.
        Крупной программе (первая половина рейтинга) — сразу, у самой мелкой вне первых 14: иначе WizTree
        на гигабайт оставался серым, пока цвет держал Docker на 50 МБ */
-      const out=Object.entries(COLORS).filter(([q])=>!near.has(q)),wt=q=>W_EMA.get(q)||0;
-      const old=r<N/2?out.sort((p,q)=>wt(p[0])-wt(q[0]))[0]:out.filter(([,v])=>now-v[1]>600e3).sort((p,q)=>p[1][1]-q[1][1])[0];
+      const out=Object.entries(COLORS).filter(([q])=>!near.has(q)&&(W_EMA.has(q)||!liveE.has(q))),wt=q=>W_EMA.get(q)||0;
+      const old=r<N/2&&now-(SEEN.has(k)?SEEN.get(k):now)>120e3?out.sort((p,q)=>wt(p[0])-wt(q[0])||p[1][1]-q[1][1])[0]:out.filter(([,v])=>now-v[1]>600e3).sort((p,q)=>p[1][1]-q[1][1])[0];
       if(!old)return;idx=old[1][0];delete COLORS[old[0]];}
     COLORS[k]=[idx,now];changed=true;
   });
@@ -958,7 +967,8 @@ function progRGB(m){
   return rgb.map(v=>f>1?v+(255-v)*(f-1)*1.4:v*f);
 }
 /* размеры программ в текущем виде — для легенды */
-function exeTotals(nodes){const tot=new Map();for(const n of nodes)if(!n.head){const k=mapExe(n.m);tot.set(k,(tot.get(k)||0)+(n.m.raw||0));}MAP.exeTot=tot;}
+function exeTotals(nodes){const tot=new Map(),add=m=>{if(m.rest)return m.items.forEach(add);const k=mapExe(m);tot.set(k,(tot.get(k)||0)+(m.raw||0));};
+  for(const n of nodes)if(!n.head)add(n.m);MAP.exeTot=tot;}
 const mapId=n=>n.key+(n.head?'#':'');
 const heatRGB=c=>{const t=clamp(c/12,0,1);const a=[58,74,92],b=[201,162,39],d=[224,83,61];return t<.5?a.map((v,i)=>v+(b[i]-v)*t*2):b.map((v,i)=>v+(d[i]-v)*(t-.5)*2);};
 const heat=c=>`rgb(${heatRGB(c).map(Math.round).join(',')})`;
@@ -983,9 +993,9 @@ const MAP_ANIM=450,MAP_TAU=3000,MAP_HDR=18,MAP_DEAD=4;
 const easeOut=t=>1-Math.pow(1-t,3);
 function mapLayout(w,h){
   const root=mapTree(),now=performance.now(),first=!MAP.sm.size;
-  const a=first?1:1-Math.exp(-Math.max(0,now-MAP.at)/MAP_TAU);MAP.at=now;
+  const a=first?1:1-Math.exp(-Math.max(0,now-MAP.at)/(mapMetric()==='mem'?MAP_TAU:2*MAP_TAU)); // нагрузка скачет сильнее памятиMAP.at=now;
   const sm=new Map(),byKey=new Map(),par=new Map();
-  const smooth=(m,pk)=>{const p=MAP.sm.get(m.key);m.raw=m.v;m.v=p!=null?p+(m.v-p)*a:first?m.v:m.v*a;
+  const smooth=(m,pk)=>{const p=MAP.sm.has(m.key)?MAP.sm.get(m.key):m.self?MAP.sm.get('p'+m.key.slice(1)):undefined;m.raw=m.v;m.v=p!=null?p+(m.v-p)*a:first?m.v:m.v*a;
     sm.set(m.key,m.v);byKey.set(m.key,m);if(pk)par.set(m.key,pk);if(m.kids)m.kids.forEach(k=>smooth(k,m.key));};
   smooth(root);
   /* призраки: плитки, которых больше нет в данных, сжимаются на прежнем месте, пока не станут меньше 0,1 % */
@@ -1002,6 +1012,7 @@ function mapLayout(w,h){
     const l=kids.filter(k=>k.v>0).sort((x,y)=>{const i=idx.get(x.key),j=idx.get(y.key);return i!=null&&j!=null?i-j:i!=null?-1:j!=null?1:y.v-x.v;});
     for(let i=1;i<l.length;i++)for(let j=i;j>0;j--){
       const known=idx.has(l[j].key)&&idx.has(l[j-1].key);
+      if(l[j].ghost||l[j-1].ghost)break; // сжимающийся «призрак» не обгоняют — иначе перекладывалась вся группа
       if(l[j].v>l[j-1].v*(known?1.4:1)){const t=l[j];l[j]=l[j-1];l[j-1]=t;}else break;
     }
     order.set(pk,l.map(k=>k.key));return l;
@@ -1013,7 +1024,7 @@ function mapLayout(w,h){
   /* мелочь, которая не поместилась, собирается в плитку «ещё N» (N ≥ 2; одна — рисуется сама) — иначе
      остальные плитки растягивались бы на её место и переставали быть пропорциональными */
   const visibleRest=(m,items,area,drop)=>{const l=visible(items,area).filter(k=>!drop||!drop.has(k.key));if(l.length===items.length)return l;
-    const rest=items.filter(k=>!l.includes(k)),v=rest.reduce((s,k)=>s+k.v,0),raw=rest.reduce((s,k)=>s+(k.raw||0),0);
+    const ls=new Set(l),rest=items.filter(k=>!ls.has(k)),v=rest.reduce((s,k)=>s+k.v,0),raw=rest.reduce((s,k)=>s+(k.raw||0),0);
     const tot=items.reduce((s,k)=>s+k.v,0),big=!l.length||v*area/tot>=16;
     if(rest.length===1){if(big)l.push(rest[0]);}
     else if(big)l.push({key:m.key+'~rest',label:`ещё ${rest.length}`,v,raw,cat:'other',rest:1,restOf:m,items:rest});
@@ -1021,7 +1032,7 @@ function mapLayout(w,h){
   /* план прошлой раскладки для нового набора плиток: выбывшие убираются из своих рядов, новые — в конец */
   const adapt=(old,keys)=>{
     const ok=old.keys.split('\n'),set=new Set(keys),surv=ok.filter(k=>set.has(k));
-    if(!surv.length||keys.slice(0,surv.length).join('\n')!==surv.join('\n'))return null; // порядок изменился
+    if(!surv.length)return null; // порядок мог смениться — ряды остаются теми же, в них просто другие соседи
     const plan=[];let i=0;for(const [c,hz] of old.plan){let s=0;for(let j=0;j<c;j++,i++)if(set.has(ok[i]))s++;if(s)plan.push([s,hz]);}
     return plan;};
   const plans=new Map(),oldPlans=MAP.plans||new Map();
@@ -1038,13 +1049,13 @@ function mapLayout(w,h){
      в «ещё N»; если и она вышла полоской — её место делят соседи */
   const place=(pk,m,items,x,y,W,H)=>{
     let l=visibleRest(m,items,W*H),out=sq(pk,l,x,y,W,H);
-    const thin=q=>q.w<3||q.h<3;
+    const thin=q=>{const t=q.self?6:3;return q.w<t||q.h<t;}; // «сам» тоньше 6 px (обёртка cmd над java) — группа сворачивается в ребёнка
     if(out.some(q=>thin(q)&&!q.rest)){l=visibleRest(m,items,W*H,new Set(out.filter(q=>thin(q)&&!q.rest).map(q=>q.key)));out=sq(pk,l,x,y,W,H);}
     if(out.some(thin)&&out.length>1){const d=new Set(out.filter(thin).map(q=>q.key));const l2=l.filter(k=>!d.has(k.key));if(l2.length)out=sq(pk,l2,x,y,W,H);}
     return out.filter(q=>q.w>=1&&q.h>=1);
   };
   const nodes=[];
-  const lay=(m,r,path,depth,parent)=>{
+  const lay=(m,r,path,depth,parent,pre)=>{
     if(r.w<1||r.h<1)return;
     const p=path?path+' › '+m.label:m.label,i=nodes.length;shown.add(m.key);
     /* сетка без отступов: каждая плитка и заголовок владеют только своей правой и нижней линией
@@ -1056,8 +1067,8 @@ function mapLayout(w,h){
       for(const q of out)lay(q,q,p,depth+1,i);
     }else if(out&&out.length===1&&!out[0].self&&!out[0].rest){
       /* видна одна плитка-ребёнок — рисуем её (подпись, цвет, PID — ребёнка): «winlogon 307 МБ» на деле был dwm */
-      lay(out[0],r,p,depth,parent);
-    }else nodes.push({key:m.key,r:{x:r.x,y:r.y,w:r.w,h:r.h},m,depth,parent,path:p});
+      lay(out[0],r,p,depth,parent,pre||(depth===0&&out[0].label!==m.label?m.label:'')); // подпись «Claude · GPU-процесс»
+    }else nodes.push({key:m.key,r:{x:r.x,y:r.y,w:r.w,h:r.h},m,depth,parent,path:p,pre});
   };
   /* приближенная группа занимает всю карту без своего заголовка — её имя уже в «хлебных крошках» */
   const zr=S.map.root&&NODES.get(S.map.root),za=zr&&APPS.get(zr.appKey);
@@ -1118,7 +1129,7 @@ function mapPaint(cv,nodes,rect,scale,flat){
 const MAP_HEAD=['#262626','#323232','#3e3e3e','#4a4a4a']; // шаг 12 — соседние уровни различимы на глаз
 /* текст, не влезающий по ширине, — с многоточием, а не обрезанный посреди буквы */
 const FIT=new Map(); // подобранные строки: подпись·ширина·шрифт → текст (иначе в кадре анимации тысячи measureText)
-function fitText(x,t,w){const key=t+''+w+''+x.font,c=FIT.get(key);if(c!=null)return c;
+function fitText(x,t,w){w=Math.floor(w/4)*4;const key=t+''+w+''+x.font,c=FIT.get(key);if(c!=null)return c;
   let r=t;if(x.measureText(t).width>w){const s=Array.from(t);let lo=0,hi=s.length; // по символам, а не по UTF-16: эмодзи не режется пополам
     while(lo<hi){const mid=(lo+hi+1)>>1;if(x.measureText(s.slice(0,mid).join('')+'…').width<=w)lo=mid;else hi=mid-1;}
     r=lo?s.slice(0,lo).join('').trimEnd()+'…':'';}
@@ -1154,7 +1165,7 @@ function mapCompose(cv,nodes,rect){
     const two=r.w>70&&r.h>32;if(n.head||!(two||r.w>40&&r.h>16))continue;
     const q=D(r),lt=darkText(n.rgb),mw=q.w-2*pad-L;
     x.save();x.fillStyle=lt?'#111':'#fff';if(!lt&&!MAP.draft){x.shadowColor='rgba(0,0,0,.85)';x.shadowBlur=3*dpr;} // в кадрах анимации без тени — дорого
-    x.fillText(fitText(x,m.self?`${m.label} · сам`:m.label,mw),q.x+pad+L,two?q.y+Math.round(12*dpr):q.y+q.h/2);
+    x.fillText(fitText(x,m.self?`${m.label} · сам`:n.pre?`${n.pre} · ${m.label}`:m.label,mw),q.x+pad+L,two?q.y+Math.round(12*dpr):q.y+q.h/2);
     if(two){x.fillStyle=lt?'rgba(0,0,0,.72)':'rgba(255,255,255,.85)';x.fillText(fitText(x,mapFmt(m.raw),mw),q.x+pad+L,q.y+Math.round(27*dpr));}x.restore();
   }
   mapFrames(cv,nodes,rect);
@@ -1170,9 +1181,9 @@ function mapFrames(cv,nodes,rect){
   const frame=(q,t,c)=>{x.fillStyle=c;x.fillRect(q.x,q.y,q.w,t);x.fillRect(q.x,q.y+q.h-t,q.w,t);x.fillRect(q.x,q.y,t,q.h);x.fillRect(q.x+q.w-t,q.y,t,q.h);};
   let sel=null,hov=null;
   for(let i=0;i<nodes.length;i++){const n=nodes[i],m=n.m;
-    if(S.sel&&m.node&&m.node.id===S.sel&&(!n.head||!sel))sel=D(rect(i));
+    if(S.sel&&(m.node||m.rep)&&(m.node||m.rep).id===S.sel&&(!n.head||!sel))sel=D(rect(i));
     if(MAP.hover&&mapId(n)===MAP.hover)hov=D(rect(i)); // наведение на заголовок обводит всю группу
-    if(MAP.hl&&!n.head&&mapExe(m)===MAP.hl)frame(D(rect(i)),L,'rgba(255,255,255,.8)');} // программа из легенды
+    if(MAP.hl&&!n.head&&mapExe(m)!==MAP.hl){const q=D(rect(i));x.fillStyle='rgba(18,18,18,.62)';x.fillRect(q.x+L,q.y+L,q.w-L,q.h-L);}} // программа из легенды — остальные притушены
   if(sel)frame(sel,2*L,'#fff');
   if(hov)frame(hov,L,'rgba(255,255,255,.95)');
 }
@@ -1188,9 +1199,16 @@ function mapAnimate(){
   MAP.raf=requestAnimationFrame(step);
 }
 /* шапка и легенда — до замера холста: их высота не должна менять размер карты уже после отрисовки */
+/* не поместившиеся пункты легенды — одним «+N» с полным списком во всплывающей подсказке */
+function fitLegend(leg){
+  if(leg._fitH===leg._h&&leg._fitW===leg.clientWidth)return;leg._fitH=leg._h;leg._fitW=leg.clientWidth;
+  const old=leg.querySelector('.more');if(old)old.remove();const kids=[...leg.children];kids.forEach(k=>k.style.display='');
+  const W=leg.clientWidth-parseFloat(getComputedStyle(leg).paddingRight),over=kids.filter(k=>k.offsetLeft+k.offsetWidth>W);if(!over.length)return;
+  const room=W-70,hide=kids.filter(k=>k.offsetLeft+k.offsetWidth>room);hide.forEach(k=>k.style.display='none');
+  const m=document.createElement('span');m.className='more';m.textContent=`+${hide.length}`;m.title=hide.map(k=>k.dataset.n||k.textContent).join('\n');leg.appendChild(m);}
 function mapChrome(el){
   $('.m-color',el).querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.c===S.map.color));
-  $('.m-desc',el).textContent=mapDesc();
+  {const d=$('.m-desc',el),t=mapDesc();if(d.textContent!==t){d.textContent=t;d.title=t;}} // длинное описание обрезается многоточием — целиком в подсказке
   /* «хлебные крошки» — по иерархии карты: всё › приложение › процессы этого приложения */
   const zr=S.map.root&&/^\d/.test(S.map.root)&&NODES.get(S.map.root),r0=curRes(),crumb=(z,t,cur)=>`<span class="sep">›</span>${cur?`<span class="cur">${esc(t)}</span>`:`<a data-z="${esc(z)}">${esc(t)}</a>`}`;
   let cr='';
@@ -1203,13 +1221,14 @@ function mapChrome(el){
   /* легенда — все цветные программы этого вида понятными именами (наведение подсвечивает их плитки)
      и два серых отдельно; одна строка — лишнее уходит за край, высота карты не прыгает */
   const exeLeg=()=>{const t=MAP.exeTot||new Map(),rgb=c=>`rgb(${c.join(',')})`,nm=k=>(MAP.exeName&&MAP.exeName.get(k))||exeTitle(k);
-    const top=[...t].filter(([k])=>COLORS[k]).sort((p,q)=>q[1]-p[1]),ks=[...t.keys()];
-    const hasW=ks.some(k=>k.startsWith('w:')||k.startsWith('k:')),hasO=ks.some(k=>!k.startsWith('w:')&&!k.startsWith('k:')&&!COLORS[k]);
+    const top=[...t].filter(([k,v])=>COLORS[k]&&v>(MAP.total||0)*1e-3).sort((p,q)=>q[1]-p[1]),ks=[...t.keys()];
+    const hasW=ks.some(k=>k.startsWith('w:')||k.startsWith('k:')),hasO=ks.some(k=>!/^[wkr]:/.test(k)&&!COLORS[k]);
     if(MAP.hl&&!t.has(MAP.hl))MAP.hl=null;
-    return top.map(([k,v])=>`<span class="lk" data-k="${esc(k)}" title="${esc(k)}"><i style="background:${EXE_PAL[COLORS[k][0]]}"></i>${esc(nm(k))} <span class="num">${mapFmt(v)}</span></span>`).join('')
-      +(hasW?`<span><i style="background:${rgb(SLATE)}"></i>Windows</span>`:'')+(hasO?`<span><i style="background:${rgb(WARM)}"></i>прочие программы</span>`:'');};
+    return (hasW?`<span><i style="background:${rgb(SLATE)}"></i>Windows</span>`:'')+(hasO?`<span><i style="background:${rgb(WARM)}"></i>прочие программы</span>`:'')
+      +top.map(([k,v])=>`<span class="lk" data-k="${esc(k)}" data-n="${esc(nm(k))} ${esc(mapFmt(v))}" title="${esc(k)} — все процессы программы, в том числе в других группах"><i style="background:${EXE_PAL[COLORS[k][0]]}"></i>${esc(nm(k))} <span class="num">${mapFmt(v)}</span></span>`).join('');};
   setHTML($('.m-leg',el),S.map.color==='exe'?exeLeg():S.map.color==='cat'?Object.values(CATS).map(c=>`<span><i style="background:${c.c}"></i>${c.n}</span>`).join(''):
-    `<span><i style="background:${heat(0)}"></i>простаивает</span><span><i style="background:${heat(6)}"></i>~6 % ЦП</span><span><i style="background:${heat(12)}"></i>12 % и выше</span><span><i style="background:rgb(${SLATE.join(',')})"></i>не процесс</span>`);
+    `<span><i style="background:${heat(0)}"></i>простаивает</span><span><i style="background:${heat(6)}"></i>~6 % ЦП</span><span><i style="background:${heat(12)}"></i>12 % и выше</span><span><i style="background:rgb(${WARM.join(',')})"></i>не процесс</span>`);
+  fitLegend($('.m-leg',el));
 }
 /* force — данные изменились без нового замера (пришла история за период) */
 function renderMap(force){
@@ -1228,14 +1247,15 @@ function renderMap(force){
   if(fresh||force===true||MAP.seq!==SEQ){
     MAP.seq=SEQ;
     const root0=S.map.root;
+    const psig=()=>[...(MAP.plans||[])].map(([k,v])=>k+':'+v.plan.join(';')).join('|'),ps0=psig();
     let prev=MAP.nodes,prevRect=prev&&mapRectFn(prev);
     let nodes=mapLayout(w,h);
     /* приближенная группа исчезла прямо сейчас (mapTree сбросил корень) — один сброс, а не два подряд */
     if(S.map.root!==root0){reset();prev=null;nodes=mapLayout(w,h);}
     if(S.map.color==='exe'){updateExeColors();exeTotals(nodes);}
-    const cpuOf=m=>m.rest?m.items.reduce((s,k)=>s+cpuOf(k),0):m.node&&alive(m.node)?(m.self?m.node.cpu:cur(m.node,'cpu',true)):m.kids?m.kids.reduce((s,k)=>s+cpuOf(k),0):0;
+    const cpuOf=m=>m.ghost?0:m.rest?m.items.reduce((s,k)=>s+cpuOf(k),0):m.node&&alive(m.node)?(m.self?m.node.cpu:cur(m.node,'cpu',true)):m.kids?m.kids.reduce((s,k)=>s+cpuOf(k),0):0;
     /* память вне процессов в режиме ЦП — нейтральный серый, а не «простаивает»: у неё нет ЦП вовсе */
-    const baseRGB=m=>S.map.color==='exe'?progRGB(m):S.map.color==='cpu'?(m.key[0]==='m'?SLATE:heatRGB(cpuOf(m))):hexRGB((CATS[m.cat]||CATS.other).c);
+    const baseRGB=m=>S.map.color==='exe'?progRGB(m):S.map.color==='cpu'?(m.key[0]==='m'?WARM:heatRGB(cpuOf(m))):hexRGB((CATS[m.cat]||CATS.other).c);
     for(const n of nodes)if(!n.head)n.rgb=baseRGB(n.m).map(Math.round);
     const id=n=>n.key+(n.head?'#':'');
     let move=Infinity,recolor=true,from=null,same=false;
@@ -1247,6 +1267,9 @@ function renderMap(force){
         move=Math.max(move,Math.abs(a.x-b.x),Math.abs(a.y-b.y),Math.abs(a.w-b.w),Math.abs(a.h-b.h));
         if(!n.head&&(j==null||String(prev[j].rgb)!==String(n.rgb)))recolor=true;});
     }
+    /* анимация — только если строение то же: те же плитки в том же порядке и рядах. Тогда и промежуточные
+       кадры без дыр; иначе плитки перелетали друг через друга, оставляя чёрные провалы — лучше сразу на место */
+    const topo=ns=>ns.map(n=>id(n)+'<'+n.parent).join('|'),calm=same&&ps0===psig()&&topo(prev)===topo(nodes);
     let show=nodes;
     if(same&&move<MAP_DEAD){
       /* раскладка почти та же — геометрию не трогаем (никакого дрожания), обновляем подписи и цвета */
@@ -1255,18 +1278,22 @@ function renderMap(force){
       show=prev;
       if(!MAP.from){const r=i=>prev[i].r;if(recolor||MAP.draft)mapPaint(cv,prev,r,1);mapCompose(cv,prev,r);}
     }else{
-      /* плитка появилась или пропала, а остальные сдвинулись незаметно — без анимации */
-      MAP.nodes=nodes;MAP.from=prev&&move>=MAP_DEAD?from:null;
+      /* плитка появилась, пропала или соседи поменялись местами — сразу на место, без анимации */
+      MAP.nodes=nodes;MAP.from=calm&&move>=MAP_DEAD?from:null;
       const r=i=>nodes[i].r;
       if(MAP.from){MAP.t0=performance.now();MAP.last=0;mapAnimate();}
       else{cancelAnimationFrame(MAP.raf);mapPaint(cv,nodes,r,1);mapCompose(cv,nodes,r);}
     }
     /* двойной клик — приблизить группу плитки (приложение или процесс с дочерними), если внутри больше
        одной плитки; иначе «приблизить нельзя» (раньше одиночный процесс открывался одной плиткой на всю карту) */
-    const zOf=g=>g.kids&&g.kids.length>1?(g.zoomId||(g.node?g.node.id:null)):null;
+    const real=g=>g.kids?g.kids.filter(x=>!x.ghost):[];
+    const zOf=g=>{const k=real(g);return k.length>1||k.length===1&&real(k[0]).length>1?(g.zoomId||(g.node?g.node.id:null)):null;};
+    const procs=m=>m.ghost?0:m.rest?m.items.reduce((s,k)=>s+procs(k),0):m.kids?m.kids.reduce((s,k)=>s+procs(k),0):m.node?1:0;
     const zoomOf=n=>{let z=zOf(n.m);if(z&&z!==S.map.root)return z;for(let p=n.parent;p>=0;p=show[p].parent){z=zOf(show[p].m);if(z&&z!==S.map.root)return z;}return null;};
     cv._rects=show.map(n=>{const m=n.m,q=n.r,z=zoomOf(n);return {id:mapId(n),x:q.x,y:q.y,w:q.w,h:n.head?MAP_HDR:q.h,node:m.node||m.rep||null,label:m.label,v:m.raw,path:n.path,
-      self:m.self,grp:!n.head&&m.kids?m.kids.length:0,rest:m.rest?m.items.map(k=>k.label):null,zoom:z};});
+      self:m.self,own:!!m.node,procs:procs(m),cpu:cpuOf(m),rest:m.rest?m.items.map(k=>k.label):null,zoom:z};});
+    if(MAP.mouse){const h=hitMap(cv,MAP.mouse);mapHover(h&&h.id);}
+    mapChrome(el); // «крошки» и легенда — по новой раскладке (имя приближенного, суммы программ); высота у них постоянная
     mapStatus();
   }else if(MAP.nodes&&!MAP.from){const r=i=>MAP.nodes[i].r;if(MAP.draft){mapPaint(cv,MAP.nodes,r,1);mapCompose(cv,MAP.nodes,r);}else mapFrames(cv,MAP.nodes,r);} // выбор — только рамки
 }
@@ -1667,7 +1694,7 @@ document.addEventListener('keydown',e=>{
   if(e.ctrlKey&&e.code==='KeyF'){const q=PANEL_EL.procs&&$('.p-q',PANEL_EL.procs);if(q){e.preventDefault();q.focus();q.select();}return;}
   if(e.target.matches('input'))return;
   if(e.key==='Delete'&&S.sel)act(e.shiftKey?'tree':'kill',[...(S.multi.size?S.multi:[S.sel])]);
-  if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(S.max)setMax(S.max);else if(TAURI)appCmd('hide').catch(()=>{});}
+  if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(S.max)setMax(S.max);else if(mapUp()){}else if(TAURI)appCmd('hide').catch(()=>{});}
 });
 
 function renderAll(){if(!SYS)return;RES=resList();renderTop();renderRail();renderChart();renderLog();renderProcs();renderMap();renderDocker();renderPool();renderDetails();renderProcTabs();}
