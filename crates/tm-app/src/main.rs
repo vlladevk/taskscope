@@ -398,6 +398,7 @@ fn start_pipe(app: AppHandle, service: Arc<Service>) {
         .spawn(move || {
             if let Err(e) = pipe::serve(handler) {
                 eprintln!("tm-app: канал недоступен: {e}");
+                tm_core::logs::error(format!("канал недоступен: {e}"));
             }
         })
         .ok();
@@ -406,6 +407,8 @@ fn start_pipe(app: AppHandle, service: Arc<Service>) {
 /* ------------------------------------------------------------------ main */
 
 fn main() {
+    // журнал ошибок и паник: у приложения в трее нет консоли
+    tm_core::logs::init("tm-app");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tray = args.iter().any(|a| a == "--tray");
     let replace = args.iter().any(|a| a == "--replace");

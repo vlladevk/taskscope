@@ -63,6 +63,17 @@ impl Service {
     }
 
     pub fn call(&self, method: &str, params: &Value) -> Result<Value, String> {
+        let r = self.call_inner(method, params);
+        // отказы действий — в журнал ошибок: «почему не завершилось» можно выяснить и потом
+        if let Err(e) = &r {
+            if is_mutating(method) {
+                crate::logs::warn(format!("{method}: {e}"));
+            }
+        }
+        r
+    }
+
+    fn call_inner(&self, method: &str, params: &Value) -> Result<Value, String> {
         match method {
             "ping" => Ok(json!("pong")),
             "status" => Ok(self.engine.status()),
@@ -256,6 +267,40 @@ impl Service {
                 let list: Vec<_> = crate::conns::list().into_iter().filter(|c| pid.is_none_or(|p| c.pid == p)).collect();
                 Ok(json!({ "connections": list }))
             }
+            // вкладка процесса: модули, потоки, дескрипторы, окружение — по запросу
+            "inspect" => {
+                #[derive(Deserialize)]
+                struct P {
+                    pid: u32,
+                    create_time: i64,
+                    what: String,
+                }
+                let p: P = arg(params)?;
+                let ct = crate::nt::js_safe(p.create_time);
+                let e = |e: std::io::Error| match e.raw_os_error() {
+                    Some(5) => "нет доступа — нужны права администратора".to_string(),
+                    _ => e.to_string(),
+                };
+                use crate::inspect;
+                match p.what.as_str() {
+                    "modules" => Ok(json!({ "modules": inspect::modules(p.pid, ct).map_err(e)? })),
+                    "threads" => Ok(json!({ "threads": inspect::threads(p.pid, ct).map_err(e)? })),
+                    "handles" => Ok(json!(inspect::handles(p.pid, ct).map_err(e)?)),
+                    "env" => Ok(json!(inspect::environment(p.pid, ct).map_err(e)?)),
+                    w => Err(format!("inspect: неизвестный раздел «{w}» (modules, threads, handles, env)")),
+                }
+            }
+            // ошибки окна (window.onerror) — в журнал ошибок; длина ограничена
+            "log" => {
+                let msg: String = params.get("msg").and_then(Value::as_str).unwrap_or("").chars().take(2000).collect();
+                crate::logs::write("ui", msg);
+                Ok(json!({ "ok": true }))
+            }
+            // подпись файла и SHA-256 (для ссылки на VirusTotal)
+            "signature" => {
+                let path = params.get("path").and_then(Value::as_str).ok_or("нужен path")?;
+                Ok(json!(crate::signature::check(path).map_err(|e| e.to_string())?))
+            }
             // кто держит файл или файлы в папке (Restart Manager)
             "file_holders" => {
                 let path = params.get("path").and_then(Value::as_str).ok_or("нужен path")?;
@@ -282,6 +327,15 @@ impl Service {
                     path: String,
                 }
                 crate::system::reveal_in_explorer(&arg::<P>(params)?.path).map_err(|e| e.to_string())?;
+                Ok(json!({ "ok": true }))
+            }
+            // страница файла на VirusTotal по SHA-256: только этот адрес, никаких произвольных ссылок
+            "web" if params.get("sha256").is_some() => {
+                let h = params.get("sha256").and_then(Value::as_str).unwrap_or("");
+                if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("sha256: ожидается 64 шестнадцатеричных знака".into());
+                }
+                crate::system::shell_execute("open", &format!("https://www.virustotal.com/gui/file/{}", h.to_ascii_lowercase()), "").map_err(|e| e.to_string())?;
                 Ok(json!({ "ok": true }))
             }
             "web" => {

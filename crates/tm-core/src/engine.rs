@@ -253,7 +253,13 @@ fn run(inner: &Inner) {
         let mut frame = match sampler.sample() {
             Ok(f) => f,
             Err(e) => {
-                inner.state.lock().unwrap().error = Some(e.to_string());
+                let msg = e.to_string();
+                let mut st = inner.state.lock().unwrap();
+                // в журнал — только новую ошибку, а не каждую секунду одну и ту же
+                if st.error.as_deref() != Some(msg.as_str()) {
+                    crate::logs::error(format!("замер: {msg}"));
+                }
+                st.error = Some(msg);
                 continue;
             }
         };
@@ -361,6 +367,7 @@ fn run(inner: &Inner) {
         if inner.store.is_some() && last_save.elapsed() >= SAVE_EVERY {
             last_save = Instant::now();
             if let Err(e) = save(inner) {
+                crate::logs::error(format!("не удалось сохранить историю: {e}"));
                 inner.state.lock().unwrap().error = Some(format!("не удалось сохранить историю: {e}"));
             }
         }
