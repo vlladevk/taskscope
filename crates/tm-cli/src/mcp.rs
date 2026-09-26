@@ -3,6 +3,10 @@
 //! Каждый инструмент — это та же команда CLI с `--json`: агент получает ровно то,
 //! что видит человек в терминале, с теми же проверками (защищённые процессы, `--all`,
 //! `--dry-run`). Если движок запущен, ответы мгновенные — через канал.
+//!
+//! Действия (завершить, приостановить, контейнеры Docker) доступны, только если сервер
+//! запущен с `--allow-actions`: иначе инструмент act не объявляется и вызовы отклоняются.
+//! Одно действие затрагивает не больше `MAX_TARGETS` процессов.
 
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
@@ -10,10 +14,12 @@ use std::process::{Command, Stdio};
 use serde_json::{json, Value};
 
 const PROTOCOL: &str = "2025-06-18";
+/// Предел процессов на одно действие агента: `tm kill chrome --app` — да, «полсистемы» — нет.
+const MAX_TARGETS: usize = 20;
 
-fn tools() -> Value {
+fn tools(allow_actions: bool) -> Value {
     let target = json!({ "type": "string", "description": "PID, имя процесса (chrome или chrome.exe) или PID:create_time из JSON-ответов — защита от переиспользования PID" });
-    json!([
+    let mut all = json!([
         {
             "name": "sys",
             "description": "Сводка системы: загрузка ЦП, память (занято/доступно/выделено), видеокарты (загрузка, видеопамять), сетевые адаптеры, число процессов, время работы.",
@@ -94,7 +100,7 @@ fn tools() -> Value {
         },
         {
             "name": "act",
-            "description": "Действие над процессом: kill (завершить), suspend (заморозить), resume, restart (завершить и запустить с той же командной строкой), prio (сменить приоритет). Критические процессы Windows защищены. Если имя совпадает с несколькими процессами, нужен all=true. Сначала можно проверить с dry_run=true.",
+            "description": "Действие над процессом: kill (завершить; программе с окном сначала посылается «закрыть окно»), suspend (заморозить), resume, restart (перезапустить с тем же файлом, командной строкой, папкой и правами), prio (сменить приоритет). Защищены: ядро и критические процессы Windows, сам tm, процессы из списка защищённых пользователя; группы «Службы Windows» и «Windows» нельзя затронуть через app/all. Не больше 20 процессов за раз. Если имя совпадает с несколькими процессами, нужен all=true. Сначала проверьте с dry_run=true.",
             "inputSchema": { "type": "object", "properties": {
                 "action": { "type": "string", "enum": ["kill", "suspend", "resume", "restart", "prio"] },
                 "target": target,
@@ -102,15 +108,27 @@ fn tools() -> Value {
                 "tree": { "type": "boolean", "description": "вместе со всеми потомками" },
                 "app": { "type": "boolean", "description": "всё приложение, к которому относится процесс" },
                 "all": { "type": "boolean", "description": "разрешить, если имя совпало с несколькими процессами" },
-                "dry_run": { "type": "boolean", "description": "показать, что будет сделано, ничего не меняя" }
+                "dry_run": { "type": "boolean", "description": "показать, что будет сделано, ничего не меняя" },
+                "force": { "type": "boolean", "description": "принудительно: не ждать закрытия окна и не спрашивать о рискованном. Только после подтверждения человека" }
             }, "required": ["action", "target"] },
             "annotations": { "destructiveHint": true }
         }
-    ])
+    ]);
+    if !allow_actions {
+        // только чтение: без act и без действий над контейнерами
+        if let Some(list) = all.as_array_mut() {
+            list.retain(|t| t["name"] != "act");
+            for t in list.iter_mut().filter(|t| t["name"] == "docker") {
+                t["description"] = json!("Контейнеры Docker: состояние, ЦП, память, сеть, диск (процессы контейнеров в Windows видны одним vmmem).");
+                t["inputSchema"] = json!({ "type": "object", "properties": {} });
+            }
+        }
+    }
+    all
 }
 
 /// Аргументы инструмента → аргументы командной строки tm.
-fn to_argv(name: &str, a: &Value) -> Result<Vec<String>, String> {
+fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, String> {
     let s = |k: &str| a.get(k).and_then(|v| match v {
         Value::String(s) if !s.is_empty() => Some(s.clone()),
         Value::Number(n) => Some(n.to_string()),
@@ -176,6 +194,9 @@ fn to_argv(name: &str, a: &Value) -> Result<Vec<String>, String> {
         "docker" => {
             v.push("docker".into());
             let action = s("action").unwrap_or_else(|| "ls".into());
+            if action != "ls" && !allow_actions {
+                return Err(NO_ACTIONS.into());
+            }
             if action != "ls" {
                 v.push(action);
                 v.push(s("target").ok_or("нужен target")?);
@@ -188,6 +209,9 @@ fn to_argv(name: &str, a: &Value) -> Result<Vec<String>, String> {
             }
         }
         "act" => {
+            if !allow_actions {
+                return Err(NO_ACTIONS.into());
+            }
             let action = s("action").ok_or("нужен action")?;
             if !matches!(action.as_str(), "kill" | "suspend" | "resume" | "restart" | "prio") {
                 return Err(format!("неизвестное действие «{action}»"));
@@ -205,6 +229,11 @@ fn to_argv(name: &str, a: &Value) -> Result<Vec<String>, String> {
             if b("dry_run") {
                 v.push("--dry-run".into());
             }
+            if b("force") {
+                v.push("--force".into());
+            }
+            v.push("--max-targets".into());
+            v.push(MAX_TARGETS.to_string());
         }
         _ => return Err(format!("неизвестный инструмент «{name}»")),
     }
@@ -212,8 +241,10 @@ fn to_argv(name: &str, a: &Value) -> Result<Vec<String>, String> {
     Ok(v)
 }
 
-fn call_tool(name: &str, args: &Value) -> Value {
-    let (text, is_error) = match to_argv(name, args) {
+const NO_ACTIONS: &str = "действия выключены: MCP-сервер запущен только для чтения (включается: tm mcp --allow-actions)";
+
+fn call_tool(name: &str, args: &Value, allow_actions: bool) -> Value {
+    let (text, is_error) = match to_argv(name, args, allow_actions) {
         Err(e) => (e, true),
         Ok(argv) => {
             let exe = std::env::current_exe().unwrap_or_else(|_| "tm.exe".into());
@@ -236,7 +267,7 @@ fn call_tool(name: &str, args: &Value) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": is_error })
 }
 
-pub fn run() -> std::io::Result<()> {
+pub fn run(allow_actions: bool) -> std::io::Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     for line in stdin.lock().lines() {
@@ -262,8 +293,8 @@ pub fn run() -> std::io::Result<()> {
                                  для точности используйте PID:create_time из JSON."
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools() })),
-            "tools/call" => Ok(call_tool(params["name"].as_str().unwrap_or(""), &params["arguments"])),
+            "tools/list" => Ok(json!({ "tools": tools(allow_actions) })),
+            "tools/call" => Ok(call_tool(params["name"].as_str().unwrap_or(""), &params["arguments"], allow_actions)),
             _ => Err(json!({ "code": -32601, "message": format!("метод не поддерживается: {method}") })),
         };
         let resp = match result {

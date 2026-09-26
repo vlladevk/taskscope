@@ -53,7 +53,9 @@ tm — диспетчер задач для терминала и ИИ-аген�
                                утечки в драйверах, накопление токенов, зомби-процессы
                                --by size|growth   -n N (0 — все)   --owners — найти драйверы меток
                                рост виден, когда запущен движок (снимок раз в минуту)
-  mcp                        MCP-сервер (stdio) для ИИ-агентов: те же команды как инструменты
+  mcp                        MCP-сервер (stdio) для ИИ-агентов: те же команды как инструменты.
+                               По умолчанию только чтение; --allow-actions разрешает действия
+                               (не больше 20 процессов за раз, защита та же, что у tm kill)
 
 ЦЕЛЬ
   1234                       PID
@@ -1099,7 +1101,7 @@ fn run() -> Res<bool> {
         }
         "docker" => cmd_docker(&args),
         "pool" => cmd_pool(&args).map(|_| true),
-        "mcp" => mcp::run().map(|_| true).map_err(io_err),
+        "mcp" => mcp::run(args.has("allow-actions")).map(|_| true).map_err(io_err),
         "daemon" => cmd_daemon(&args),
         "status" => daemon_status(&args).map(|_| true),
         "--version" | "version" => {
