@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Диспетчер задач</title>
+<style>
+/* ===== Токены: Fluent 2 / Windows 11, тёмная тема (WinUI theme resources) ===== */
+:root{
+  --bg-base:#202020;           /* SolidBackgroundFillColorBase — «Mica» фон окна */
+  --bg-secondary:#1c1c1c;      /* SolidBackgroundFillColorSecondary */
+  --bg-tertiary:#282828;       /* SolidBackgroundFillColorTertiary */
+  --layer:#272727;             /* LayerFillColorDefault поверх Mica */
+  --card:rgba(255,255,255,.0512);
+  --ctrl:rgba(255,255,255,.0605);
+  --ctrl-2:rgba(255,255,255,.0837);
+  --ctrl-3:rgba(255,255,255,.0326);
+  --subtle-hover:rgba(255,255,255,.0605);
+  --subtle-press:rgba(255,255,255,.0419);
+  --stroke-ctrl:rgba(255,255,255,.0698);
+  --stroke-card:rgba(0,0,0,.1);
+  --divider:rgba(255,255,255,.0837);
+  --text-1:#ffffff;
+  --text-2:rgba(255,255,255,.786);
+  --text-3:rgba(255,255,255,.5442);
+  --text-4:rgba(255,255,255,.3628);
+  --accent:#4cc2ff;            /* AccentFillColorDefault = SystemAccentColorLight2 для #0078D4 */
+  --accent-sel:rgba(76,194,255,.14);
+  --on-accent:#000;
+  --critical:#ff99a4;          /* SystemFillColorCritical */
+  --caution:#fce100;           /* SystemFillColorCaution */
+  --success:#6ccb5f;           /* SystemFillColorSuccess */
+  --overlay:#2c2c2c;           /* фон всплывающих меню (Acrylic, упрощённо) */
+  --r-ctrl:4px; --r-over:8px;
+  --font:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --font-d:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","Consolas",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+html{color-scheme:dark}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:5px;border:3px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}
+body{background:var(--bg-base);color:var(--text-1);font:14px/20px var(--font);display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased}
+button,input{font:inherit;color:inherit}
+.caption{font-size:12px;line-height:16px;color:var(--text-3)}
+.mono{font-family:var(--mono);font-size:12px}
+.num{font-variant-numeric:tabular-nums}
+
+/* ===== верхняя панель ===== */
+.bar{display:flex;align-items:center;gap:12px;height:48px;padding:0 12px 0 16px;flex:none}
+.title{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-2);white-space:nowrap}
+.title svg{flex:none}
+.title .proto{color:var(--text-3)}
+.spacer{flex:1}
+.seg{display:inline-flex;background:var(--ctrl-3);border:1px solid var(--stroke-ctrl);border-radius:var(--r-ctrl);padding:2px;gap:2px}
+.seg button{border:0;background:none;border-radius:3px;padding:3px 10px;font-size:12px;line-height:18px;color:var(--text-2);cursor:pointer;white-space:nowrap}
+.seg button:hover{background:var(--subtle-hover);color:var(--text-1)}
+.seg button.on{background:var(--ctrl-2);color:var(--text-1);box-shadow:inset 0 -2px 0 var(--accent)}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:var(--r-ctrl);border:1px solid var(--stroke-ctrl);background:var(--ctrl);color:var(--text-1);font-size:13px;cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--ctrl-2)}
+.btn:active{background:var(--ctrl-3);color:var(--text-2)}
+.btn.subtle{background:none;border-color:transparent}
+.btn.subtle:hover{background:var(--subtle-hover)}
+.btn.danger{color:var(--critical)}
+.btn[disabled]{opacity:.4;pointer-events:none}
+.lbl{font-size:12px;color:var(--text-3)}
+.issues{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:12px;color:var(--text-2);cursor:pointer;padding:4px 8px;border-radius:var(--r-ctrl)}
+.issues:hover{background:var(--subtle-hover)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+.dot.red{background:var(--critical)} .dot.yel{background:var(--caution)}
+.dot.ring{background:none;box-shadow:inset 0 0 0 1.5px var(--text-3);width:7px;height:7px}
+.dot.ring.red{box-shadow:inset 0 0 0 1.5px var(--critical)} .dot.ring.yel{box-shadow:inset 0 0 0 1.5px var(--caution)}
+
+/* ===== dockview в стиле Fluent ===== */
+#dock{flex:1;min-height:0;padding:0 8px 8px}
+#dock .dockview-theme-dark{
+  --dv-group-view-background-color:var(--layer);
+  --dv-tabs-and-actions-container-background-color:var(--bg-base);
+  --dv-tabs-and-actions-container-height:34px;
+  --dv-tabs-and-actions-container-font-size:13px;
+  --dv-activegroup-visiblepanel-tab-background-color:var(--layer);
+  --dv-inactivegroup-visiblepanel-tab-background-color:var(--layer);
+  --dv-activegroup-hiddenpanel-tab-background-color:transparent;
+  --dv-inactivegroup-hiddenpanel-tab-background-color:transparent;
+  --dv-activegroup-visiblepanel-tab-color:var(--text-1);
+  --dv-inactivegroup-visiblepanel-tab-color:var(--text-2);
+  --dv-activegroup-hiddenpanel-tab-color:var(--text-3);
+  --dv-inactivegroup-hiddenpanel-tab-color:var(--text-3);
+  --dv-tab-divider-color:transparent;
+  --dv-separator-border:transparent;
+  --dv-paneview-header-border-color:var(--divider);
+  --dv-drag-over-background-color:rgba(76,194,255,.12);
+  --dv-drag-over-border:1px solid var(--accent);
+  --dv-edge-dock-indicator-color:var(--accent);
+  --dv-sash-color:transparent;
+  --dv-active-sash-color:var(--accent);
+  --dv-icon-hover-background-color:var(--subtle-hover);
+  --dv-tab-border-radius:6px 6px 0 0;
+  --dv-border-radius:8px;
+  --dv-spacing-padding:0px;
+  --dv-scrollbar-background-color:rgba(255,255,255,.25);
+  font-family:var(--font);
+}
+#dock .dv-groupview{border-radius:0 8px 8px 8px;border:1px solid var(--stroke-ctrl);overflow:hidden}
+#dock .dv-tab{padding:0 12px}
+#dock .dv-tabs-and-actions-container{border-bottom:0}
+
+/* ===== общие элементы панелей ===== */
+.pnl{height:100%;display:flex;flex-direction:column;overflow:hidden;position:relative}
+.ph{display:flex;align-items:center;gap:10px;padding:10px 14px 8px;flex:none;flex-wrap:wrap}
+.ph h2{margin:0;font:600 20px/28px var(--font-d)}
+.ph .big{font:600 20px/28px var(--font-d)}
+.scroll{overflow:auto;flex:1;min-height:0}
+.scroll::-webkit-scrollbar,.tbl-wrap::-webkit-scrollbar{width:10px;height:10px}
+.scroll::-webkit-scrollbar-thumb,.tbl-wrap::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:5px;border:3px solid transparent;background-clip:padding-box}
+.search{height:28px;width:220px;background:var(--ctrl);border:1px solid var(--stroke-ctrl);border-bottom-color:rgba(255,255,255,.2);border-radius:var(--r-ctrl);padding:0 10px;font-size:13px;outline:none}
+.search:focus{background:var(--bg-secondary);border-bottom:2px solid var(--accent)}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);cursor:pointer;white-space:nowrap}
+.chk input{accent-color:var(--accent)}
+.ico{width:16px;height:16px;border-radius:3px;display:inline-grid;place-items:center;font:600 9px/1 var(--font);color:rgba(255,255,255,.92);flex:none}
+.ico.l{width:32px;height:32px;border-radius:6px;font-size:14px}
+.dk-acts{display:flex;gap:4px;justify-content:flex-end}
+.dk-acts .btn{height:24px;padding:0 8px;font-size:12px}
+.chip{font-size:11px;line-height:16px;padding:0 6px;border-radius:8px;background:var(--ctrl-2);color:var(--text-2);white-space:nowrap}
+.chip.warn{background:rgba(252,225,0,.14);color:var(--caution)}
+.chip.bad{background:rgba(255,153,164,.14);color:var(--critical)}
+
+/* ===== Ресурсы ===== */
+.res{padding:4px}
+.ri{display:grid;grid-template-columns:72px 1fr;gap:10px;align-items:center;padding:8px 10px;border-radius:var(--r-ctrl);cursor:pointer;position:relative}
+.ri:hover{background:var(--subtle-hover)}
+.ri.on{background:var(--ctrl)}
+.ri.on::before{content:"";position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:2px;background:var(--accent)}
+.ri svg{width:72px;height:40px;display:block;border:1px solid var(--stroke-ctrl);border-radius:2px;background:rgba(0,0,0,.12)}
+.ri .rn{display:flex;align-items:center;gap:6px;font-size:14px}
+.ri .rv{font-size:12px;color:var(--text-3);line-height:16px}
+
+/* ===== График ===== */
+.chart-body{flex:1;min-height:0;display:flex;gap:16px;padding:0 14px 12px}
+.charts{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.cbox{position:relative;flex:1;min-height:110px;display:flex;flex-direction:column}
+.cbox .ct{font-size:12px;color:var(--text-2);display:flex;gap:8px;align-items:baseline}
+.cbox canvas{flex:1;min-height:0;width:100%;display:block;cursor:crosshair}
+.legend{display:flex;flex-wrap:wrap;gap:2px 4px;padding:4px 0 0;font-size:12px;flex:none;max-height:60px;overflow:auto}
+.lg{display:inline-flex;align-items:center;gap:6px;padding:1px 6px;border-radius:var(--r-ctrl);cursor:pointer;color:var(--text-2)}
+.lg:hover{background:var(--subtle-hover);color:var(--text-1)}
+.lg i{width:10px;height:10px;border-radius:2px;flex:none}
+.lg b{font-weight:400;color:var(--text-1)}
+.stats{width:260px;flex:none;overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;align-content:start;padding-top:4px}
+.stats div span{display:block;font-size:12px;color:var(--text-3);line-height:16px}
+.stats div b{font:600 15px/22px var(--font);font-variant-numeric:tabular-nums}
+.stats .note{grid-column:1/-1;font-size:12px;line-height:17px;color:var(--text-2);background:var(--card);border:1px solid var(--stroke-ctrl);border-radius:var(--r-ctrl);padding:8px 10px}
+.pop{position:absolute;z-index:20;pointer-events:none;background:var(--overlay);border:1px solid rgba(255,255,255,.08);border-radius:var(--r-over);box-shadow:0 8px 16px rgba(0,0,0,.28);padding:8px 10px;font-size:12px;min-width:180px;display:none}
+.pop .pt{color:var(--text-3);margin-bottom:4px}
+.pop .pr{display:flex;align-items:center;gap:6px;line-height:18px}
+.pop .pr i{width:8px;height:8px;border-radius:2px;flex:none}
+.pop .pr span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:210px;color:var(--text-2)}
+.pop .pr b{font-weight:600;font-variant-numeric:tabular-nums}
+@container (max-width:760px){.stats{display:none}}
+.pnl.chart{container-type:inline-size}
+
+/* ===== Процессы ===== */
+.tbl-wrap{overflow:auto;flex:1;min-height:0}
+.tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums;table-layout:fixed}
+.tbl td{overflow:hidden;text-overflow:ellipsis}
+.tbl th{position:sticky;top:0;z-index:2;background:var(--layer);text-align:right;font-weight:400;font-size:12px;color:var(--text-3);padding:6px 10px;border-bottom:1px solid var(--divider);white-space:nowrap;cursor:pointer;user-select:none}
+.tbl th:first-child{text-align:left}
+.tbl th:hover{color:var(--text-1)}
+.tbl th.on{color:var(--text-1)}
+.tbl td{padding:0 10px;height:32px;white-space:nowrap;text-align:right;position:relative}
+.tbl td:first-child{text-align:left}
+.tbl tbody tr{cursor:default}
+.tbl tbody tr:hover td{background:var(--subtle-hover)}
+.tbl tbody tr.sel td{background:var(--accent-sel)}
+.tbl tbody tr.sel td:first-child{box-shadow:inset 3px 0 var(--accent)}
+.tbl tbody{user-select:none}
+.nm{display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden}
+.nm>*{flex:none}.nm .n1,.nm .n2{flex:0 1 auto;min-width:0;white-space:nowrap}
+.nm .tw{width:16px;height:16px;display:inline-grid;place-items:center;flex:none;color:var(--text-3);cursor:pointer;border-radius:3px}
+.nm .tw:hover{background:var(--subtle-hover);color:var(--text-1)}
+.nm .tw svg{transition:transform .12s}
+.nm .tw.open svg{transform:rotate(90deg)}
+.nm .n1{overflow:hidden;text-overflow:ellipsis}
+.nm .n2{color:var(--text-3);font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.cell-bar{position:absolute;right:0;top:5px;bottom:5px;background:rgba(76,194,255,.10);pointer-events:none;border-radius:2px}
+.cell-v{position:relative}
+.own{color:var(--text-4);font-size:11px;margin-right:6px}
+tr.dead td{opacity:.4}
+tr.susp .n1{color:var(--text-3)}
+.sp{width:72px;height:18px;display:block;margin-left:auto}
+.foot{display:flex;gap:16px;align-items:center;padding:6px 14px;border-top:1px solid var(--divider);font-size:12px;color:var(--text-3);flex:none;flex-wrap:wrap}
+.kbd{font-family:var(--mono);font-size:11px;padding:0 4px;border-radius:3px;border:1px solid var(--stroke-ctrl);border-bottom-width:2px;color:var(--text-2)}
+
+/* ===== Детали ===== */
+.dt-h{display:flex;gap:12px;align-items:flex-start;padding:14px 16px 8px}
+.dt-h h3{margin:0;font:600 16px/22px var(--font)}
+.dt-h .caption{margin-top:2px}
+.issue{margin:4px 16px 8px;padding:8px 10px;border-radius:var(--r-ctrl);font-size:12px;line-height:17px;border:1px solid;display:flex;gap:8px}
+.issue.red{background:rgba(255,153,164,.08);border-color:rgba(255,153,164,.25)}
+.issue.yel{background:rgba(252,225,0,.06);border-color:rgba(252,225,0,.22)}
+.issue .dot{margin-top:4px}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:0 16px 8px;font-size:12px}
+.crumbs a{color:var(--accent);cursor:pointer;text-decoration:none;padding:1px 3px;border-radius:3px}
+.crumbs a:hover{background:var(--subtle-hover)}
+.crumbs .sep{color:var(--text-4)}
+.crumbs .cur{color:var(--text-1);padding:1px 3px}
+.acts{display:flex;flex-wrap:wrap;gap:6px;padding:4px 16px 12px}
+.sec{padding:10px 16px 4px;font:600 13px/20px var(--font);color:var(--text-1);border-top:1px solid var(--divider);margin-top:6px}
+.mini-c{padding:0 16px}
+.mini-c .caption{display:flex;justify-content:space-between}
+.mini-c canvas{width:100%;height:64px;display:block;margin:2px 0 8px}
+.kv{display:grid;grid-template-columns:118px 1fr;gap:4px 10px;padding:4px 16px 8px;font-size:12px;line-height:17px}
+.kv dt{color:var(--text-3)} .kv dd{margin:0;color:var(--text-1);word-break:break-all}
+.kids{padding:0 8px 8px}
+.kid{display:grid;grid-template-columns:16px 1fr 56px 64px;gap:8px;align-items:center;padding:4px 8px;border-radius:var(--r-ctrl);font-size:12px;cursor:pointer}
+.kid:hover{background:var(--subtle-hover)}
+.kid span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kid .v{text-align:right;color:var(--text-2);font-variant-numeric:tabular-nums}
+.conn{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:0 16px 10px;font-size:12px}
+.empty{padding:48px 24px;text-align:center;color:var(--text-3);font-size:13px}
+
+/* ===== Карта памяти ===== */
+.map-wrap{flex:1;min-height:0;position:relative;margin:0 14px}
+.map-wrap canvas{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
+.maplegend{display:flex;flex-wrap:wrap;gap:4px 14px;padding:8px 14px 10px;font-size:12px;color:var(--text-2);flex:none}
+.maplegend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.tip{position:fixed;z-index:70;pointer-events:none;background:var(--overlay);border:1px solid rgba(255,255,255,.08);border-radius:var(--r-over);box-shadow:0 8px 16px rgba(0,0,0,.28);padding:8px 10px;font-size:12px;max-width:340px;display:none}
+.tip b{font-weight:600}
+.tip .pth{color:var(--text-3);margin-bottom:3px}
+
+/* ===== События ===== */
+.evs{padding:4px 8px}
+.ev{display:grid;grid-template-columns:44px 10px 1fr;gap:8px;align-items:start;padding:7px 8px;border-radius:var(--r-ctrl);font-size:12px;line-height:17px;cursor:pointer}
+.ev:hover{background:var(--subtle-hover)}
+.ev .t{color:var(--text-3);font-variant-numeric:tabular-nums}
+.ev .dot{margin-top:5px}
+.ev .who{color:var(--text-3)}
+
+/* ===== меню, всплывашки ===== */
+.menu{position:fixed;z-index:80;display:none;min-width:240px;background:var(--overlay);border:1px solid rgba(255,255,255,.08);border-radius:var(--r-over);box-shadow:0 8px 16px rgba(0,0,0,.28);padding:4px}
+.menu .mi{display:flex;justify-content:space-between;gap:24px;padding:0 12px;height:32px;align-items:center;border-radius:var(--r-ctrl);font-size:13px;cursor:pointer}
+.menu .mi:hover{background:var(--subtle-hover)}
+.menu .mi.danger{color:var(--critical)}
+.menu .mi kbd{font:12px var(--font);color:var(--text-3)}
+.menu .mi.chk::before{content:"";width:12px}
+.menu .sep{height:1px;background:var(--divider);margin:4px 0}
+.menu .mh{padding:6px 12px 2px;font-size:12px;color:var(--text-3)}
+#toasts{position:fixed;right:16px;bottom:16px;z-index:90;display:flex;flex-direction:column;gap:8px;align-items:flex-end;pointer-events:none}
+.toast{max-width:460px;background:var(--overlay);border:1px solid rgba(255,255,255,.08);border-radius:var(--r-over);box-shadow:0 8px 16px rgba(0,0,0,.28);padding:10px 14px 10px 12px;font-size:13px;display:flex;gap:10px;align-items:flex-start;animation:tin .18s ease-out}
+.toast .dot{margin-top:6px}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}}
+
+/* ===================== v3: каркас как в IDE-редакторах ===================== */
+.ib{display:inline-grid;place-items:center;width:32px;height:28px;border:0;border-radius:var(--r-ctrl);background:none;color:var(--text-2);cursor:pointer;padding:0}
+.ib:hover{background:var(--subtle-hover);color:var(--text-1)}
+.ib:active{background:var(--subtle-press)}
+.ib .fillp{fill:currentColor;opacity:.25}
+.ib.on{color:var(--text-1)} .ib.on .fillp{fill:var(--accent);opacity:1}
+.shell{flex:1;min-height:0;display:flex;padding:0 8px 8px}
+.rail{width:212px;flex:none;display:flex;flex-direction:column;gap:2px;padding:4px 8px 0 0;overflow:auto}
+.rail .rh{font-size:12px;color:var(--text-3);padding:0 2px 2px 10px;display:flex;align-items:center;justify-content:space-between;min-height:28px}
+.shell.no-rail .rail{display:none}
+.ri{padding:8px 10px 8px 12px;border-radius:var(--r-ctrl);cursor:pointer;position:relative}
+.ri:hover{background:var(--subtle-hover)}
+.ri.on{background:var(--ctrl)}
+.ri.on::before{content:"";position:absolute;left:0;top:12px;height:16px;width:3px;border-radius:2px;background:var(--accent)}
+.ri .rn{display:flex;align-items:center;gap:6px;font-size:14px;line-height:20px}
+.ri .rv{font-size:12px;color:var(--text-3);line-height:16px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ri svg{display:block;width:100%;height:30px;margin-top:6px}
+.rail .rfoot{margin-top:auto;padding:10px;font-size:12px;line-height:16px;color:var(--text-3)}
+.center{flex:1;min-width:0;display:flex;flex-direction:column}
+.main{flex:1;min-height:120px;position:relative}
+.zone{background:var(--layer);border:1px solid var(--stroke-ctrl);border-radius:8px;display:flex;flex-direction:column;overflow:hidden;min-height:0}
+.bottom{height:var(--bh,300px);flex:none}
+.right{width:var(--rw,360px);flex:none}
+.shell.no-bottom .bottom,.shell.no-bottom #sashB{display:none}
+.shell.no-right .right,.shell.no-right #sashR{display:none}
+.sash{flex:none;position:relative;z-index:5}
+.sash.h{height:8px;cursor:row-resize}
+.sash.v{width:8px;cursor:col-resize}
+.sash::after{content:"";position:absolute;background:var(--accent);opacity:0;transition:opacity .1s .2s}
+.sash.h::after{left:0;right:0;top:3px;height:2px}
+.sash.v::after{top:0;bottom:0;left:3px;width:2px}
+.sash:hover::after,.sash.drag::after{opacity:1}
+.ptabs{display:flex;align-items:center;gap:2px;height:36px;padding:0 4px 0 8px;border-bottom:1px solid var(--divider);flex:none}
+.ptabs button[data-t]{height:36px;border:0;background:none;padding:0 10px;font-size:13px;color:var(--text-3);cursor:pointer;position:relative}
+.ptabs button[data-t]:hover{color:var(--text-1)}
+.ptabs button[data-t].on{color:var(--text-1)}
+.ptabs button[data-t].on::after{content:"";position:absolute;left:10px;right:10px;bottom:0;height:2px;border-radius:1px;background:var(--accent)}
+.ptitle{font-size:13px;padding:0 6px}
+.pbody{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
+.pbody[hidden]{display:none}
+#dock .dv-groupview{border-radius:0 8px 8px 8px}
+.hdr-acts{display:flex;align-items:center;gap:0;height:100%;padding-right:4px}
+.hdr-acts .ib{width:28px;height:26px;color:var(--text-3)}
+
+/* ----- нижняя панель: один график + переключатель ----- */
+.ch-head{display:flex;align-items:center;gap:12px;padding:10px 14px 6px;flex-wrap:wrap;flex:none}
+.ch-head h2{margin:0;font:600 20px/28px var(--font-d)}
+.ch-head .big{font:600 20px/28px var(--font-d);font-variant-numeric:tabular-nums}
+.ch-keys{font-size:12px;color:var(--text-2);display:flex;gap:6px;flex-wrap:wrap}
+.ch-keys span+span::before{content:"·";margin-right:6px;color:var(--text-4)}
+.ch-more{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 16px;padding:4px 14px 10px;flex:none;border-bottom:1px solid var(--divider)}
+.ch-more[hidden]{display:none}
+.ch-more div span{display:block;font-size:12px;color:var(--text-3);line-height:16px}
+.ch-more div b{font:600 14px/20px var(--font);font-variant-numeric:tabular-nums}
+.ch-more .note{grid-column:1/-1;font-size:12px;line-height:17px;color:var(--text-2)}
+.ch-area{flex:1;min-height:80px;position:relative;margin:0 14px}
+.ch-area canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}
+.legend{display:flex;flex-wrap:wrap;gap:2px 4px;padding:6px 10px 10px;font-size:12px;flex:none}
+.legend:empty{display:none}
+.more-t{font-size:12px;color:var(--text-2);background:none;border:0;cursor:pointer;padding:4px 6px;border-radius:var(--r-ctrl)}
+.more-t:hover{background:var(--subtle-hover);color:var(--text-1)}
+
+/* ----- процессы: активный столбец ----- */
+.tbl th.act{color:var(--text-1);box-shadow:inset 0 -2px var(--accent)}
+.tbl td.act .cell-bar{background:rgba(76,194,255,.2)}
+.tbl td.act{color:var(--text-1)}
+.tbl td:not(.act):not(:first-child){color:var(--text-2)}
+.scope{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);background:var(--ctrl);border:1px solid var(--stroke-ctrl);border-radius:12px;padding:1px 4px 1px 10px}
+.scope button{border:0;background:none;color:var(--accent);cursor:pointer;font-size:12px;padding:1px 6px;border-radius:10px}
+.scope button:hover{background:var(--subtle-hover)}
+
+/* ----- детали: сворачиваемые разделы ----- */
+.dsec{border-top:1px solid var(--divider)}
+.dsec>summary{list-style:none;display:flex;align-items:center;gap:8px;padding:10px 16px;font:600 13px/20px var(--font);cursor:pointer;user-select:none}
+.dsec>summary::-webkit-details-marker{display:none}
+.dsec>summary:hover{background:var(--subtle-hover)}
+.dsec>summary svg{color:var(--text-3);transition:transform .12s}
+.dsec[open]>summary svg{transform:rotate(90deg)}
+.dsec>summary .caption{font-weight:400;margin-left:auto}
+.dchart{padding:0 16px 8px;position:relative}
+.dchart .caption{display:flex;justify-content:space-between}
+.dchart canvas{width:100%;height:92px;display:block;margin-top:2px}
+
+/* ----- вкладка отдельного процесса ----- */
+.pt-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px 20px;padding:4px 14px 12px}
+.pt-grid .cell{position:relative}
+.pt-grid canvas{width:100%;height:150px;display:block}
+.dead-note{margin:8px 16px;font-size:12px;color:var(--text-2);background:var(--card);border:1px solid var(--stroke-ctrl);border-radius:var(--r-ctrl);padding:8px 10px}
+.rail .ri{display:block}
+.rail .ri svg{border:0;background:none;border-radius:0;width:100%;height:30px}
+/* ===== приложение: настоящие иконки, состояние загрузки ===== */
+img.ico{background:none;box-shadow:none;object-fit:contain;border-radius:0}
+.boot{position:fixed;inset:0;display:grid;place-items:center;color:var(--text-3);font-size:13px;z-index:100;background:var(--bg-base)}
+.boot[hidden]{display:none}
+.errbar{position:fixed;left:50%;top:8px;transform:translateX(-50%);z-index:95;background:rgba(255,153,164,.14);color:var(--critical);border:1px solid rgba(255,153,164,.3);border-radius:var(--r-ctrl);padding:4px 12px;font-size:12px;display:none}
+.chip.adm{background:rgba(76,194,255,.14);color:var(--accent)}
+.menu .mi .ck{display:inline-block;width:14px;color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="title">
+    <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="9" width="3" height="6" rx="1" fill="#4cc2ff"/><rect x="6.5" y="5" width="3" height="10" rx="1" fill="#4cc2ff" opacity=".75"/><rect x="12" y="1" width="3" height="14" rx="1" fill="#4cc2ff" opacity=".5"/></svg>
+    <span>Диспетчер</span><span class="proto" id="host"></span>
+  </div>
+  <span class="issues" id="issues" title="Показать следующую проблему"></span>
+  <div class="spacer"></div>
+  <span class="lbl">Период</span>
+  <div class="seg" id="range"></div>
+  <div class="spacer"></div>
+  <button class="ib" id="tglBottom" title="Нижняя панель · Ctrl+J"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="9" width="12" height="4" rx="1"/></svg></button>
+  <button class="ib" id="tglRight" title="Правая панель · Ctrl+Alt+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="9.5" y="3" width="4.5" height="10" rx="1"/></svg></button>
+  <button class="ib" id="moreBtn" title="Ещё"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor"/></svg></button>
+</div>
+<div class="shell" id="shell">
+  <nav class="rail" id="rail"></nav>
+  <div class="center" id="center">
+    <div class="main" id="dock"></div>
+    <div class="sash h" id="sashB" title="Потяните, чтобы изменить высоту"></div>
+    <section class="zone bottom" id="bottom">
+      <div class="ptabs" id="btabs"><button data-t="chart">График</button><button data-t="log">Журнал</button><div class="spacer"></div>
+        <button class="ib" data-close="bottom" title="Скрыть · Ctrl+J"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button></div>
+      <div class="pbody" id="bChart"></div>
+      <div class="pbody scroll" id="bLog"></div>
+    </section>
+  </div>
+  <div class="sash v" id="sashR" title="Потяните, чтобы изменить ширину"></div>
+  <aside class="zone right" id="right">
+    <div class="ptabs"><span class="ptitle">Детали</span><div class="spacer"></div>
+      <button class="ib" data-close="right" title="Скрыть · Ctrl+Alt+B"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button></div>
+    <div class="pbody scroll" id="details"></div>
+  </aside>
+</div>
+<div id="menu" class="menu"></div>
+<div id="tip" class="tip"></div>
+<div id="toasts"></div>
+<div class="boot" id="boot">Собираю данные…</div>
+<div class="errbar" id="errbar"></div>
+<script src="vendor/dockview-core.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

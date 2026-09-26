@@ -1,0 +1,14 @@
+[package]
+name = "tm-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tm"
+path = "src/main.rs"
+
+[dependencies]
+tm-core = { path = "../tm-core" }
+serde.workspace = true
+serde_json.workspace = true

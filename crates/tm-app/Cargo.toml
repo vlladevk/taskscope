@@ -1,0 +1,27 @@
+[package]
+name = "tm-app"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tm-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tm-core = { path = "../tm-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["tray-icon"] }
+log = "0.4"
+# режим экономии памяти WebView2 — те же версии, что у wry
+webview2-com = "0.38"
+windows = "0.61"
+
+[features]
+default = ["custom-protocol"]
+# встраивает интерфейс в exe (без dev-сервера)
+custom-protocol = ["tauri/custom-protocol"]
