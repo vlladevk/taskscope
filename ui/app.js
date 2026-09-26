@@ -1362,16 +1362,19 @@ $('#tglRight').addEventListener('click',()=>toggleRight());
 document.querySelectorAll('[data-close]').forEach(b=>b.addEventListener('click',()=>b.dataset.close==='bottom'?toggleBottom(false):toggleRight(false)));
 function sash(id,apply){
   const s=$(id);let start,base;
-  let raf=0,last;
-  s.addEventListener('pointerdown',e=>{s.setPointerCapture(e.pointerId);s.classList.add('drag');start={x:e.clientX,y:e.clientY};base={bh:S.bh,rw:S.rw};DRAGGING=true;});
-  /* пока тянем — только меняем размеры раз в кадр; перерисовка таблиц и графиков — после отпускания */
-  s.addEventListener('pointermove',e=>{if(!start)return;last=e;if(raf)return;raf=requestAnimationFrame(()=>{raf=0;if(!start)return;
-    apply(last.clientX-start.x,last.clientY-start.y,base);sizeZones();});});
-  const end=()=>{if(!start)return;start=null;DRAGGING=false;s.classList.remove('drag');saveUI();requestAnimationFrame(()=>{relayout();renderAll();flushNeeds();});};
-  s.addEventListener('pointerup',end);s.addEventListener('pointercancel',end);
+  let raf=0;
+  s.addEventListener('pointerdown',e=>{if(e.button!==0)return;e.preventDefault();s.setPointerCapture(e.pointerId);s.classList.add('drag');start={x:e.clientX,y:e.clientY};base={bh:S.bh,rw:S.rw};DRAGGING=true;});
+  /* размер меняется сразу на каждое движение (это ~2 мс), а графики перерисовываются раз в кадр —
+     иначе растянутые холсты дёргались; запросы данных — только после отпускания */
+  const move=e=>{apply(e.clientX-start.x,e.clientY-start.y,base);sizeZones();relayout();
+    if(!raf)raf=requestAnimationFrame(()=>{raf=0;renderAll();});};
+  s.addEventListener('pointermove',e=>{if(start)move(e);});
+  const end=e=>{if(!start)return;if(e&&e.type==='pointerup')move(e);start=null;DRAGGING=false;s.classList.remove('drag');
+    if(s.hasPointerCapture&&e&&s.hasPointerCapture(e.pointerId))s.releasePointerCapture(e.pointerId);saveUI();renderAll();flushNeeds();};
+  s.addEventListener('pointerup',end);s.addEventListener('pointercancel',end);s.addEventListener('lostpointercapture',end);
 }
-sash('#sashB',(dx,dy,b)=>{S.bh=clamp(b.bh-dy,160,innerHeight-260);});
-sash('#sashR',(dx,dy,b)=>{S.rw=clamp(b.rw-dx,280,Math.min(640,innerWidth-700));});
+sash('#sashB',(dx,dy,b)=>{S.bh=clamp(b.bh-dy,160,Math.max(160,innerHeight-260));});
+sash('#sashR',(dx,dy,b)=>{S.rw=clamp(b.rw-dx,280,Math.max(280,Math.min(640,innerWidth-700)));});
 
 /* верхняя строка */
 function renderTop(){
