@@ -1228,7 +1228,7 @@ fn cmd_pool(args: &Args) -> Res<()> {
     let mut watch = pool::PoolWatch::default();
     if report.is_none() {
         let frame = Sampler::new().sample().map_err(io_err)?;
-        let procs = frame.procs.iter().filter(|p| p.pid != 0).count();
+        let procs = frame.system.processes;
         watch.ingest(tm_core::engine::wall_ms(), pool::query(), procs, frame.system.threads);
     }
     if args.has("owners") {

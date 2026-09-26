@@ -138,8 +138,10 @@ fn gone() -> io::Error {
 fn probe(p: &ProcStat) -> (Option<String>, bool) {
     match ProcHandle::open(p.pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(p.create_time)) {
         Ok(h) => (crate::info::image_path(&h), is_critical(&h)),
-        // не открыть (защищённый процесс, нет прав) — путь всё равно узнаём по PID (класс 88)
-        Err(_) => (crate::info::path_by_pid(p.pid), false),
+        // нет прав (защищённый процесс, чужой) — путь всё равно узнаём по PID (класс 88);
+        // при другой ошибке PID мог достаться другому процессу — путь был бы чужой
+        Err(e) if e.raw_os_error() == Some(5) => (crate::info::path_by_pid(p.pid), false),
+        Err(_) => (None, false),
     }
 }
 

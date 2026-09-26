@@ -206,7 +206,10 @@ pub fn group_with(procs: &[ProcStat], tree: &Tree, info: &mut InfoCache, mut lin
             root_depth[gi] = depth;
             g.root_pid = procs[root].pid;
         }
-        g.count += 1;
+        // прерывания и DPC — строки нагрузки, не процессы: в «N процессов» не входят
+        if !crate::sampler::is_pseudo(p.pid) {
+            g.count += 1;
+        }
         g.cpu += p.cpu;
         g.mem += p.mem;
         g.io_read_bps += p.io_read_bps;

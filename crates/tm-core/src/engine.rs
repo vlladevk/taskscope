@@ -329,7 +329,7 @@ fn run(inner: &Inner) {
         drop(proc_samples);
         st.watch.update(hist_t, &frame, &groups);
         if let Some(raw) = pool_raw {
-            let procs = frame.procs.iter().filter(|p| p.pid != 0).count();
+            let procs = frame.system.processes;
             for (lvl, text) in st.pool.ingest(hist_t, raw, procs, frame.system.threads) {
                 st.watch.log(hist_t, lvl, text, None);
             }

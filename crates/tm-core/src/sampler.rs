@@ -134,6 +134,7 @@ struct Prev {
     /// Для строки завершившегося процесса.
     name: String,
     ppid: u32,
+    mem: u64,
 }
 
 /// Счётчики чтения и записи: диск из расширения записи процесса, иначе общий ввод-вывод.
@@ -162,6 +163,10 @@ pub struct Sampler {
     /// Время прошлого замера (FILETIME): кто создан позже — родился между замерами.
     prev_ft: i64,
     ncpu: u32,
+    /// Групп процессоров: при нескольких классы 83 и 108 видят не все процессоры — считаем по времени.
+    groups: u16,
+    /// Процессы, которые не открыть (нет прав): не пытаемся каждую секунду заново.
+    denied: std::collections::HashSet<ProcKey>,
 }
 
 impl Default for Sampler {
@@ -208,6 +213,8 @@ impl Sampler {
             prev_cpu: None,
             prev_ft: i64::MAX,
             ncpu: system::logical_cpus(),
+            groups: unsafe { windows_sys::Win32::System::Threading::GetActiveProcessorGroupCount() },
+            denied: std::collections::HashSet::new(),
         }
     }
 
@@ -247,10 +254,15 @@ impl Sampler {
                 None if born => Delta { cycles: r.cycle_time, time: r.cpu_time.max(0), rd: rd_now as f64 / dt, wr: wr_now as f64 / dt, born },
                 _ => Delta { cycles: 0, time: 0, rd: 0.0, wr: 0.0, born },
             });
-            next.insert(key, Prev { cpu_time: r.cpu_time, cycles: r.cycle_time, io_read: rd_now, io_write: wr_now, name: r.name.clone(), ppid: r.ppid });
-            if r.pid != 0 && r.pid != 4 && !self.handles.contains_key(&key) {
-                if let Ok(h) = ProcHandle::open(r.pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(r.create_time)) {
-                    self.handles.insert(key, h);
+            next.insert(key, Prev { cpu_time: r.cpu_time, cycles: r.cycle_time, io_read: rd_now, io_write: wr_now, name: r.name.clone(), ppid: r.ppid, mem: r.ws_private });
+            if r.pid != 0 && r.pid != 4 && !self.handles.contains_key(&key) && !self.denied.contains(&key) {
+                match ProcHandle::open(r.pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(r.create_time)) {
+                    Ok(h) => {
+                        self.handles.insert(key, h);
+                    }
+                    Err(_) => {
+                        self.denied.insert(key);
+                    }
                 }
             }
         }
@@ -272,10 +284,13 @@ impl Sampler {
         let cyc = prev_cpu.and_then(|p| {
             let idle = cpu_now.idle_cycles?.checked_sub(p.idle_cycles?)?;
             let sys = cpu_now.sys_cycles?.checked_sub(p.sys_cycles?)?;
-            let procs: u64 = deltas.iter().map(|d| d.cycles).sum::<u64>() + gone.iter().map(|g| g.2).sum::<u64>();
+            // PID 0 («Бездействие системы») в классе 5 несёт те же такты простоя, что и класс 83, —
+            // берём их один раз, из класса 83 (иначе знаменатель = занятость + 2 × простой)
+            let procs: u64 = self.raw.iter().zip(&deltas).filter(|(r, _)| r.pid != 0).map(|(_, d)| d.cycles).sum::<u64>() + gone.iter().map(|g| g.2).sum::<u64>();
             let total = procs + idle + sys;
-            // на виртуальных машинах без счётчика тактов простой = 0 — тогда по времени
-            (dt > 0.0 && idle > 0 && total > 0).then_some((total as f64, idle as f64, sys as f64))
+            // на виртуальных машинах без счётчика тактов простой = 0 — тогда по времени;
+            // так же при нескольких группах процессоров (больше 64 логических)
+            (dt > 0.0 && idle > 0 && total > 0 && self.groups <= 1).then_some((total as f64, idle as f64, sys as f64))
         });
         let share = |cycles: u64, time: i64| -> f32 {
             let v = match cyc {
@@ -314,7 +329,7 @@ impl Sampler {
         }
         let exited: Vec<ProcStat> = gone
             .iter()
-            .map(|&(p, key, cycles, time)| ProcStat { ppid: p.ppid, create_time: key.1, cpu: share(cycles, time), ..blank(key.0, &p.name) })
+            .map(|&(p, key, cycles, time)| ProcStat { ppid: p.ppid, create_time: key.1, cpu: share(cycles, time), mem: p.mem, ..blank(key.0, &p.name) })
             .collect();
 
         // 4. прерывания и DPC (класс 8). По тактам известна их общая доля (класс 108) —
@@ -349,6 +364,7 @@ impl Sampler {
         };
         // дескрипторы завершившихся больше не нужны
         self.handles.retain(|k, _| next.contains_key(k));
+        self.denied.retain(|k| next.contains_key(k));
         self.prev = next;
         self.prev_at = Some(now);
         self.prev_cpu = Some(cpu_now);

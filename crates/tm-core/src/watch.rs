@@ -136,7 +136,8 @@ impl Watch {
         let mut alive = std::collections::HashSet::with_capacity(frame.procs.len());
 
         for p in &frame.procs {
-            if p.pid <= 4 {
+            // псевдопроцессы (прерывания, DPC) — не программы: «зависший цикл» к ним не относится
+            if p.pid <= 4 || crate::sampler::is_pseudo(p.pid) {
                 continue;
             }
             let key = p.key();

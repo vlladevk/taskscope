@@ -115,6 +115,7 @@ impl Default for ProcessQuery {
 
 impl ProcessQuery {
     pub fn snapshot(&mut self, out: &mut Vec<RawProc>) -> io::Result<()> {
+        let filled;
         loop {
             let mut ret = 0u32;
             let len = (self.buf.len() * 8).min(u32::MAX as usize) as u32;
@@ -130,11 +131,13 @@ impl ProcessQuery {
             if st < 0 {
                 return Err(io::Error::other(format!("NtQuerySystemInformation: 0x{:08X}", st as u32)));
             }
+            filled = ret as usize;
             break;
         }
         out.clear();
         let base = self.buf.as_ptr() as *const u8;
-        let total = self.buf.len() * 8;
+        // границы — по заполненной части: дальше в буфере остатки прошлого снимка
+        let total = if filled == 0 { self.buf.len() * 8 } else { filled.min(self.buf.len() * 8) };
         let mut off = 0usize;
         loop {
             if off + size_of::<SystemProcessInformation>() > total {
@@ -446,14 +449,24 @@ pub fn image_path_by_pid(pid: u32) -> Option<String> {
         pid: usize,
         name: UnicodeString,
     }
-    let mut buf = vec![0u16; 1024];
-    let mut info = ProcessIdInformation { pid: pid as usize, name: UnicodeString { length: 0, maximum_length: (buf.len() * 2) as u16, buffer: buf.as_mut_ptr() } };
-    let st = unsafe { NtQuerySystemInformation(88, (&mut info as *mut ProcessIdInformation).cast(), size_of::<ProcessIdInformation>() as u32, ptr::null_mut()) };
-    if st < 0 || info.name.length == 0 {
-        return None;
+    let mut cap = 1024usize;
+    for _ in 0..2 {
+        let mut buf = vec![0u16; cap];
+        let max = (cap * 2).min(u16::MAX as usize & !1) as u16;
+        let mut info = ProcessIdInformation { pid: pid as usize, name: UnicodeString { length: 0, maximum_length: max, buffer: buf.as_mut_ptr() } };
+        let st = unsafe { NtQuerySystemInformation(88, (&mut info as *mut ProcessIdInformation).cast(), size_of::<ProcessIdInformation>() as u32, ptr::null_mut()) };
+        // длинный путь: ядро пишет нужный размер в MaximumLength — повторяем один раз
+        if st == STATUS_INFO_LENGTH_MISMATCH && info.name.maximum_length > max {
+            cap = info.name.maximum_length as usize / 2;
+            continue;
+        }
+        if st < 0 || info.name.length == 0 {
+            return None;
+        }
+        buf.truncate(info.name.length as usize / 2);
+        return Some(String::from_utf16_lossy(&buf));
     }
-    buf.truncate(info.name.length as usize / 2);
-    Some(String::from_utf16_lossy(&buf))
+    None
 }
 
 /// Время создания процесса, округлённое до точности числа double (теряется < 1 мкс).

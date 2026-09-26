@@ -90,15 +90,20 @@ impl InfoCache {
         if pid == 0 || pid == 4 {
             return ProcInfo { accessible: false, ..Default::default() };
         }
-        let Ok(h) = ProcHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(create_time)) else {
-            // процесс не открыть (защищённый, чужой без прав администратора) — путь и описание
+        let h = match ProcHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(create_time)) {
+            Ok(h) => h,
+            // процесс завершился или PID занят другим — путь по PID был бы чужой
+            Err(e) if e.raw_os_error() != Some(5) => return ProcInfo::default(),
+            // нет прав (защищённый, чужой без прав администратора) — путь и описание
             // всё равно узнаём: путь по PID не требует доступа к процессу
-            let path = path_by_pid(pid);
-            let meta = match &path {
-                Some(p) => self.files.entry(p.clone()).or_insert_with(|| file_meta(p)).clone(),
-                None => FileMeta::default(),
-            };
-            return ProcInfo { path, description: meta.description, company: meta.company, ..Default::default() };
+            Err(_) => {
+                let path = path_by_pid(pid);
+                let meta = match &path {
+                    Some(p) => self.files.entry(p.clone()).or_insert_with(|| file_meta(p)).clone(),
+                    None => FileMeta::default(),
+                };
+                return ProcInfo { path, description: meta.description, company: meta.company, ..Default::default() };
+            }
         };
         let path = image_path(&h);
         let cmdline = crate::nt::command_line(h.raw());
