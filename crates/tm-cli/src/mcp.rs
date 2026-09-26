@@ -330,12 +330,46 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
 
 const NO_ACTIONS: &str = "действия выключены: MCP-сервер запущен только для чтения (включается: tm mcp --allow-actions)";
 
+/// Сколько ждём одну команду: агент не должен висеть вечно, если запрос к системе завис.
+const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Как `Command::output()`, но не дольше TOOL_TIMEOUT: зависшую команду завершаем.
+fn run_limited(cmd: &mut Command) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    // читаем оба потока в фоне, иначе заполненный буфер трубы остановил бы команду
+    let t_out = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = out.read_to_end(&mut b);
+        b
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = err.read_to_end(&mut b);
+        b
+    });
+    let until = std::time::Instant::now() + TOOL_TIMEOUT;
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        if std::time::Instant::now() > until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "команда не ответила за 60 с и остановлена"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    Ok(std::process::Output { status, stdout: t_out.join().unwrap_or_default(), stderr: t_err.join().unwrap_or_default() })
+}
+
 fn call_tool(name: &str, args: &Value, allow_actions: bool) -> Value {
     let (text, is_error) = match to_argv(name, args, allow_actions) {
         Err(e) => (e, true),
         Ok(argv) => {
             let exe = std::env::current_exe().unwrap_or_else(|_| "tm.exe".into());
-            match Command::new(exe).args(&argv).stdin(Stdio::null()).stderr(Stdio::piped()).output() {
+            match run_limited(Command::new(exe).args(&argv)) {
                 Ok(o) => {
                     let mut t = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     if t.is_empty() {
