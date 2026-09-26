@@ -28,6 +28,8 @@ const SHELLS: &[&str] = &[
 const CORE: &[&str] = &[
     "system", "registry", "secure system", "memory compression", "smss.exe", "csrss.exe", "wininit.exe",
     "services.exe", "lsass.exe", "lsaiso.exe", "winlogon.exe", "fontdrvhost.exe", "dwm.exe",
+    // псевдопроцессы сборщика: обработка прерываний и DPC
+    "interrupts", "dpcs",
 ];
 
 fn lower(s: &str) -> String {
@@ -241,7 +243,8 @@ pub struct Spawns {
 impl Spawns {
     /// Учитывает родившихся за интервал и раздаёт невидимый ЦП (занятость машины минус сумма
     /// по процессам) приложениям-запускальщикам. Остаток — в `SystemStat::unseen_cpu`.
-    pub fn apply(&mut self, procs: &[ProcStat], groups: &mut [AppStat], sys: &mut crate::SystemStat, dt: f64) {
+    /// `exited_cpu` — ЦП процессов, завершившихся за интервал (он известен точно и уже роздан их приложениям).
+    pub fn apply(&mut self, procs: &[ProcStat], groups: &mut [AppStat], sys: &mut crate::SystemStat, dt: f64, exited_cpu: f32) {
         if dt <= 0.0 {
             return;
         }
@@ -275,11 +278,13 @@ impl Spawns {
         self.names.retain(|k, _| self.rate.contains_key(k));
 
         let total: f32 = self.rate.values().sum();
-        let seen: f32 = procs.iter().filter(|p| p.pid != 0).map(|p| p.cpu).sum();
+        // прерывания и DPC — строками-псевдопроцессами в procs, завершившиеся — в exited_cpu:
+        // и то и другое больше не принимается за короткие процессы
+        let seen: f32 = procs.iter().filter(|p| p.pid != 0).map(|p| p.cpu).sum::<f32>() + exited_cpu;
         let unseen = (sys.cpu - seen).max(0.0);
         // замер застаёт живыми лишь малую часть коротких процессов, так что частота занижена в разы:
-        // от 0,5 замеченного запуска в секунду невидимое — их. Первые 2 % — прерывания и погрешность замера
-        let share = (unseen - 2.0).max(0.0) * (total / 0.5).min(1.0);
+        // от 0,5 замеченного запуска в секунду невидимое — их. Первый 1 % — погрешность замера
+        let share = (unseen - 1.0).max(0.0) * (total / 0.5).min(1.0);
         let mut given = 0.0;
         for g in groups.iter_mut() {
             let Some(&r) = self.rate.get(&g.key) else { continue };

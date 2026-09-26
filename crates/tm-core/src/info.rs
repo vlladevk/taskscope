@@ -91,7 +91,14 @@ impl InfoCache {
             return ProcInfo { accessible: false, ..Default::default() };
         }
         let Ok(h) = ProcHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(create_time)) else {
-            return ProcInfo::default();
+            // процесс не открыть (защищённый, чужой без прав администратора) — путь и описание
+            // всё равно узнаём: путь по PID не требует доступа к процессу
+            let path = path_by_pid(pid);
+            let meta = match &path {
+                Some(p) => self.files.entry(p.clone()).or_insert_with(|| file_meta(p)).clone(),
+                None => FileMeta::default(),
+            };
+            return ProcInfo { path, description: meta.description, company: meta.company, ..Default::default() };
         };
         let path = image_path(&h);
         let cmdline = crate::nt::command_line(h.raw());
@@ -102,6 +109,52 @@ impl InfoCache {
         let role = cmdline.as_deref().and_then(role_of);
         ProcInfo { path, cmdline, description: meta.description, company: meta.company, accessible: true, role }
     }
+}
+
+/// Путь к файлу процесса по PID без его открытия (класс 88) — в обычном виде «C:\…».
+/// PID может оказаться переиспользован: вызывающий сверяет время создания сам, если это важно.
+pub fn path_by_pid(pid: u32) -> Option<String> {
+    crate::nt::image_path_by_pid(pid).and_then(|nt| dos_path(&nt))
+}
+
+/// «\Device\HarddiskVolume3\Windows\…» → «C:\Windows\…» по таблице устройств дисков.
+pub fn dos_path(nt: &str) -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+    // таблица меняется только при подключении дисков — обновляем раз в минуту
+    static MAP: OnceLock<Mutex<(Option<Instant>, Vec<(String, String)>)>> = OnceLock::new();
+    let mut m = MAP.get_or_init(|| Mutex::new((None, Vec::new()))).lock().unwrap_or_else(|e| e.into_inner());
+    if m.0.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+        let mut v = Vec::new();
+        for d in b'A'..=b'Z' {
+            let drive = format!("{}:", d as char);
+            let mut buf = vec![0u16; 512];
+            let n = unsafe { QueryDosDeviceW(wide(&drive).as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+            if n > 0 {
+                let dev = String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(0)]);
+                if !dev.is_empty() {
+                    v.push((dev.to_ascii_lowercase(), drive));
+                }
+            }
+        }
+        *m = (Some(Instant::now()), v);
+    }
+    let low = nt.to_ascii_lowercase();
+    for (dev, drive) in &m.1 {
+        if low.starts_with(dev.as_str()) && low[dev.len()..].starts_with('\\') {
+            return Some(format!("{drive}{}", &nt[dev.len()..]));
+        }
+    }
+    // «\??\C:\…» и «\SystemRoot\…» встречаются у ранних системных процессов
+    if let Some(rest) = nt.strip_prefix(r"\??\") {
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = nt.strip_prefix(r"\SystemRoot\") {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        return Some(format!(r"{root}\{rest}"));
+    }
+    None
 }
 
 pub fn image_path(h: &ProcHandle) -> Option<String> {

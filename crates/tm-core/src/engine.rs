@@ -2,6 +2,7 @@
 //! Один экземпляр на машину — его запускает приложение (или `tm daemon`),
 //! а окно, CLI и другие клиенты получают данные через `Service`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -229,6 +230,8 @@ fn run(inner: &Inner) {
     let mut info = InfoCache::default();
     let mut lineage = apps::Lineage::default();
     let mut spawns = apps::Spawns::default();
+    // процесс → приложение по прошлому замеру: ЦП завершившегося процесса отдаём его приложению
+    let mut prev_app: HashMap<ProcKey, String> = HashMap::new();
     let _ = sampler.sample(); // первый замер — только база для скоростей
     nets.sample();
     // время истории: монотонные часы, привязанные к настенным при старте (перевод часов не ломает кольца)
@@ -278,7 +281,16 @@ fn run(inner: &Inner) {
         let tree = Tree::build(&frame.procs);
         let mut groups = apps::group_with(&frame.procs, &tree, &mut info, Some(&mut lineage));
         lineage.update(&frame.procs, &groups, wall_ms());
-        spawns.apply(&frame.procs, &mut groups, &mut frame.system, frame.interval_ms / 1000.0);
+        let mut exited_cpu = 0.0f32;
+        for e in &frame.exited {
+            exited_cpu += e.cpu;
+            // приложения уже нет (завершился последний процесс) — его ЦП учтён в системе, но не в группах
+            if let Some(g) = prev_app.get(&e.key()).and_then(|k| groups.iter_mut().find(|g| &g.key == k)) {
+                g.cpu += e.cpu;
+            }
+        }
+        spawns.apply(&frame.procs, &mut groups, &mut frame.system, frame.interval_ms / 1000.0, exited_cpu);
+        prev_app = groups.iter().flat_map(|g| g.members.iter().map(|&i| (frame.procs[i].key(), g.key.clone()))).collect();
         let alive: Vec<ProcKey> = frame.procs.iter().map(|p| p.key()).collect();
         info.retain_alive(alive.iter());
 
@@ -302,6 +314,7 @@ fn run(inner: &Inner) {
         let proc_samples: Vec<ProcSample> = frame
             .procs
             .iter()
+            .chain(&frame.exited)
             .filter(|p| p.pid != 0)
             .map(|p| ProcSample { key: p.key(), name: &p.name, pt: pt(p.cpu, p.gpu, p.mem, p.io_read_bps, p.io_write_bps) })
             .collect();

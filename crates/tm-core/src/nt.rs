@@ -95,6 +95,11 @@ pub struct RawProc {
     pub io_other: u64,
     /// Все потоки ждут с причиной Suspended — процесс приостановлен.
     pub suspended: bool,
+    /// Такты процессора, потраченные потоками процесса (точнее времени: не зависит от тика таймера).
+    pub cycle_time: u64,
+    /// Байты, прочитанные и записанные на диск (PROCESS_DISK_COUNTERS из расширения записи);
+    /// None — расширения нет (Windows старше 10 RS3).
+    pub disk: Option<(u64, u64)>,
 }
 
 /// Переиспользуемый буфер для снимков: память не выделяется заново каждую секунду.
@@ -163,6 +168,8 @@ impl ProcessQuery {
                 io_write: p.write_transfer_count.max(0) as u64,
                 io_other: p.other_transfer_count.max(0) as u64,
                 suspended: all_threads_suspended(base, off, total, p.number_of_threads),
+                cycle_time: p.cycle_time,
+                disk: extension_disk(base, off, total, &p),
             });
             if p.next_entry_offset == 0 {
                 break;
@@ -171,6 +178,22 @@ impl ProcessQuery {
         }
         Ok(())
     }
+}
+
+/// За массивом потоков лежит `SYSTEM_PROCESS_INFORMATION_EXTENSION` (Windows 10 RS3+,
+/// так её читает System Informer — PH_PROCESS_EXTENSION). В начале — PROCESS_DISK_COUNTERS:
+/// BytesRead, BytesWritten, … — это «Диск» диспетчера задач: чтение и запись именно диска,
+/// без сети и каналов, которые попадают в общие счётчики ввода-вывода.
+fn extension_disk(base: *const u8, off: usize, total: usize, p: &SystemProcessInformation) -> Option<(u64, u64)> {
+    const THREAD_SIZE: usize = 80;
+    let ext = off + size_of::<SystemProcessInformation>() + p.number_of_threads as usize * THREAD_SIZE;
+    // запись должна вмещать расширение: у последней записи конец — конец данных
+    let end = if p.next_entry_offset == 0 { total } else { off + p.next_entry_offset as usize };
+    if ext + 16 > end {
+        return None;
+    }
+    // SAFETY: границы проверены; чтение без требований к выравниванию.
+    unsafe { Some((ptr::read_unaligned(base.add(ext).cast::<u64>()), ptr::read_unaligned(base.add(ext + 8).cast::<u64>()))) }
 }
 
 /// За записью процесса лежат записи его потоков (`SYSTEM_THREAD_INFORMATION`, 80 байт на x64).
@@ -369,6 +392,68 @@ pub fn query_system(class: i32, hint: usize) -> io::Result<Vec<u8>> {
         }
         return Ok(buf);
     }
+}
+
+/// Точный размер ответа: для массивов «по процессору» лишний хвост буфера — не данные.
+fn query_exact(class: i32, len: usize) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; len];
+    let mut ret = 0u32;
+    let st = unsafe { NtQuerySystemInformation(class, buf.as_mut_ptr().cast(), len as u32, &mut ret) };
+    if st < 0 {
+        return None;
+    }
+    buf.truncate((ret as usize).min(len));
+    Some(buf)
+}
+
+fn sum_u64(b: &[u8], stride: usize, at: usize) -> u64 {
+    b.chunks_exact(stride).map(|c| u64::from_le_bytes(c[at..at + 8].try_into().unwrap())).fold(0u64, u64::wrapping_add)
+}
+
+/// Время процессоров с начала работы (сумма по всем логическим процессорам группы), 100 нс.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CpuPerf {
+    pub idle: u64,
+    /// Включает idle, DPC и прерывания.
+    pub kernel: u64,
+    pub user: u64,
+    pub dpc: u64,
+    pub interrupt: u64,
+}
+
+/// SystemProcessorPerformanceInformation (класс 8): 48 байт на процессор.
+pub fn cpu_perf(ncpu: u32) -> Option<CpuPerf> {
+    let b = query_exact(8, 48 * ncpu.max(1) as usize)?;
+    Some(CpuPerf { idle: sum_u64(&b, 48, 0), kernel: sum_u64(&b, 48, 8), user: sum_u64(&b, 48, 16), dpc: sum_u64(&b, 48, 24), interrupt: sum_u64(&b, 48, 32) })
+}
+
+/// Такты простоя всех процессоров (класс 83, SystemProcessorIdleCycleTimeInformation).
+pub fn idle_cycles(ncpu: u32) -> Option<u64> {
+    query_exact(83, 8 * ncpu.max(1) as usize).map(|b| sum_u64(&b, 8, 0))
+}
+
+/// Такты, потраченные на DPC и прерывания (класс 108, SystemProcessorCycleTimeInformation).
+pub fn system_cycles(ncpu: u32) -> Option<u64> {
+    query_exact(108, 8 * ncpu.max(1) as usize).map(|b| sum_u64(&b, 8, 0))
+}
+
+/// Путь к файлу процесса по PID без открытия процесса (класс 88, SystemProcessIdInformation):
+/// работает и для защищённых процессов и процессов администратора. Путь — в NT-виде
+/// (\Device\HarddiskVolume3\…), его переводит `crate::info::dos_path`.
+pub fn image_path_by_pid(pid: u32) -> Option<String> {
+    #[repr(C)]
+    struct ProcessIdInformation {
+        pid: usize,
+        name: UnicodeString,
+    }
+    let mut buf = vec![0u16; 1024];
+    let mut info = ProcessIdInformation { pid: pid as usize, name: UnicodeString { length: 0, maximum_length: (buf.len() * 2) as u16, buffer: buf.as_mut_ptr() } };
+    let st = unsafe { NtQuerySystemInformation(88, (&mut info as *mut ProcessIdInformation).cast(), size_of::<ProcessIdInformation>() as u32, ptr::null_mut()) };
+    if st < 0 || info.name.length == 0 {
+        return None;
+    }
+    buf.truncate(info.name.length as usize / 2);
+    Some(String::from_utf16_lossy(&buf))
 }
 
 /// Время создания процесса, округлённое до точности числа double (теряется < 1 мкс).

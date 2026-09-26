@@ -26,7 +26,7 @@ use crate::settings::Settings;
 use crate::tree::Tree;
 
 /// Псевдопроцессы ядра — без файла на диске.
-const KERNEL: &[&str] = &["system idle process", "system", "registry", "secure system", "memory compression", "interrupts"];
+const KERNEL: &[&str] = &["system idle process", "system", "registry", "secure system", "memory compression", "interrupts", "dpcs"];
 /// Процессы, завершение которых роняет систему или сессию, — если это настоящие файлы из System32.
 const CRITICAL_EXE: &[&str] = &["smss.exe", "csrss.exe", "wininit.exe", "services.exe", "lsass.exe", "lsaiso.exe", "winlogon.exe"];
 
@@ -138,7 +138,8 @@ fn gone() -> io::Error {
 fn probe(p: &ProcStat) -> (Option<String>, bool) {
     match ProcHandle::open(p.pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(p.create_time)) {
         Ok(h) => (crate::info::image_path(&h), is_critical(&h)),
-        Err(_) => (None, false),
+        // не открыть (защищённый процесс, нет прав) — путь всё равно узнаём по PID (класс 88)
+        Err(_) => (crate::info::path_by_pid(p.pid), false),
     }
 }
 
@@ -195,7 +196,7 @@ impl Guard {
     /// пользователем — иначе приостановленный, а потом защищённый процесс остался бы замороженным.
     pub fn reason_for(&self, p: &ProcStat, action: Option<Action>) -> Option<String> {
         let n = lower(&p.name);
-        if p.pid == 0 || p.pid == 4 || KERNEL.contains(&n.as_str()) {
+        if p.pid == 0 || p.pid == 4 || crate::sampler::is_pseudo(p.pid) || KERNEL.contains(&n.as_str()) {
             return Some("часть ядра Windows".into());
         }
         if p.pid == unsafe { GetCurrentProcessId() } {
