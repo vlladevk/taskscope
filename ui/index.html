@@ -272,6 +272,12 @@ tr.susp .n1{color:var(--text-3)}
 @keyframes tin{from{opacity:0;transform:translateY(8px)}}
 
 /* ===================== v3: каркас как в IDE-редакторах ===================== */
+.adm{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;margin-right:6px;border:1px solid var(--divider);border-radius:var(--r-ctrl);background:none;color:var(--text-2);font:inherit;font-size:12px;cursor:pointer}
+.adm[hidden]{display:none}
+.adm:hover{background:var(--subtle-hover);color:var(--text-1)}
+.adm svg{color:#fce100}
+.admin-link{color:var(--accent);cursor:pointer;white-space:nowrap}
+.admin-link:hover{text-decoration:underline}
 .ib{display:inline-grid;place-items:center;width:32px;height:28px;border:0;border-radius:var(--r-ctrl);background:none;color:var(--text-2);cursor:pointer;padding:0}
 .ib:hover{background:var(--subtle-hover);color:var(--text-1)}
 .ib:active{background:var(--subtle-press)}
@@ -391,6 +397,10 @@ img.ico{background:none;box-shadow:none;object-fit:contain;border-radius:0}
   <span class="lbl">Период</span>
   <div class="seg" id="range"></div>
   <div class="spacer"></div>
+  <button class="adm" id="adminBtn" hidden title="Без прав администратора Windows не показывает часть сведений.
+С ними появятся: трафик каждого процесса (колонка «Сеть» и карта сети), пути и командные строки
+защищённых процессов, завершение и приоритет системных процессов.
+Windows спросит подтверждение (UAC); окно перезапустится, история сохранится."><svg width="14" height="14" viewBox="0 0 16 16"><path d="M8 1.5 2.5 3.6v4.1c0 3.2 2.3 5.9 5.5 6.8 3.2-.9 5.5-3.6 5.5-6.8V3.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="m5.8 8 1.5 1.5 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Запустить от администратора</span></button>
   <button class="ib" id="tglRail" title="Ресурсы слева · Ctrl+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="4.5" height="10" rx="1"/></svg></button>
   <button class="ib" id="tglMain" title="Вкладки в центре (процессы, карта, Docker…)"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="12" height="5.5" rx="1"/></svg></button>
   <button class="ib" id="tglBottom" title="Нижняя панель · Ctrl+J"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="9" width="12" height="4" rx="1"/></svg></button>

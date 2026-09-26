@@ -474,7 +474,7 @@ function resList(){
       now:()=>rx,line:v=>`↓ ${fmtMbit(rx)} ↑ ${fmtMbit(tx)}`,
       keys:v=>[`↑ ${fmtMbit(tx)}`,vpn?'туннель VPN':a.kind==='wifi'?'Wi-Fi':'Ethernet',a.link_bps?`канал ${a.link_bps>=1e9?nf(a.link_bps/1e9,1)+' Гбит/с':Math.round(a.link_bps/1e6)+' Мбит/с'}`:''].filter(Boolean),
       more:()=>[['Приём',fmtMbit(rx)],['Отправка',fmtMbit(tx)],['Адаптер',a.description]],
-      note:(vpn?'Весь трафик приложений идёт через этот туннель. ':'Трафик через адаптер. Если включён VPN, здесь уже зашифрованный трафик туннеля. ')+(NETPP?'Трафик отдельных процессов — в колонке «Сеть» таблицы и на карте.':'Трафик по процессам Windows показывает только программам с правами администратора: ⋯ → «Перезапустить от администратора».')});
+      note:(vpn?'Весь трафик приложений идёт через этот туннель. ':'Трафик через адаптер. Если включён VPN, здесь уже зашифрованный трафик туннеля. ')+(NETPP?'Трафик отдельных процессов — в колонке «Сеть» таблицы и на карте.':'Трафик по процессам Windows показывает только программам с правами администратора.')});
   }
   return out;
 }
@@ -585,7 +585,7 @@ function renderChart(){
   seg.querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===mode));
   $('.c-more-t',el).textContent=S.more?'Скрыть подробности':'Подробнее';
   const more=$('.c-more',el);more.hidden=!S.more;
-  if(S.more)setHTML(more,[...(r.sub?[['Устройство',r.sub]]:[]),...r.more(v)].map(([a,b])=>`<div><span>${esc(a)}</span><b>${esc(String(b))}</b></div>`).join('')+(r.note?`<div class="note">${esc(r.note)}</div>`:''));
+  if(S.more)setHTML(more,[...(r.sub?[['Устройство',r.sub]]:[]),...r.more(v)].map(([a,b])=>`<div><span>${esc(a)}</span><b>${esc(String(b))}</b></div>`).join('')+(r.note?`<div class="note">${esc(r.note)}${r.m==='net'&&!NETPP&&!isAdmin()?ADMIN_LINK:''}</div>`:''));
   const d=mode==='total'?totalSeries(r):breakdown(r,mode);
   const cv=$('.c-cv',el);
   if(!d){drawTS(cv,{series:[],t0:NOW,step:1000,fmt:r.fmt,empty:'Загружаю историю…'});return;}
@@ -794,7 +794,7 @@ function mapDesc(){
   const m=mapMetric(),p=S.range.label;
   if(m==='mem')return 'размер — занятая память сейчас';
   if(m==='net')return 'размер — сетевой трафик процессов сейчас, все адаптеры вместе';
-  if(curRes().m==='net')return 'трафик по процессам виден только с правами администратора — показана загрузка ЦП';
+  if(curRes().m==='net')return 'трафик по процессам виден только с правами администратора (кнопка вверху) — показана загрузка ЦП';
   if(m==='gpu')return S.range.ms>SPARKN*1000?`размер — средняя загрузка видеокарты за ${p}`:'размер — загрузка видеокарты сейчас';
   const h=H('system',BY[m],0);const avg=h?h.total.avg:0;
   return m==='cpu'?`размер — средняя загрузка ЦП за ${p} · простой ${fmtPct(Math.max(0,100-avg))}`:`размер — средний ввод-вывод за ${p}`;
@@ -877,7 +877,9 @@ function mapTree(){
      минуту назад java — это минута работы, а не «последние 5 минут × 3 часа» (раньше свежий процесс
      сразу раздувался на полприложения, а его завершение перекраивало всю группу) */
   const rangeS=S.range.ms/1000;
-  const rangeCpu=n=>{const age=(NOW-(n.ct/1e4-11644473600000))/1000,tot=(n.cpuMs||0)/10/(rangeS*CPUS);return age<=rangeS?tot:Math.min(tot,ownAvg(n,m));};
+  /* процесс старше периода — его средняя за всю жизнь (время ЦП / возраст): точная и не дёргается,
+     в отличие от последних 5 минут (после запуска движка там ещё пусто) */
+  const rangeCpu=n=>{const age=Math.max(1,(NOW-(n.ct/1e4-11644473600000))/1000);return (n.cpuMs||0)/10/(Math.min(age,rangeS)*CPUS)*(age<=rangeS?Math.min(age,rangeS)/rangeS:1);};
   const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?n.net:m==='cpu'&&long?rangeCpu(n):ownAvg(n,m);
   /* приблизить можно процесс (id «pid:время») или группу-приложение («a…», «mWIN»). Внутри —
      ровно то, что было в группе на общей карте: процессы того же приложения. Программы, запущенные
@@ -1417,6 +1419,12 @@ function mountDocker(el){
   el.addEventListener('click',e=>{const b=e.target.closest('[data-dkm]');if(b)open(e,b.dataset.dkm);});
   el.addEventListener('contextmenu',e=>{const tr=e.target.closest('tr[data-id]');if(!tr)return;e.preventDefault();open(e,tr.dataset.id);});
 }
+/* перезапуск от администратора — из шапки, из меню и по ссылкам там, где без прав чего-то не видно */
+const isAdmin=()=>!!(SYSINFO&&SYSINFO.elevated);
+const ADMIN_LINK=' <a class="admin-link" data-admin>Перезапустить от администратора</a>';
+async function runAdmin(){if(!TAURI)return toast('Запустите приложение, а не режим разработки','yel');try{await appCmd('admin');}catch(err){toast(err.message||String(err),'yel');}}
+$('#adminBtn').addEventListener('click',runAdmin);
+document.addEventListener('click',e=>{if(e.target.closest('[data-admin]')){e.preventDefault();runAdmin();}});
 menu.addEventListener('click',async e=>{
   const b=e.target.closest('[data-dk]');if(!b)return;closeMenu();
   const c=DOCKER&&DOCKER.containers.find(x=>x.id===b.dataset.id);if(!c)return;
@@ -1563,7 +1571,7 @@ function renderDetails(){
      <dt>PID</dt><dd class="num">${n.pid}</dd>
      <dt>Запущен</dt><dd>${agoStr(Math.max(0,NOW-started)/1000)} назад · ${new Date(started).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</dd>
      ${i.description?`<dt>Описание</dt><dd>${esc(i.description)}</dd>`:''}
-     <dt>Путь</dt><dd class="mono">${esc(i.path||'нет доступа — нужны права администратора')}</dd>
+     <dt>Путь</dt><dd class="mono">${i.path?esc(i.path):`нет доступа — нужны права администратора.${isAdmin()?'':ADMIN_LINK}`}</dd>
      ${f.cmdline?`<dt>Командная строка</dt><dd class="mono">${esc(f.cmdline)}</dd>`:''}
      ${i.company?`<dt>Издатель</dt><dd>${esc(i.company)} <span class="caption">(из свойств файла)</span></dd>`:''}
      <dt>ЦП всего</dt><dd>${agoStr(n.cpuMs/1000)}</dd>
@@ -1722,7 +1730,7 @@ menu.addEventListener('click',async e=>{const mi=e.target.closest('[data-g]');if
     else if(g==='main')toggleMain();
     else if(g==='bottom')toggleBottom();
     else if(g==='right')toggleRight();
-    else if(g==='admin'){if(!TAURI)return toast('Запустите приложение, а не режим разработки','yel');await appCmd('admin');}
+    else if(g==='admin')await runAdmin();
     else if(g==='autostart'){autostart=await appCmd('autostart_set',!autostart);toast(autostart?'Диспетчер будет запускаться вместе с Windows (в трее)':'Автозапуск выключен','info');}
     else if(g==='hide')await appCmd('hide');
     else if(g==='quit')await appCmd('quit');
@@ -1764,6 +1772,7 @@ async function loop(){
         applySnap(s);
         if(BOOTING){
           SYSINFO=await rpc('sysinfo').catch(()=>null);
+          $('#adminBtn').hidden=!SYSINFO||!!SYSINFO.elevated;
           if(!S.sel){const t=[...NODES.values()].filter(alive).sort((a,b)=>b.cpu-a.cpu)[0];}
           $('#boot').style.display='none';
         }
