@@ -28,11 +28,11 @@ pub fn is_mutating(method: &str) -> bool {
 }
 
 /// Методы, которые через канал не выполняются: действия, а также чтение чужих процессов
-/// изнутри (окружение, дескрипторы), подпись файлов и запись в журнал. Движок может работать
+/// изнутри (окружение, дескрипторы, файлы, которые они читают и пишут), подпись файлов и запись в журнал. Движок может работать
 /// от администратора, а канал открыт и обычным процессам того же пользователя — иначе они
 /// читали бы окружение и файлы с правами администратора. Клиент (tm) делает это сам.
 pub fn is_local_only(method: &str) -> bool {
-    is_mutating(method) || matches!(method, "inspect" | "signature" | "log")
+    is_mutating(method) || matches!(method, "inspect" | "signature" | "log" | "disk_files")
 }
 
 fn arg<T: for<'de> Deserialize<'de>>(params: &Value) -> Result<T, String> {
@@ -274,6 +274,12 @@ impl Service {
                 let pid = params.get("pid").and_then(Value::as_u64).map(|p| p as u32);
                 let list: Vec<_> = crate::conns::list().into_iter().filter(|c| pid.is_none_or(|p| c.pid == p)).collect();
                 Ok(json!({ "connections": list }))
+            }
+            // какие файлы читают и пишут процессы (pid — только этот); первый вызов начинает наблюдение
+            "disk_files" => {
+                let pid = params.get("pid").and_then(Value::as_u64).map(|p| p as u32);
+                let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(40).min(500) as usize;
+                Ok(serde_json::to_value(crate::file_etw::report(pid, limit)?).map_err(|e| e.to_string())?)
             }
             // вкладка процесса: модули, потоки, дескрипторы, окружение — по запросу
             "inspect" => {

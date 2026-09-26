@@ -504,6 +504,7 @@ fn main() {
             s.engine.stop();
             let _ = s.engine.save();
             tm_core::net_etw::shutdown();
+            tm_core::file_etw::shutdown();
         }
         _ => {}
     });

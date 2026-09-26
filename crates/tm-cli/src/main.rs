@@ -954,6 +954,7 @@ fn daemon_run(args: &Args) -> Res<bool> {
         if m == "shutdown" {
             let _ = service.engine.save();
             tm_core::net_etw::shutdown();
+            tm_core::file_etw::shutdown();
             std::thread::spawn(|| {
                 std::thread::sleep(Duration::from_millis(150));
                 std::process::exit(0)
