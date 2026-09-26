@@ -1462,10 +1462,19 @@ fn cmd_who(args: &Args) -> Res<bool> {
     let Some(path) = args.pos.first() else { return usage("укажите файл или папку: tm who <путь>") };
     let r = tm_core::locks::holders(path).map_err(|e| Fail::Error(e.to_string()))?;
     if args.has("json") {
-        print_json(&json!({ "path": path, "holders": r.holders, "files": r.files, "truncated": r.truncated, "skipped": r.skipped }));
+        let mut v = json!(r);
+        v["path"] = json!(path);
+        print_json(&v);
         return Ok(true);
     }
-    let partial = if r.truncated { format!(" (проверено только {} файлов папки — остальные не смотрели)", r.files) } else { String::new() };
+    let partial = match (r.truncated, r.scanned) {
+        (true, true) => format!(
+            " (ваши программы проверены по всей папке; {} процессов без доступа — только по {} файлам и папкам верхних уровней)",
+            r.unscanned, r.files
+        ),
+        (true, false) => format!(" (проверено только {} файлов и папок верхних уровней — остальные не смотрели)", r.files),
+        _ => String::new(),
+    };
     if r.holders.is_empty() {
         println!("Никто не держит «{path}» открытым{partial}.");
     } else {
@@ -1473,7 +1482,16 @@ fn cmd_who(args: &Args) -> Res<bool> {
         for h in &r.holders {
             let svc = h.service.as_deref().map(|s| format!(" · служба {s}")).unwrap_or_default();
             println!("  {:>7}  {}{svc}   (tm kill {}:{})", h.pid, h.app, h.pid, h.create_time);
+            for f in h.files.iter().take(3) {
+                println!("           {f}");
+            }
+            if h.open > h.files.len().min(3) {
+                println!("           … всего открыто в папке: {}", h.open);
+            }
         }
+    }
+    if r.truncated && r.scanned && !tm_core::system::is_elevated() {
+        println!("Службы и программы от администратора полностью проверяются только из tm от администратора.");
     }
     if r.skipped > 0 {
         println!("Пропущено файлов без доступа: {} (проверить их — от администратора).", r.skipped);

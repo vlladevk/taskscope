@@ -96,6 +96,9 @@ button,input{font:inherit;color:inherit}
 .wh-row .search{flex:1;min-width:0}
 .m-row.wh-h{grid-template-columns:16px minmax(0,1fr) 56px auto}
 .m-row.wh-h .btn{height:24px;padding:0 8px;font-size:12px}
+/* открытые файлы под именем процесса: по строке, длинный путь — с многоточием */
+.m-row.wh-h .wh-f{font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.m-row.wh-h{align-items:start}.m-row.wh-h>.num,.m-row.wh-h>.btn{margin-top:2px}
 .toast .btn{margin-left:4px;height:24px;padding:0 8px;font-size:12px;flex:none;align-self:center}
 .btn[disabled]{opacity:.4;pointer-events:none}
 .lbl{font-size:12px;color:var(--text-3)}

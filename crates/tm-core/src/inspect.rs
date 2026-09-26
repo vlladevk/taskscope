@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use serde::Serialize;
 use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
-use windows_sys::Win32::Storage::FileSystem::{GetFileType, GetFinalPathNameByHandleW, FILE_TYPE_DISK, VOLUME_NAME_DOS};
+use windows_sys::Win32::Storage::FileSystem::{GetFileType, GetFinalPathNameByHandleW, FILE_TYPE_DISK, VOLUME_NAME_DOS, VOLUME_NAME_NT};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, MODULEENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32,
 };
@@ -223,7 +223,7 @@ pub fn threads(pid: u32, create_time: i64) -> io::Result<Vec<Thread>> {
 }
 
 /// Имена типов объектов ядра по номеру (ObjectTypesInformation) — один раз за запуск.
-fn type_names() -> &'static HashMap<u16, String> {
+pub(crate) fn type_names() -> &'static HashMap<u16, String> {
     static T: OnceLock<HashMap<u16, String>> = OnceLock::new();
     T.get_or_init(|| {
         let mut map = HashMap::new();
@@ -340,9 +340,23 @@ fn file_name(h: HANDLE) -> String {
     s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
 }
 
+/// Имя файла в виде ядра: «\Device\HarddiskVolume3\…». Без обращения к диспетчеру томов за
+/// буквой диска — заметно быстрее, что важно при проходе по всем открытым файлам системы.
+pub(crate) fn nt_file_name(h: HANDLE) -> String {
+    if unsafe { GetFileType(h) } != FILE_TYPE_DISK {
+        return String::new();
+    }
+    let mut w = vec![0u16; 1024];
+    let n = unsafe { GetFinalPathNameByHandleW(h, w.as_mut_ptr(), w.len() as u32, VOLUME_NAME_NT) } as usize;
+    if n == 0 || n >= w.len() {
+        return String::new();
+    }
+    String::from_utf16_lossy(&w[..n])
+}
+
 /// Имена файлов в отдельном потоке: если запрос завис, поток остаётся ждать сам (он и закроет
 /// копию дескриптора, когда операция завершится), а проверка идёт дальше без имён файлов.
-struct FileNamer {
+pub(crate) struct FileNamer {
     tx: Option<std::sync::mpsc::Sender<usize>>,
     rx: std::sync::mpsc::Receiver<String>,
 }
@@ -350,13 +364,13 @@ struct FileNamer {
 impl FileNamer {
     const WAIT: std::time::Duration = std::time::Duration::from_millis(300);
 
-    fn new() -> Self {
+    pub(crate) fn new(namer: fn(HANDLE) -> String) -> Self {
         let (tx, jobs) = std::sync::mpsc::channel::<usize>();
         let (done, rx) = std::sync::mpsc::channel::<String>();
         let spawned = std::thread::Builder::new().name("tm-file-names".into()).spawn(move || {
             for h in jobs {
                 let h = h as HANDLE;
-                let n = file_name(h);
+                let n = namer(h);
                 unsafe { CloseHandle(h) };
                 if done.send(n).is_err() {
                     break;
@@ -367,7 +381,7 @@ impl FileNamer {
     }
 
     /// Имя файла; `None` — не ответил вовремя (копию дескриптора закроет поток, когда освободится).
-    fn name(&self, h: HANDLE) -> Option<String> {
+    pub(crate) fn name(&self, h: HANDLE) -> Option<String> {
         let Some(tx) = &self.tx else {
             unsafe { CloseHandle(h) };
             return Some(String::new());
@@ -399,7 +413,7 @@ pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
     let mut list = Vec::new();
     let mut total = 0usize;
     let mut by_type: HashMap<String, usize> = HashMap::new();
-    let files = FileNamer::new();
+    let files = FileNamer::new(file_name);
     let mut files_stuck = false;
     for i in 0..count {
         let e = 16 + i * 40;

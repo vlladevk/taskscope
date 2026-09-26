@@ -2075,14 +2075,18 @@ async function whoHolds(){
   const go=async()=>{
     const path=$('.wh-p',bg).value.trim().replace(/^"|"$/g,'');if(!path)return;
     const btn=$('.wh-go',bg);if(btn.disabled)return;btn.disabled=true;
-    res.innerHTML='<p class="caption">Ищу… в большой папке проверка занимает несколько секунд.</p>';
+    res.innerHTML='<p class="caption">Ищу… большая папка проверяется до нескольких секунд.</p>';
     try{
       const r=await rpc('file_holders',{path});
-      const note=(r.truncated?`<p class="caption">Папка большая: проверены только ${r.files} файлов верхних уровней — для точного ответа укажите вложенную папку или файл.</p>`:'')
+      /* папка: открытые файлы доступных процессов проверены по таблице дескрипторов целиком;
+         «частично» — только для недоступных (службы, программы от администратора) */
+      const note=(r.truncated?(r.scanned?`<p class="caption">Открытые файлы ваших программ проверены по всей папке. ${r.unscanned} ${plural(r.unscanned,'процесс','процесса','процессов')} (службы, программы от администратора) без прав администратора проверены только по ${r.files} файлам и папкам верхних уровней.${isAdmin()?'':ADMIN_LINK}</p>`
+          :`<p class="caption">Папка большая: проверены только ${r.files} файлов и папок верхних уровней — для точного ответа укажите вложенную папку или файл.</p>`):'')
         +(r.skipped?`<p class="caption">Пропущено файлов без доступа: ${r.skipped}.${isAdmin()?'':ADMIN_LINK}</p>`:'');
       if(!r.holders.length){res.innerHTML=(r.truncated?'<p class="m-lead">В проверенной части папки файлы никто не держит.</p>':'<p class="m-lead">Никто не держит этот путь открытым. Если удалить всё равно нельзя — дело в правах или атрибуте «только чтение».</p>')+note;return;}
       res.innerHTML=note+`<div class="m-list">${r.holders.map(h=>{const n=NODES.get(h.pid+':'+h.create_time); /* только точное совпадение: PID мог достаться другому процессу */
-        return `<div class="m-row wh-h">${n?ico(n):'<span class="m-ico"></span>'}<span class="m-n">${esc(n?nameOf(n):h.app)}${h.service?` <span class="caption">· служба ${esc(h.service)}</span>`:''}</span><span class="caption num">${h.pid}</span>${n?`<button class="btn danger wh-k" data-id="${esc(n.id)}">Завершить</button>`:'<span></span>'}</div>`;}).join('')}</div>`;
+        const files=(h.files||[]).map(f=>`<div class="mono wh-f" title="${esc(f)}">${esc(f)}</div>`).join('')+(h.open>(h.files||[]).length?`<div class="caption wh-f">… всего открыто в папке: ${h.open}</div>`:'');
+        return `<div class="m-row wh-h">${n?ico(n):'<span class="m-ico"></span>'}<span class="m-n">${esc(n?nameOf(n):h.app)}${h.service?` <span class="caption">· служба ${esc(h.service)}</span>`:''}${files}</span><span class="caption num">${h.pid}</span>${n?`<button class="btn danger wh-k" data-id="${esc(n.id)}">Завершить</button>`:'<span></span>'}</div>`;}).join('')}</div>`;
     }catch(e){const m=String(e.message||e);res.innerHTML=`<p class="m-lead warn-t">${esc(m.charAt(0).toUpperCase()+m.slice(1))}</p>`;}
     finally{btn.disabled=false;}
   };
