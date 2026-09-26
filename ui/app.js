@@ -97,13 +97,13 @@ function applySnap(s){
     if(p.pid===0)continue;
     const id=p.pid+':'+p.create_time;
     let n=NODES.get(id);
-    if(!n){n={id,pid:p.pid,ct:p.create_time,exe:p.name,kids:[],parent:null,rc:ring(),rio:ring(),appKey:null};NODES.set(id,n);NEWKEYS.push(id);}
+    if(!n){n={id,pid:p.pid,ct:p.create_time,exe:p.name,kids:[],parent:null,rc:ring(),rio:ring(),appKey:null,bornAt:BOOTING?0:NOW};NODES.set(id,n);NEWKEYS.push(id);}
     n.alive=true;n.ppid=p.ppid;n.cpu=p.cpu;n.mem=p.mem/MB;n.rd=p.io_read_bps/MB;n.wr=p.io_write_bps/MB;n.dsk=n.rd+n.wr;
     n.threads=p.threads;n.handles=p.handles;n.session=p.session;n.susp=!!p.suspended;n.cpuMs=p.cpu_time_ms;n.ws=p.working_set/MB;n.priv=p.private_bytes/MB;n.bprio=p.base_priority;n.gpu=p.gpu||0;n.gmem=(p.gpu_mem||0)/MB;n.nrx=(p.net_rx_bps||0)*8/1e6;n.ntx=(p.net_tx_bps||0)*8/1e6;n.net=n.nrx+n.ntx;
     rpush(n.rc,n.cpu);rpush(n.rio,n.dsk);seen.add(id);
   }
   for(const n of NODES.values()){
-    if(n.alive&&!seen.has(n.id)){n.alive=false;n.deadAt=NOW;n.cpu=0;n.dsk=0;n.rd=0;n.wr=0;n.kids=[];}
+    if(n.alive&&!seen.has(n.id)){n.alive=false;n.deadAt=NOW;n.cpu=0;n.dsk=0;n.rd=0;n.wr=0;n.kids=[];n.ghostOf=n.parent?n.parent.id:null;}
     // завершённые держим 2 минуты (или пока выбраны / открыты во вкладке)
     if(!n.alive&&NOW-n.deadAt>120e3&&S.sel!==n.id&&!PROC_TABS.has(n.id)){NODES.delete(n.id);INFO.delete(n.id);}
   }
@@ -425,7 +425,7 @@ function openMenu(x,y,ids){
   menu.style.left=Math.min(x,innerWidth-r.width-8)+'px';menu.style.top=Math.max(8,Math.min(y,innerHeight-r.height-8))+'px';
   if(!n.prio&&!PSEUDO[n.pid])info(n,true);
 }
-const closeMenu=()=>{menu.style.display='none';menuIds=null;};
+const closeMenu=()=>{menu.style.display='none';menuIds=null;menu.classList.remove('col-menu');};
 document.addEventListener('pointerdown',e=>{if(!menu.contains(e.target))closeMenu();},true);
 menu.addEventListener('click',e=>{const mi=e.target.closest('.mi[data-a]');if(!mi||!menuIds)return;const ids=menuIds;closeMenu();act(mi.dataset.a,ids);});
 function select(id,reveal){S.sel=id;if(!S.right)toggleRight(true);S.multi=new Set([id]);const n=NODES.get(id);if(n){if(reveal)openPath(n);info(n,true).then(()=>renderDetails());}renderAll();if(reveal)requestAnimationFrame(()=>revealRow(id));}
@@ -735,9 +735,21 @@ const COLS_ALL=[
   {k:'dsk',t:'Диск',m:'dsk',fmt:fmtMBs,bar:50,w:84},
   {k:'net',t:'Сеть',m:'net',fmt:fmtMbit,bar:100,w:96},
   {k:'gpu',t:'ГП',m:'gpu',fmt:fmtPct,bar:100,w:64},
+  /* дополнительные — через правый клик по заголовку; значения самого процесса, без Σ */
+  {k:'pid',t:'PID',m:'pid',fmt:v=>String(v),w:64,own:1,extra:1,asc:1},
+  {k:'threads',t:'Потоки',m:'threads',fmt:v=>String(v),w:66,own:1,extra:1},
+  {k:'handles',t:'Дескрипторы',m:'handles',fmt:v=>v.toLocaleString('ru'),w:96,own:1,extra:1},
+  {k:'ws',t:'Рабочий набор',m:'ws',fmt:fmtMem,w:104,own:1,extra:1},
+  {k:'priv',t:'Выделено',m:'priv',fmt:fmtMem,w:88,own:1,extra:1},
+  {k:'started',t:'Запущен',m:'ct',fmt:ct=>{const t=new Date(ctToMs(ct));return (Date.now()-t<864e5?'':t.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})+' ')+t.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});},w:96,own:1,extra:1},
 ];
+const COLS_KEY='tm-cols';
+let COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
+try{const j=JSON.parse(localStorage.getItem(COLS_KEY)||'null');if(Array.isArray(j))COL_ON=new Set(j);}catch(e){}
+const colOn=c=>COL_ON.has(c.k)&&(c.k!=='net'||NETPP);
+const colByK=k=>COLS_ALL.find(c=>c.k===k);
 /* колонка «Сеть» — только когда движок видит трафик процессов (запуск от администратора) */
-let COLS=COLS_ALL.filter(c=>c.k!=='net');
+let COLS=COLS_ALL.filter(colOn);
 const PANEL_EL={};
 function mountProcs(el){
   el.innerHTML=`<div class="ph">
@@ -760,13 +772,17 @@ function mountProcs(el){
   wrap.addEventListener('mouseleave',()=>{S.freeze=false;$('.p-frz',el).style.visibility='hidden';});
   $('.p-short',el).addEventListener('click',e=>{const a=e.target.closest('[data-app]');if(!a)return;const ap=APPS.get(a.dataset.app);if(!ap)return;
     const n=[...NODES.values()].find(x=>alive(x)&&x.pid===ap.rootPid);if(n){openPath(n);select(n.id,true);revealRow(n.id);}});
-  $('thead',el).addEventListener('click',e=>{const th=e.target.closest('th[data-k]');if(!th||th.dataset.k==='name')return;const k=th.dataset.k;if(S.sort===k)S.dir*=-1;else{S.sort=k;S.dir=-1;}S.order=null;renderProcs();});
+  $('thead',el).addEventListener('click',e=>{const th=e.target.closest('th[data-k]');if(!th)return;const k=th.dataset.k;
+    /* имя и PID — по возрастанию, ресурсы — по убыванию */
+    if(S.sort===k)S.dir*=-1;else{S.sort=k;S.dir=k==='name'||(colByK(k)||{}).asc?1:-1;}S.order=null;renderProcs();});
+  $('thead',el).addEventListener('contextmenu',e=>{e.preventDefault();colMenu(e.clientX,e.clientY);});
   const tb=$('tbody',el);
   tb.addEventListener('pointerdown',e=>{
     if(e.button!==0)return;const tr=e.target.closest('tr');if(!tr)return;const id=tr.dataset.id;
     if(e.target.closest('.tw')){S.open.has(id)?S.open.delete(id):S.open.add(id);S.order=null;renderProcs();return;}
-    if(e.ctrlKey){S.multi.has(id)?S.multi.delete(id):S.multi.add(id);S.sel=id;renderAll();return;}
-    select(id);
+    if(e.ctrlKey){S.multi.has(id)?S.multi.delete(id):S.multi.add(id);S.sel=id;S.anchor=id;renderAll();return;}
+    if(e.shiftKey&&S.anchor){e.preventDefault();selectRange(S.anchor,id);return;}
+    S.anchor=id;select(id);
   });
   tb.addEventListener('dblclick',e=>{const tr=e.target.closest('tr');if(!tr)return;const id=tr.dataset.id;S.open.has(id)?S.open.delete(id):S.open.add(id);S.order=null;renderProcs();});
   tb.addEventListener('contextmenu',e=>{const tr=e.target.closest('tr');if(!tr)return;e.preventDefault();const id=tr.dataset.id;if(!S.multi.has(id)){S.sel=id;S.multi=new Set([id]);renderAll();}openMenu(e.clientX,e.clientY,[...S.multi]);});
@@ -775,10 +791,17 @@ function matchQ(n){if(!S.q)return true;const i=INFO.get(n.id);return (nameOf(n)+
 /* в Σ у верхней строки приложения — и ЦП его коротких процессов: иначе «Claude 12 %» стоял ниже
    антивируса, хотя вместе с запущенными им git и grep занимал треть процессора */
 const shortOf=(n,m)=>{if(m!=='cpu'||!n.appKey)return 0;const a=APPS.get(n.appKey);return a&&a.rootPid===n.pid?shortAvg(n.appKey,5):0;};
+/* ключ сортировки: имя — строкой, свои колонки (PID, потоки…) — значение самого процесса, ресурсы — с Σ */
+function sortKey(n,k=S.sort){
+  if(k==='name')return nameOf(n).toLowerCase();
+  const c=colByK(k)||colByK('cpu');
+  return c.own?n[c.m]||0:cur(n,c.m,S.incl)+(S.incl?shortOf(n,c.m):0);
+}
+const sortCmp=(x,y)=>typeof x==='string'?x.localeCompare(y,'ru'):x-y;
 function sortNodes(list){
-  const m=COLS.find(c=>c.k===S.sort).m,v=n=>cur(n,m,S.incl)+(S.incl?shortOf(n,m):0);
   if(S.freeze&&S.order){const idx=S.order;return list.sort((a,b)=>(idx.has(a.id)?idx.get(a.id):1e9)-(idx.has(b.id)?idx.get(b.id):1e9));}
-  return list.sort((a,b)=>S.dir*(v(a)-v(b))||a.pid-b.pid);
+  const key=new Map(list.map(n=>[n,sortKey(n)]));
+  return list.sort((a,b)=>S.dir*sortCmp(key.get(a),key.get(b))||a.pid-b.pid);
 }
 /* Внутри строки — только процессы того же приложения (как и в Σ). Программа, запущенная
    из другой (тесты Java из IntelliJ, всё из Проводника), — отдельная строка верхнего уровня
@@ -788,18 +811,27 @@ const foreignRoot=n=>!n.parent||n.parent.appKey!==n.appKey;
 const LAUNCHERS=new Set(['windows','explorer.exe','svchost.exe','services.exe','wininit.exe','winlogon.exe','userinit.exe','sihost.exe','smss.exe','csrss.exe','system','sihost','explorer']);
 function walkRows(roots){
   const out=[],keep=n=>!S.q||appDesc(n).some(matchQ);
-  const walk=(n,d)=>{if(!keep(n))return;out.push({n,d});if(S.open.has(n.id)||S.q)sortNodes(sameApp(n).slice()).forEach(k=>walk(k,d+1));};
+  const walk=(n,d)=>{if(!keep(n))return;out.push({n,d});if(S.open.has(n.id)||S.q){sortNodes(sameApp(n).slice()).forEach(k=>walk(k,d+1));for(const g of GHOSTS)if(g.ghostOf===n.id&&g.appKey===n.appKey)out.push({n:g,d:d+1});}};
   sortNodes(roots).forEach(r=>walk(r,0));return out;
 }
+/* завершившийся процесс ещё 2,5 с виден на своём месте красной строкой, новый — зелёной (как в System Informer) */
+const GONE_MS=2500;
+const isGhost=n=>!n.alive&&n.deadAt&&NOW-n.deadAt<GONE_MS&&!PSEUDO[n.pid];
+const isFresh=n=>n.alive&&n.bornAt&&NOW-n.bornAt<GONE_MS;
+let GHOSTS=[];
 function procRows(){
-  const live=[...NODES.values()].filter(alive);
-  if(S.procMode==='tree')return walkRows(live.filter(foreignRoot));
-  const m=COLS.find(c=>c.k===S.sort).m,out=[];
-  const groups=new Map();
-  for(const n of live){const k=n.appKey||n.exe;if(!groups.has(k))groups.set(k,[]);if(!n.parent||n.parent.appKey!==n.appKey)groups.get(k).push(n);}
+  const all=[...NODES.values()],live=all.filter(alive);
+  GHOSTS=all.filter(isGhost);
+  /* призрак без живого родителя — отдельной строкой верхнего уровня */
+  const ghostRoots=GHOSTS.filter(g=>{const p=g.ghostOf&&NODES.get(g.ghostOf);return !p||!p.alive;});
+  if(S.procMode==='tree')return walkRows([...live.filter(foreignRoot),...ghostRoots]);
+  const out=[],groups=new Map();
+  for(const n of [...live,...ghostRoots]){const k=n.appKey||n.exe;if(!groups.has(k))groups.set(k,[]);if(!n.alive||!n.parent||n.parent.appKey!==n.appKey)groups.get(k).push(n);}
   const apps=[...groups.entries()].map(([k,tops])=>({k,tops})).filter(a=>a.tops.length);
-  const tot=a=>a.tops.reduce((s,n)=>s+cur(n,m,true),0);
-  apps.sort((a,b)=>S.dir*(tot(a)-tot(b)));
+  const c=colByK(S.sort);
+  const tot=a=>S.sort==='name'?nameOf(a.tops[0]).toLowerCase():c&&c.own?sortKey(a.tops[0]):a.tops.reduce((s,n)=>s+cur(n,(c||colByK('cpu')).m,true),0);
+  const key=new Map(apps.map(a=>[a,tot(a)]));
+  apps.sort((a,b)=>S.dir*sortCmp(key.get(a),key.get(b)));
   for(const a of apps)out.push(...walkRows(a.tops));
   return out;
 }
@@ -821,17 +853,79 @@ function renderShort(el){
   const who=list.slice(0,3).map(({a,v})=>`<a data-app="${esc(a.key)}" title="Показать ${esc(a.title)} в списке">${esc(mapLabel(a.title))}</a> — ${fmtPct(v)}${a.spawnNames.length?` <span class="n2">(${esc(a.spawnNames.join(', '))})</span>`:''}`).join(' · ');
   setHTML(box,`${ICON_INFO}<span>${tot>=1?`<b>${fmtPct(tot)} ЦП — короткие процессы</b>, которых нет в списке: каждый живёт меньше секунды, но их запускают десятками в секунду. Запускает ${who}.`:''}${un>=5?` ${tot>=1?'Ещё':'<b>'}${fmtPct(un)} ЦП${tot>=1?'':'</b>'} не удалось отнести ни к одному процессу — прерывания, драйверы или процессы, завершившиеся до замера.`:''}</span>`);
 }
+/* выбор колонок: правый клик по заголовку таблицы */
+function colMenu(x,y){
+  menuIds=null;
+  menu.innerHTML='<div class="mh">Колонки</div>'+COLS_ALL.filter(c=>c.k!=='net'||NETPP).map(c=>`<div class="mi" data-col="${c.k}"><span><input type="checkbox" ${COL_ON.has(c.k)?'checked':''}>${esc(c.t)}</span></div>`).join('')
+    +'<div class="sep"></div><div class="mi" data-col="-"><span>Как было</span></div>';
+  menu.classList.add('col-menu');menu.style.display='block';const r=menu.getBoundingClientRect();
+  menu.style.left=Math.min(x,innerWidth-r.width-8)+'px';menu.style.top=Math.max(8,Math.min(y,innerHeight-r.height-8))+'px';
+}
+menu.addEventListener('click',e=>{
+  const mi=e.target.closest('[data-col]');if(!mi)return;e.stopPropagation();
+  const k=mi.dataset.col;
+  if(k==='-')COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
+  else if(COL_ON.has(k)){if(k!=='cpu'&&k!=='mem')COL_ON.delete(k);else return toast('ЦП и память скрыть нельзя: по ним строятся графики и карта','info');}
+  else COL_ON.add(k);
+  try{localStorage.setItem(COLS_KEY,JSON.stringify([...COL_ON]));}catch(x){}
+  if(k==='-')closeMenu();else{const cb=mi.querySelector('input');if(cb)cb.checked=COL_ON.has(k);}
+  if(S.sort!=='name'&&!COL_ON.has(S.sort))S.sort='cpu';
+  renderProcs();
+},true);
+/* выделение диапазоном (Shift+клик, Shift+стрелки) — по видимому порядку строк */
+function selectRange(from,to){
+  const ids=procRows().map(r=>r.n.id),a=ids.indexOf(from),b=ids.indexOf(to);if(a<0||b<0)return select(to);
+  S.multi=new Set(ids.slice(Math.min(a,b),Math.max(a,b)+1));S.sel=to;renderAll();revealRow(to);
+}
+/* клавиатура в списке: стрелки, Home/End, PageUp/PageDown, → раскрыть, ← свернуть или к родителю,
+   Enter — отдельная вкладка, Ctrl+C — копировать строки, Ctrl+A — выделить все */
+function procKeys(e){
+  const el=PANEL_EL.procs;if(!vis(el))return false;
+  const rows=procRows(),ids=rows.map(r=>r.n.id);if(!ids.length)return false;
+  const i=Math.max(0,ids.indexOf(S.sel)),page=Math.max(1,Math.floor(($('.tbl-wrap',el).clientHeight||320)/ROW_H)-1);
+  const go=j=>{j=clamp(j,0,ids.length-1);const id=ids[j];
+    if(e.shiftKey){if(!S.anchor)S.anchor=S.sel||id;selectRange(S.anchor,id);}else{S.anchor=id;select(id);}
+    revealRow(id);};
+  const k=e.key;
+  if(e.ctrlKey&&(e.code==='KeyC')){if(getSelection()&&!getSelection().isCollapsed)return false;copyRows();return true;}
+  if(e.ctrlKey&&e.code==='KeyA'){S.multi=new Set(ids);renderAll();return true;}
+  if(e.ctrlKey||e.altKey||e.metaKey)return false;
+  if(k==='ArrowDown'){go(S.sel?i+1:0);return true;}
+  if(k==='ArrowUp'){go(i-1);return true;}
+  if(k==='PageDown'){go(i+page);return true;}
+  if(k==='PageUp'){go(i-page);return true;}
+  if(k==='Home'){go(0);return true;}
+  if(k==='End'){go(ids.length-1);return true;}
+  const n=NODES.get(S.sel);if(!n)return false;
+  if(k==='ArrowRight'){if(sameApp(n).length&&!S.open.has(n.id)){S.open.add(n.id);S.order=null;renderProcs();}else go(i+1);return true;}
+  if(k==='ArrowLeft'){if(S.open.has(n.id)){S.open.delete(n.id);S.order=null;renderProcs();}else if(n.parent&&n.parent.alive){S.anchor=n.parent.id;select(n.parent.id);revealRow(n.parent.id);}return true;}
+  if(k==='Enter'){openProcTab(n.id);return true;}
+  return false;
+}
+/* Ctrl+C: выделенные строки — таблицей через табуляцию (вставляется в Excel и в чат как есть) */
+function copyRows(){
+  const ids=S.multi.size?[...S.multi]:S.sel?[S.sel]:[];if(!ids.length)return;
+  const order=procRows().map(r=>r.n.id),sorted=ids.slice().sort((a,b)=>order.indexOf(a)-order.indexOf(b));
+  const cs=COLS.filter(c=>c.k!=='pid'); /* PID и так второй колонкой */
+  const head=['Имя','PID',...cs.map(c=>c.t),'Путь'].join('\t');
+  const lines=sorted.map(id=>NODES.get(id)).filter(Boolean).map(n=>{const i=INFO.get(n.id)||{};
+    return [nameOf(n),n.pid,...cs.map(c=>c.own?c.fmt(n[c.m]||0):c.fmt(cur(n,c.m,false))),i.path||''].join('\t');});
+  const text=(lines.length>1?head+'\n':'')+lines.join('\n');
+  (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject()).then(()=>toast(lines.length>1?`Скопировано строк: ${lines.length}`:'Строка скопирована','info',1500)).catch(()=>{
+    const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);t.select();try{document.execCommand('copy');}catch(x){}t.remove();});
+}
 function renderProcs(){
   const el=PANEL_EL.procs;if(!vis(el)||!SYS)return;
   $('.p-mode',el).querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.procMode));
   $('.p-incl',el).checked=S.incl;
-  const want=COLS_ALL.filter(c=>c.k!=='net'||NETPP);
-  if(want.length!==COLS.length){COLS=want;const tb=$('tbody',el);tb._rows=null;tb.innerHTML='';if(!COLS.some(c=>c.k===S.sort))S.sort='cpu';}
+  const want=COLS_ALL.filter(colOn);
+  if(want.map(c=>c.k).join()!==COLS.map(c=>c.k).join()){COLS=want;const tb=$('tbody',el);tb._rows=null;tb.innerHTML='';if(S.sort!=='name'&&!COLS.some(c=>c.k===S.sort))S.sort='cpu';}
   setHTML($('colgroup',el),'<col>'+COLS.map(c=>`<col style="width:${c.w}px">`).join('')+'<col style="width:88px">');
   /* имени — не меньше 180 px: в узкой панели таблица прокручивается вбок, а не сжимает имена до значка */
   $('table',el).style.minWidth=180+COLS.reduce((a,c)=>a+c.w,0)+88+'px';
   const act=SORT_OF(curRes());
-  setHTML($('thead',el),`<tr><th data-k="name" style="cursor:default">Имя</th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''}">${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}</th>`).join('')}<th style="cursor:default">ЦП · 2 мин</th></tr>`);
+  const arrow=k=>S.sort===k?(S.dir<0?' ↓':' ↑'):'';
+  setHTML($('thead',el),`<tr><th data-k="name" class="${S.sort==='name'?'on':''}" title="Сортировать по имени · правый клик — выбор колонок">Имя${arrow('name')}</th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''}">${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}</th>`).join('')}<th style="cursor:default">ЦП · 2 мин</th></tr>`);
   const rows=procRows();
   if(!S.freeze||!S.order)S.order=new Map(rows.map((r,i)=>[r.n.id,i]));
   const core=100/CPUS;
@@ -843,7 +937,7 @@ function renderProcs(){
     const kids=sameApp(n),iss=ISS.get(n.id),w=kids.length&&!S.open.has(n.id)?worstIn(n):null,sp=n.susp;
     const from=n.parent&&n.parent.appKey!==n.appKey&&!LAUNCHERS.has(n.parent.appKey)&&!LAUNCHERS.has(n.parent.exe.toLowerCase())?(APPS.get(n.parent.appKey)||{}).title||nameOf(n.parent):null;
     const lvl=iss?(iss.some(i=>i.lvl==='red')?'red':'yel'):null;
-    const cells=COLS.map(c=>{const sh=S.incl?shortOf(n,c.m):0,vi=cur(n,c.m,S.incl&&kids.length>0)+sh,vo=cur(n,c.m,false),bw=clamp(vi/c.bar,0,1)*100;
+    const cells=COLS.map(c=>{if(c.own)return {c:'',t:'',h:`<span class="cell-v">${PSEUDO[n.pid]?'<span style="color:var(--text-4)">—</span>':esc(c.fmt(n[c.m]||0))}</span>`};const sh=S.incl?shortOf(n,c.m):0,vi=cur(n,c.m,S.incl&&kids.length>0)+sh,vo=cur(n,c.m,false),bw=clamp(vi/c.bar,0,1)*100;
       const other=aliveKids(n).length>kids.length;
       return {c:c.k===act?'act':'',t:kids.length||other?`Сам процесс: ${c.fmt(vo)}${kids.length?`\nС дочерними процессами приложения: ${c.fmt(cur(n,c.m,true))}`:''}${other?`\nСо всем, что запущено из него (другие приложения — отдельными строками): ${c.fmt(curAll(n,c.m))}`:''}${sh>=.05?`\nКороткие процессы, которые оно запускает (в списке не видны): ${c.fmt(sh)}`:''}`:'',
         h:`<span class="cell-bar" style="width:${bw.toFixed(1)}%"></span><span class="cell-v">${(vi<.05&&c.k!=='mem')||(PSEUDO[n.pid]&&c.k==='mem')?'<span style="color:var(--text-4)">—</span>':c.fmt(vi)}</span>`};});
@@ -854,7 +948,7 @@ function renderProcs(){
         <span class="n1">${esc(nm)}</span>${lvl?`<span class="dot ${lvl}" title="${esc(iss.map(i=>i.txt).join('\n'))}"></span>`:w?`<span class="dot ring ${w}" title="Внутри есть проблема — раскройте"></span>`:''}
         <span class="n2">${PSEUDO[n.pid]?'нагрузка ядра, не процесс':(showExe?esc(n.exe)+' · ':'')+n.pid}${kids.length&&!S.open.has(n.id)?` · ${appDesc(n).length-1} доч.`:''}${from&&S.procMode==='tree'?` · из ${esc(from)}`:''}</span>
         ${sp?'<span class="chip">приостановлен</span>':''}${isProt(n)?'<span class="chip">защищён</span>':''}${n.prio==='idle'||n.prio==='below_normal'?'<span class="chip">низкий приоритет</span>':''}</div>`;
-    return {id:n.id,cls:`${S.sel===n.id||S.multi.has(n.id)?'sel':''}${sp?' susp':''}`,cells:[{h:name},...cells,{h:spk}]};
+    return {id:n.id,cls:`${S.sel===n.id||S.multi.has(n.id)?'sel':''}${sp?' susp':''}${!n.alive?' gone':isFresh(n)?' new':''}`,cells:[{h:name},...cells,{h:spk}]};
   }),{top:i0*ROW_H,bot:(rows.length-i1)*ROW_H,cols:COLS.length+2});
   renderShort(el);
   const apps=new Set();for(const n of NODES.values())if(n.alive&&n.appKey)apps.add(n.appKey);
@@ -2001,7 +2095,7 @@ function renderDetails(){
   body._id=n.id;
   const r=curRes(),dead=!n.alive,kids=aliveKids(n),iss=ISS.get(n.id)||[],f=n.full||{},i=INFO.get(n.id)||{};
   const secOpen=k=>SEC[k]?'open':'';
-  const mm=r.m==='net'?'cpu':r.m,c=COLS.find(c=>c.m===mm);
+  const mm=r.m==='net'?'cpu':r.m,c=COLS_ALL.find(c=>c.m===mm);
   const kidsHTML=kids.slice().sort((a,b)=>cur(b,mm,true)-cur(a,mm,true)).slice(0,10).map(k=>`<div class="kid" data-go="${esc(k.id)}">${ico(k)}<span>${esc(nameOf(k))}${ISS.has(k.id)?` <span class="dot ${ISS.get(k.id).some(i=>i.lvl==='red')?'red':'yel'}"></span>`:''}</span><span class="v">${c.fmt(cur(k,mm,true))}</span><span class="v">${fmtMem(cur(k,'mem',true))}</span></div>`).join('');
   const started=ctToMs(n.ct);
   if(PSEUDO[n.pid]){
@@ -2052,7 +2146,7 @@ function renderDetailChart(){
   const body=$('#details');if(!S.right||!vis(body))return;
   const cv=$('.d-cv',body),n=NODES.get(S.sel);if(!cv||!n)return;
   maxMark(cv.parentElement,'max',S.max==='detail',$('.d-max',body));
-  const r=curRes(),mm=r.m==='net'?'cpu':r.m,c=COLS.find(c=>c.m===mm);
+  const r=curRes(),mm=r.m==='net'?'cpu':r.m,c=COLS_ALL.find(c=>c.m===mm);
   $('.d-now',body).textContent=c.fmt(cur(n,mm,true));
   const s=nodeSeries(n,mm);
   $('.d-cap',body).textContent=`${c.t}${s&&s.caption?' · '+s.caption:''} · ${S.range.label}`;
@@ -2213,7 +2307,8 @@ document.addEventListener('keydown',e=>{
   if(e.ctrlKey&&!e.altKey&&!e.shiftKey&&e.code==='KeyB'){e.preventDefault();toggleRail();return;}
   if(e.ctrlKey&&e.code==='KeyF'){const q=PANEL_EL.procs&&$('.p-q',PANEL_EL.procs);if(q){e.preventDefault();q.focus();q.select();}return;}
   if(e.target.matches('input'))return;
-  if(e.key==='Delete'&&S.sel)act(e.shiftKey?'tree':'kill',[...(S.multi.size?S.multi:[S.sel])]);
+  if(e.key==='Delete'&&S.sel){act(e.shiftKey?'tree':'kill',[...(S.multi.size?S.multi:[S.sel])]);return;}
+  if(!DIALOG&&menu.style.display!=='block'&&procKeys(e)){e.preventDefault();return;}
   if(e.key==='Escape'){if(menu.style.display==='block')closeMenu();else if(S.max)setMax(S.max);else if(mapUp()){}else if(TAURI)appCmd('hide').catch(()=>{});}
 });
 
