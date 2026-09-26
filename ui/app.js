@@ -855,30 +855,51 @@ function mapTree(){
   }
   return {key:'root',label:'Всё',v:apps.reduce((s,a)=>s+a.v,0),kids:apps};
 }
-/* «По программе» — как типы файлов в WizTree: у каждой программы (exe) свой яркий цвет,
+/* «По программе» — как типы файлов в WizTree: у каждой программы свой яркий цвет,
    поэтому и внутри приближенного приложения видно, где браузер, где node, где conhost.
-   Цвета получают самые крупные программы и держат их, пока не сменится вид; остальные — оттенки серого. */
-const EXE_PAL=['#2e9e3a','#1e7fd8','#e07b00','#b7b000','#d0258f','#8f44c4','#d83a2e','#0aa39a','#6fae2a','#4052c0','#e0457b','#a86b1c','#2bb3d6','#c9a400'];
+   Цвет закреплён за программой (хранится между запусками) и не зависит от вида:
+   приближение, смена ресурса, уход с вкладки его не меняют. Раздаются цвета по весу программы
+   во всей системе (доля памяти + доля ЦП); отбирается цвет только у программы, которая давно
+   не входит в число крупных, и только когда он нужен новой крупной. Остальные — оттенки серого. */
+const EXE_PAL=['#2e9e3a','#1e7fd8','#e07b00','#b7b000','#d0258f','#8f44c4','#d83a2e','#0aa39a','#6fae2a','#4052c0','#e0457b','#a86b1c','#2bb3d6','#a3478f'];
+const COLORS=(()=>{try{return JSON.parse(localStorage.getItem('tm-map-colors')||'{}')||{};}catch(e){return {};}})(); // ключ → [цвет, когда последний раз был крупным]
+let colorsDirty=false,colorsSaved=0,colorsSeq=-1;
+function updateExeColors(){
+  if(colorsSeq===SEQ)return;colorsSeq=SEQ;
+  const mem=new Map(),cpu=new Map();let mt=0,ct=0;
+  for(const n of NODES.values()){if(!alive(n)||!INFO.has(n.id))continue;const k=mapExe({node:n});
+    mem.set(k,(mem.get(k)||0)+(n.mem||0));cpu.set(k,(cpu.get(k)||0)+(n.cpu||0));mt+=n.mem||0;ct+=n.cpu||0;}
+  const w=k=>(mt?mem.get(k)/mt:0)+(ct?cpu.get(k)/ct:0);
+  const rank=[...mem.keys()].sort((p,q)=>w(q)-w(p)),N=EXE_PAL.length,now=Date.now(),near=new Set(rank.slice(0,N*2));
+  for(const k of near)if(COLORS[k]&&COLORS[k][1]<now-60e3){COLORS[k][1]=now;colorsDirty=true;}
+  for(const k of rank.slice(0,N)){
+    if(COLORS[k])continue;
+    const used=new Set(Object.values(COLORS).map(v=>v[0]));let idx=EXE_PAL.findIndex((c,i)=>!used.has(i));
+    if(idx<0){/* палитра занята — забираем у той, что дольше всех не была крупной */
+      const old=Object.entries(COLORS).filter(([q])=>!near.has(q)).sort((p,q)=>p[1][1]-q[1][1])[0];
+      if(!old)continue;idx=old[1][0];delete COLORS[old[0]];}
+    COLORS[k]=[idx,now];colorsDirty=true;
+  }
+  if(colorsDirty&&now-colorsSaved>10e3){colorsDirty=false;colorsSaved=now;try{localStorage.setItem('tm-map-colors',JSON.stringify(COLORS));}catch(e){}}
+}
 /* программа + роль: у Electron/Chromium все процессы — один exe, а рендерер, GPU-процесс
    и, например, Claude Code — разные вещи; им нужны разные цвета */
 const roleKind=n=>{const i=INFO.get(n.id);return i&&i.role?i.role.replace(/\s*\(.*$/,'').trim():'';};
-const mapExe=m=>{if(!m.node)return 'k:'+m.key;const r=roleKind(m.node);return m.node.exe.toLowerCase()+(r?'|'+r:'');};
+/* пока о процессе нет сведений (первая секунда), роль неизвестна — такой ключ временный и всегда серый */
+const mapExe=m=>{if(!m.node)return 'k:'+m.key;const n=m.node,e=n.exe.toLowerCase();if(!INFO.has(n.id))return '?'+e;const r=roleKind(n);return e+(r?'|'+r:'');};
 const exeTitle=k=>{if(k.startsWith('k:'))return k.slice(3);const [e,r]=k.split('|');const b=e.replace(/\.exe$/,'');return r?`${b} · ${r}`:b;};
 const hashN=s=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return Math.abs(h);};
-function exeRGB(k){const i=MAP.exeCol&&MAP.exeCol.get(k);if(i!=null&&i>=0)return hexRGB(EXE_PAL[i]);const g=96+hashN(k)%44;return [g,g,g+4];}
-function assignExeColors(nodes){
-  const tot=new Map();for(const n of nodes)if(!n.head){const k=mapExe(n.m);tot.set(k,(tot.get(k)||0)+(n.m.raw||0));}
-  const col=MAP.exeCol||(MAP.exeCol=new Map()),used=new Set([...col.values()].filter(i=>i>=0));
-  [...tot].sort((p,q)=>q[1]-p[1]).forEach(([k],rank)=>{if(col.has(k))return;
-    const free=rank<EXE_PAL.length*2?EXE_PAL.findIndex((c,i)=>!used.has(i)):-1;col.set(k,free);if(free>=0)used.add(free);});
-  MAP.exeTot=tot;
-}
+function exeRGB(k){const c=COLORS[k];if(c)return hexRGB(EXE_PAL[c[0]]);const g=104+hashN(k)%28;return [g,g,g+3];}
+/* размеры программ в текущем виде — для легенды */
+function exeTotals(nodes){const tot=new Map();for(const n of nodes)if(!n.head){const k=mapExe(n.m);tot.set(k,(tot.get(k)||0)+(n.m.raw||0));}MAP.exeTot=tot;}
 const mapId=n=>n.key+(n.head?'#':'');
 const heatRGB=c=>{const t=clamp(c/12,0,1);const a=[58,74,92],b=[201,162,39],d=[224,83,61];return t<.5?a.map((v,i)=>v+(b[i]-v)*t*2):b.map((v,i)=>v+(d[i]-v)*(t-.5)*2);};
 const heat=c=>`rgb(${heatRGB(c).map(Math.round).join(',')})`;
 const hexRGB=h=>{const n=parseInt(h.slice(1),16);return [n>>16,n>>8&255,n&255];};
-/* Подушечный treemap (SequoiaView / WinDirStat) */
-const CUSH={H:.38,F:.91,IA:.13,BR:.88/.6,L:(()=>{const l=Math.hypot(-1,-1,10);return [-1/l,-1/l,10/l];})()};
+/* Подушки (SequoiaView / WinDirStat), но у каждой плитки своя и мягкая: выпуклости родителей
+   не складываются — иначе крупная плитка становилась светящимся шаром с чёрными углами,
+   а мелкие у края группы тонули в тени. Цвет плитки сохраняется до самого края. */
+const CUSH={H:.3,IA:.34,BR:1.12,L:(()=>{const l=Math.hypot(-1,-1,10);return [-1/l,-1/l,10/l];})()};
 function addRidge(r,s,h){const h4=4*h,wf=h4/r.w,hf=h4/r.h;s[2]+=wf*(r.x*2+r.w);s[0]-=wf;s[3]+=hf*(r.y*2+r.h);s[1]-=hf;}
 /* Карта перестраивается на каждом замере, но спокойно:
    - значения сглажены по времени (τ ≈ 3 с) — всплеск нагрузки не перекраивает раскладку;
@@ -925,8 +946,9 @@ function mapLayout(w,h){
     const p=path?path+' › '+m.label:m.label,i=nodes.length;shown.add(m.key);
     if(m.kids&&r.w>44&&r.h>MAP_HDR+12){
       nodes.push({key:m.key,r:{x:r.x,y:r.y,w:r.w,h:r.h},m,head:1,depth,parent,path:p});
-      const W=r.w-2,H=r.h-MAP_HDR-1;
-      for(const q of sq(m.key,visible(sticky(m.key,m.kids),W*H),r.x+1,r.y+MAP_HDR,W,H))lay(q,q,p,depth+1,i);
+      /* отступ внутри группы, как у папок в WizTree: видно, где кончается одна группа и начинается другая */
+      const P=r.w>90&&r.h>70?2:1,W=r.w-2*P,H=r.h-MAP_HDR-P;
+      for(const q of sq(m.key,visible(sticky(m.key,m.kids),W*H),r.x+P,r.y+MAP_HDR,W,H))lay(q,q,p,depth+1,i);
     }else nodes.push({key:m.key,r:{x:r.x,y:r.y,w:r.w,h:r.h},m,depth,parent,path:p});
   };
   const zr=S.map.root&&NODES.get(S.map.root),base=zr?ancestors(zr).map(nameOf).join(' › '):'';
@@ -941,58 +963,67 @@ function mapRectFn(nodes){
   const e=easeOut(clamp((performance.now()-MAP.t0)/MAP_ANIM,0,1)),F=MAP.from;
   return i=>{const a=F[i],b=nodes[i].r;return {x:a.x+(b.x-a.x)*e,y:a.y+(b.y-a.y)*e,w:a.w+(b.w-a.w)*e,h:a.h+(b.h-a.h)*e};};
 }
-/* подушки — попиксельно, в отдельный холст; scale < 1 — черновое качество во время анимации */
+/* подушки — попиксельно, в отдельный холст; scale < 1 — черновое качество во время анимации.
+   Правый и нижний пиксель плитки — тёмная граница: соседние плитки разделены ровно одной
+   чёткой линией (как в WizTree), даже если они одного цвета. */
 function mapPaint(cv,nodes,rect,scale){
   const w=cv.clientWidth,h=cv.clientHeight,k=(devicePixelRatio||1)*scale;
   const PW=Math.max(1,Math.round(w*k)),PH=Math.max(1,Math.round(h*k)),off=MAP.off;
   if(off.width!==PW||off.height!==PH){off.width=PW;off.height=PH;}
   const ox=off.getContext('2d'),img=ox.createImageData(PW,PH),d=new Uint32Array(img.data.buffer),[Lx,Ly,Lz]=CUSH.L;
   d.fill(0xff1c1c1c);
-  const surf=new Array(nodes.length),IA=CUSH.IA,BR=CUSH.BR;
+  const IA=CUSH.IA,BR=CUSH.BR,bw=Math.max(1,Math.round(k)),px8=(r,g,b)=>(0xff000000|(b>255?255:b|0)<<16|(g>255?255:g|0)<<8|(r>255?255:r|0))>>>0;
   for(let i=0;i<nodes.length;i++){
-    const n=nodes[i],r=rect(i),s=n.parent<0?[0,0,0,0]:surf[n.parent].slice();
-    addRidge({x:r.x,y:r.y,w:Math.max(r.w,.5),h:Math.max(r.h,.5)},s,CUSH.H*Math.pow(CUSH.F,n.depth));surf[i]=s;
-    if(n.head)continue;
+    const n=nodes[i];if(n.head)continue;const r=rect(i);
     const x0=Math.max(0,Math.round(r.x*k)),x1=Math.min(PW,Math.round((r.x+r.w)*k)),y0=Math.max(0,Math.round(r.y*k)),y1=Math.min(PH,Math.round((r.y+r.h)*k));
     if(x1<=x0||y1<=y0)continue;
+    const s=[0,0,0,0];addRidge({x:r.x,y:r.y,w:Math.max(r.w,.5),h:Math.max(r.h,.5)},s,CUSH.H);
     const R=n.rgb[0],G=n.rgb[1],B=n.rgb[2],s0=2*s[0],s1=2*s[1],s2=s[2],s3=s[3];
+    const edge=x1-x0>2*bw&&y1-y0>2*bw,xe=edge?x1-bw:x1,ye=edge?y1-bw:y1,line=px8(R*.28,G*.28,B*.28);
     for(let py=y0;py<y1;py++){
-      const ny=-(s1*(py+.5)/k+s3),ny2=ny*ny+1,cy=ny*Ly+Lz;let o=py*PW+x0;
-      for(let px=x0;px<x1;px++,o++){
+      let o=py*PW+x0;
+      if(py>=ye){d.fill(line,o,o+(x1-x0));continue;}
+      const ny=-(s1*(py+.5)/k+s3),ny2=ny*ny+1,cy=ny*Ly+Lz;
+      for(let px=x0;px<xe;px++,o++){
         const nx=-(s0*(px+.5)/k+s2);
-        let ca=(nx*Lx+cy)/Math.sqrt(nx*nx+ny2);if(ca>1)ca=1;
-        let I=(1-IA)*ca;if(I<0)I=0;I=(I+IA)*BR;
-        const r8=R*I,g8=G*I,b8=B*I;
-        d[o]=(0xff000000|(b8>255?255:b8|0)<<16|(g8>255?255:g8|0)<<8|(r8>255?255:r8|0))>>>0;
+        let ca=(nx*Lx+cy)/Math.sqrt(nx*nx+ny2);if(ca<0)ca=0;
+        const I=(IA+(1-IA)*ca)*BR;
+        d[o]=px8(R*I,G*I,B*I);
       }
+      if(xe<x1)d.fill(line,o,o+(x1-xe));
     }
   }
   ox.putImageData(img,0,0);
 }
-/* поверх подушек: заголовки групп, подписи, рамка выделения */
+/* поверх подушек: заголовки групп, подписи, рамки выделения и наведения.
+   Всё рисуется в физических пикселях с целыми координатами — линии не размываются в полупиксель. */
 function mapCompose(cv,nodes,rect){
   const dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight,PW=Math.round(w*dpr),PH=Math.round(h*dpr);
   if(cv.width!==PW||cv.height!==PH){cv.width=PW;cv.height=PH;}
   const x=cv.getContext('2d');
-  x.setTransform(1,0,0,1,0,0);x.imageSmoothingEnabled=true;x.drawImage(MAP.off,0,0,PW,PH);x.setTransform(dpr,0,0,dpr,0,0);
-  x.font='12px "Segoe UI Variable Text","Segoe UI",sans-serif';x.textBaseline='middle';
-  const H=MAP_HDR;let sel=null;
+  x.setTransform(1,0,0,1,0,0);x.imageSmoothingEnabled=MAP.off.width!==PW;x.drawImage(MAP.off,0,0,PW,PH);
+  const D=r=>{const x0=Math.round(r.x*dpr),y0=Math.round(r.y*dpr);return {x:x0,y:y0,w:Math.round((r.x+r.w)*dpr)-x0,h:Math.round((r.y+r.h)*dpr)-y0};};
+  const HD=Math.round(MAP_HDR*dpr),L=Math.max(1,Math.round(dpr)),pad=Math.round(4*dpr);
+  x.font=`${Math.round(12*dpr)}px "Segoe UI Variable Text","Segoe UI",sans-serif`;x.textBaseline='middle';
+  const frame=(q,t,c)=>{x.fillStyle=c;x.fillRect(q.x,q.y,q.w,t);x.fillRect(q.x,q.y+q.h-t,q.w,t);x.fillRect(q.x,q.y,t,q.h);x.fillRect(q.x+q.w-t,q.y,t,q.h);};
+  let sel=null,hov=null;
   for(let i=0;i<nodes.length;i++){
-    const n=nodes[i],m=n.m;if(!n.head)continue;const r=rect(i);if(r.w<2||r.h<2)continue;
-    x.fillStyle='#2c2c2c';x.fillRect(r.x,r.y,r.w,Math.min(H,r.h));
-    x.strokeStyle='rgba(0,0,0,.7)';x.lineWidth=1;x.strokeRect(r.x+.5,r.y+.5,r.w-1,r.h-1);
-    if(r.w>24){x.save();x.beginPath();x.rect(r.x+3,r.y,r.w-6,H);x.clip();x.fillStyle='rgba(255,255,255,.88)';
-      const t1=`${m.label} (${mapFmt(m.raw)})`;x.fillText(x.measureText(t1).width<r.w-8?t1:m.label,r.x+4,r.y+H/2+1);x.restore();}
+    const n=nodes[i],m=n.m;if(!n.head)continue;const q=D(rect(i));if(q.w<2||q.h<2)continue;
+    x.fillStyle='#2b2b2b';x.fillRect(q.x,q.y,q.w,Math.min(HD,q.h));
+    frame(q,L,'rgba(0,0,0,.8)');
+    if(q.w>24*dpr){x.save();x.beginPath();x.rect(q.x+L,q.y,q.w-2*L,HD);x.clip();x.fillStyle='rgba(255,255,255,.9)';
+      const t1=`${m.label} (${mapFmt(m.raw)})`;x.fillText(x.measureText(t1).width<q.w-2*pad?t1:m.label,q.x+pad,q.y+HD/2+L);x.restore();}
   }
   for(let i=0;i<nodes.length;i++){
     const n=nodes[i],m=n.m,r=rect(i);
-    if(S.sel&&m.node&&m.node.id===S.sel&&(!n.head||!sel))sel=r;
+    if(S.sel&&m.node&&m.node.id===S.sel&&(!n.head||!sel))sel=D(r);
+    if(MAP.hover&&mapId(n)===MAP.hover){hov=D(r);if(n.head)hov.h=Math.min(HD,hov.h);}
     if(n.head||!(r.w>70&&r.h>32))continue;
-    x.save();x.beginPath();x.rect(r.x+3,r.y,r.w-6,r.h);x.clip();x.fillStyle='#fff';x.shadowColor='rgba(0,0,0,.8)';x.shadowBlur=3;
-    x.fillText(m.self?`${m.label} (сам)`:m.label,r.x+6,r.y+12);x.fillStyle='rgba(255,255,255,.8)';x.fillText(mapFmt(m.raw),r.x+6,r.y+27);x.restore();
+    const q=D(r);x.save();x.beginPath();x.rect(q.x+L,q.y,q.w-2*L,q.h);x.clip();x.fillStyle='#fff';x.shadowColor='rgba(0,0,0,.85)';x.shadowBlur=3*dpr;
+    x.fillText(m.self?`${m.label} (сам)`:m.label,q.x+pad+L,q.y+Math.round(12*dpr));x.fillStyle='rgba(255,255,255,.82)';x.fillText(mapFmt(m.raw),q.x+pad+L,q.y+Math.round(27*dpr));x.restore();
   }
-  if(sel){x.strokeStyle='#fff';x.lineWidth=2;x.strokeRect(sel.x+1,sel.y+1,sel.w-2,sel.h-2);}
-  if(MAP.hover){const i=nodes.findIndex(n=>mapId(n)===MAP.hover);if(i>=0){const r=rect(i);x.strokeStyle='rgba(255,255,255,.95)';x.lineWidth=1;x.strokeRect(r.x+.5,r.y+.5,r.w-1,(nodes[i].head?Math.min(MAP_HDR,r.h):r.h)-1);}}
+  if(sel)frame(sel,2*L,'#fff');
+  if(hov)frame(hov,L,'rgba(255,255,255,.95)');
 }
 function mapAnimate(){
   cancelAnimationFrame(MAP.raf);
@@ -1012,12 +1043,12 @@ function renderMap(force){
   $('.m-color',el).querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.c===S.map.color));
   $('.m-desc',el).textContent=mapDesc();
   const sig=[S.res,S.map.color,S.map.root,S.range.ms,w,h,devicePixelRatio].join('|'),fresh=sig!==MAP.sig;
-  if(fresh){MAP.sig=sig;MAP.exeCol=null;MAP.hover=null;MAP.sm=new Map();MAP.order=new Map();MAP.shown=null;MAP.plans=null;MAP.nodes=null;MAP.from=null;cancelAnimationFrame(MAP.raf);}
+  if(fresh){MAP.sig=sig;MAP.hover=null;MAP.sm=new Map();MAP.order=new Map();MAP.shown=null;MAP.plans=null;MAP.nodes=null;MAP.from=null;cancelAnimationFrame(MAP.raf);}
   if(fresh||force===true||MAP.seq!==SEQ){
     MAP.seq=SEQ;
     const prev=MAP.nodes,prevRect=prev&&mapRectFn(prev);
     const nodes=mapLayout(w,h);
-    if(S.map.color==='exe')assignExeColors(nodes);
+    if(S.map.color==='exe'){updateExeColors();exeTotals(nodes);}
     const baseRGB=m=>S.map.color==='exe'?exeRGB(mapExe(m)):S.map.color==='cpu'?heatRGB(m.node&&alive(m.node)?(m.self?m.node.cpu:cur(m.node,'cpu',true)):0):hexRGB((CATS[m.cat]||CATS.other).c);
     for(const n of nodes)if(!n.head)n.rgb=baseRGB(n.m).map(Math.round);
     const id=n=>n.key+(n.head?'#':'');
@@ -1049,9 +1080,9 @@ function renderMap(force){
   }else if(MAP.nodes&&!MAP.from)mapCompose(cv,MAP.nodes,i=>MAP.nodes[i].r); // выбор, наведение — только верхний слой
   const zr=S.map.root&&NODES.get(S.map.root),r0=curRes();
   setHTML($('.m-crumbs',el),`<a data-z="root">${esc(r0.name)} · всё</a>`+(zr?ancestors(zr).concat([zr]).map((a,i,arr)=>`<span class="sep">›</span>${i===arr.length-1?`<span class="cur">${esc(nameOf(a))}</span>`:`<a data-z="${esc(a.id)}">${esc(nameOf(a))}</a>`}`).join(''):''));
-  const exeLeg=()=>{const t=MAP.exeTot||new Map(),col=MAP.exeCol||new Map();
-    const top=[...t].filter(([k])=>col.get(k)>=0).sort((p,q)=>q[1]-p[1]).slice(0,12);
-    return top.map(([k,v])=>`<span><i style="background:${EXE_PAL[col.get(k)]}"></i>${esc(exeTitle(k))} <span class="num">${mapFmt(v)}</span></span>`).join('')+'<span><i style="background:#777"></i>остальные</span>';};
+  const exeLeg=()=>{const t=MAP.exeTot||new Map();
+    const top=[...t].filter(([k])=>COLORS[k]).sort((p,q)=>q[1]-p[1]).slice(0,12);
+    return top.map(([k,v])=>`<span><i style="background:${EXE_PAL[COLORS[k][0]]}"></i>${esc(exeTitle(k))} <span class="num">${mapFmt(v)}</span></span>`).join('')+'<span><i style="background:#777"></i>остальные</span>';};
   setHTML($('.m-leg',el),S.map.color==='exe'?exeLeg():S.map.color==='cat'?Object.values(CATS).map(c=>`<span><i style="background:${c.c}"></i>${c.n}</span>`).join(''):
     `<span><i style="background:${heat(0)}"></i>простаивает</span><span><i style="background:${heat(6)}"></i>~6 % ЦП</span><span><i style="background:${heat(12)}"></i>12 % и выше</span>`);
 }
