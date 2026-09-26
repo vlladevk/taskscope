@@ -222,6 +222,120 @@ pub fn command_line(h: HANDLE) -> Option<String> {
     }
 }
 
+/// Папка и окружение процесса — то, с чем его запустили (для перезапуска «как было»).
+pub struct LaunchParams {
+    pub cwd: String,
+    /// Блок окружения UTF-16: строки `ИМЯ=значение\0`, в конце ещё один `\0`.
+    pub env: Vec<u16>,
+}
+
+const PROCESS_BASIC_INFORMATION: i32 = 0;
+const PROCESS_WOW64_INFORMATION: i32 = 26;
+
+#[repr(C)]
+struct ProcessBasicInformation {
+    exit_status: i32,
+    peb: usize,
+    affinity: usize,
+    base_priority: i32,
+    pid: usize,
+    ppid: usize,
+}
+
+fn read_mem(h: HANDLE, addr: usize, buf: &mut [u8]) -> io::Result<()> {
+    use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+    let mut n = 0usize;
+    let ok = unsafe { ReadProcessMemory(h, addr as *const c_void, buf.as_mut_ptr().cast(), buf.len(), &mut n) };
+    if ok == 0 || n != buf.len() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn read_ptr(h: HANDLE, addr: usize, wow: bool) -> io::Result<usize> {
+    let mut b = [0u8; 8];
+    let n = if wow { 4 } else { 8 };
+    read_mem(h, addr, &mut b[..n])?;
+    Ok(u64::from_le_bytes(b) as usize)
+}
+
+/// UNICODE_STRING из памяти процесса: 16 байт на x64, 8 байт у 32-битного.
+fn read_ustr(h: HANDLE, addr: usize, wow: bool) -> io::Result<String> {
+    let mut len = [0u8; 2];
+    read_mem(h, addr, &mut len)?;
+    let len = u16::from_le_bytes(len) as usize;
+    let buf = read_ptr(h, addr + if wow { 4 } else { 8 }, wow)?;
+    if len == 0 || buf == 0 {
+        return Ok(String::new());
+    }
+    let mut raw = vec![0u8; len];
+    read_mem(h, buf, &mut raw)?;
+    let w: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    Ok(String::from_utf16_lossy(&w))
+}
+
+/// Читает текущую папку и окружение из PEB → RTL_USER_PROCESS_PARAMETERS
+/// (как PhGetProcessCurrentDirectory / PhGetProcessEnvironment в System Informer).
+/// Нужен дескриптор с PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ.
+/// У 32-битных процессов берётся их собственный 32-битный PEB: 64-битная копия у них не обновляется.
+pub fn launch_params(h: HANDLE) -> io::Result<LaunchParams> {
+    let mut peb32 = 0usize;
+    let st = unsafe { NtQueryInformationProcess(h, PROCESS_WOW64_INFORMATION, (&mut peb32 as *mut usize).cast(), 8, ptr::null_mut()) };
+    let wow = st >= 0 && peb32 != 0;
+    let peb = if wow {
+        peb32
+    } else {
+        let mut pbi: ProcessBasicInformation = unsafe { std::mem::zeroed() };
+        let st = unsafe {
+            NtQueryInformationProcess(h, PROCESS_BASIC_INFORMATION, (&mut pbi as *mut ProcessBasicInformation).cast(), size_of::<ProcessBasicInformation>() as u32, ptr::null_mut())
+        };
+        nt_ok(st, "NtQueryInformationProcess")?;
+        pbi.peb
+    };
+    // смещения из phnt: PEB.ProcessParameters, CurrentDirectory.DosPath, Environment, EnvironmentSize
+    let (o_params, o_cwd, o_env, o_env_size) = if wow { (0x10, 0x24, 0x48, 0x290) } else { (0x20, 0x38, 0x80, 0x3F0) };
+    let params = read_ptr(h, peb + o_params, wow)?;
+    if params == 0 {
+        return Err(io::Error::other("у процесса нет параметров запуска"));
+    }
+    let cwd = read_ustr(h, params + o_cwd, wow)?;
+    let env_ptr = read_ptr(h, params + o_env, wow)?;
+    let env_size = read_ptr(h, params + o_env_size, wow).unwrap_or(0);
+    let mut env = Vec::new();
+    if env_ptr != 0 {
+        let bytes = if (4..=16 << 20).contains(&env_size) {
+            let mut raw = vec![0u8; env_size];
+            read_mem(h, env_ptr, &mut raw)?;
+            raw
+        } else {
+            // старые системы без EnvironmentSize: читаем по страницам до двойного нуля
+            let mut raw = Vec::new();
+            let mut addr = env_ptr;
+            loop {
+                let chunk = 0x1000 - (addr & 0xFFF);
+                let mut b = vec![0u8; chunk];
+                if read_mem(h, addr, &mut b).is_err() {
+                    break;
+                }
+                raw.extend_from_slice(&b);
+                addr += chunk;
+                if raw.len() > 1 << 20 || raw.chunks_exact(2).collect::<Vec<_>>().windows(2).any(|w| w[0] == [0, 0] && w[1] == [0, 0]) {
+                    break;
+                }
+            }
+            raw
+        };
+        env = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        // обрезаем по концу блока (двойной ноль) и гарантируем, что он есть
+        if let Some(end) = env.windows(2).position(|w| w == [0, 0]) {
+            env.truncate(end + 2);
+        } else {
+            env.extend_from_slice(&[0, 0]);
+        }
+    }
+    Ok(LaunchParams { cwd, env })
+}
+
 pub fn suspend(h: HANDLE) -> io::Result<()> {
     nt_ok(unsafe { NtSuspendProcess(h) }, "NtSuspendProcess")
 }

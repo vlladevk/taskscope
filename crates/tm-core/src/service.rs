@@ -4,7 +4,6 @@
 //! Методы, которые что-то меняют в системе (`act`, `reveal`, `web`), помечены `is_mutating`:
 //! канал их не пропускает — клиент выполняет действия сам, со своими правами.
 
-use std::collections::HashSet;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -25,7 +24,7 @@ pub struct Service {
 }
 
 pub fn is_mutating(method: &str) -> bool {
-    matches!(method, "act" | "reveal" | "web" | "docker_act")
+    matches!(method, "act" | "reveal" | "web" | "docker_act" | "settings_set")
 }
 
 fn arg<T: for<'de> Deserialize<'de>>(params: &Value) -> Result<T, String> {
@@ -215,6 +214,12 @@ impl Service {
             // найти драйверы по меткам (в фоне, 10–30 с); результат придёт в следующих "pool"
             "pool_owners" => Ok(serde_json::to_value(crate::pool::start_owner_scan(self.engine.pool_tracked())).map_err(|e| e.to_string())?),
             "act" => self.act(params),
+            "settings_get" => serde_json::to_value(crate::settings::Settings::load()).map_err(|e| e.to_string()),
+            "settings_set" => {
+                let s: crate::settings::Settings = arg(params)?;
+                s.save().map_err(|e| format!("не удалось сохранить настройки: {e}"))?;
+                Ok(json!({ "ok": true }))
+            }
             // контейнеры Docker и их нагрузка (пока смотрят — обновляется раз в 2 с)
             "docker" => Ok(serde_json::to_value(self.docker.get()).map_err(|e| e.to_string())?),
             "docker_act" => {
@@ -267,40 +272,42 @@ impl Service {
             #[serde(default)]
             tree: bool,
             #[serde(default)]
+            app: bool,
+            #[serde(default)]
             priority: Option<Priority>,
             #[serde(default)]
             dry_run: bool,
+            /// без вежливого закрытия окон и с подтверждёнными предупреждениями
+            #[serde(default)]
+            force: bool,
+            /// предупреждения показаны человеку, и он согласился
+            #[serde(default)]
+            confirmed: bool,
         }
         let mut p: P = arg(params)?;
         p.targets = p.targets.into_iter().map(norm_key).collect();
         let frame = Sampler::new().sample().map_err(|e| e.to_string())?;
         let tree = Tree::build(&frame.procs);
-        let mut set = Vec::new();
-        let mut seen = HashSet::new();
+        let mut roots = Vec::new();
         let mut missing = Vec::new();
         for key in &p.targets {
-            let Some(i) = frame.procs.iter().position(|x| x.key() == *key) else {
-                missing.push(key.0);
-                continue;
-            };
-            let group: Vec<usize> = if p.tree { std::iter::once(i).chain(tree.descendants(i)).collect() } else { vec![i] };
-            set.extend(group.into_iter().filter(|j| seen.insert(*j)));
+            match frame.procs.iter().position(|x| x.key() == *key) {
+                Some(i) => roots.push(i),
+                None => missing.push(key.0),
+            }
         }
-        let order = actions::deepest_first(&tree, &set);
+        let scope = if p.app { actions::Scope::App } else if p.tree { actions::Scope::Tree } else { actions::Scope::One };
+        let guard = actions::Guard::new(&frame.procs, &tree);
+        let plan = actions::plan(&frame.procs, &tree, &roots, scope, p.action, &guard);
         let mem_of = |pid: u32, ct: i64| frame.procs.iter().find(|x| x.pid == pid && x.create_time == ct).map_or(0, |x| x.mem);
         let mut results: Vec<Outcome> = if p.dry_run {
-            order
-                .iter()
-                .map(|&i| {
-                    let why = actions::protected_reason(&frame.procs[i]);
-                    Outcome { pid: frame.procs[i].pid, create_time: frame.procs[i].create_time, name: frame.procs[i].name.clone(), ok: why.is_none(), error: why.map(str::to_string) }
-                })
-                .collect()
+            plan.preview(&frame.procs)
         } else {
-            actions::apply(&frame.procs, &order, p.action, p.priority)
+            let opts = actions::Opts { priority: p.priority, force: p.force, confirmed: p.confirmed, ..Default::default() };
+            actions::execute(&frame.procs, &tree, &plan, p.action, opts)
         };
         for pid in missing {
-            results.push(Outcome { pid, create_time: 0, name: String::new(), ok: false, error: Some("процесс уже завершился".into()) });
+            results.push(Outcome { pid, error: Some("процесс уже завершился".into()), ..Default::default() });
         }
         let done: Vec<&Outcome> = results.iter().filter(|r| r.ok).collect();
         let freed: u64 = if matches!(p.action, Action::Kill) { done.iter().map(|r| mem_of(r.pid, r.create_time)).sum() } else { 0 };

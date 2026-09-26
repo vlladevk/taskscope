@@ -148,7 +148,7 @@ pub fn spawn_detached(exe: &std::path::Path, args: &[&str]) -> std::io::Result<u
     spawn(&cmd, None, base | CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(&cmd, None, base))
 }
 
-fn wide(s: &str) -> Vec<u16> {
+pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
@@ -222,6 +222,41 @@ pub fn is_elevated() -> bool {
     unsafe { CloseHandle(token) };
     ok != 0 && te.TokenIsElevated != 0
 }
+
+/// SID владельца процесса строкой («S-1-5-21-…»); нужен дескриптор с PROCESS_QUERY_LIMITED_INFORMATION.
+pub fn process_user_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::OpenProcessToken;
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    let mut buf = vec![0u64; 64];
+    let mut len = 0u32;
+    let ok = unsafe { GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32, &mut len) };
+    unsafe { CloseHandle(token) };
+    if ok == 0 {
+        return None;
+    }
+    // SAFETY: GetTokenInformation заполнил буфер структурой TOKEN_USER, SID лежит в нём же.
+    let tu: TOKEN_USER = unsafe { std::ptr::read_unaligned(buf.as_ptr().cast()) };
+    let mut s: windows_sys::core::PWSTR = std::ptr::null_mut();
+    if unsafe { ConvertSidToStringSidW(tu.User.Sid, &mut s) } == 0 || s.is_null() {
+        return None;
+    }
+    let n = (0..).take_while(|&i| unsafe { *s.add(i) } != 0).count();
+    let out = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(s, n) });
+    unsafe { LocalFree(s.cast()) };
+    Some(out)
+}
+
+/// SID пользователя, от имени которого работает tm.
+pub fn current_user_sid() -> Option<String> {
+    process_user_sid(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
+}
+
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
 /// Команда автозапуска текущего пользователя (HKCU\…\Run), если она есть.

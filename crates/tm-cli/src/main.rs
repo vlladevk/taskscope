@@ -4,7 +4,7 @@
 mod mcp;
 mod serve;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,11 +32,14 @@ tm — диспетчер задач для терминала и ИИ-аген�
                                --long — описание и путь к файлу
   tree [цель]                Дерево процессов с суммами по поддереву   --depth N
   show <цель>                Всё о процессе: путь, командная строка, родители, дети
-  kill <цель>                Завершить процесс
+  kill <цель>                Завершить процесс. Программе с окном сначала посылается «закрыть окно»
+                               (как «Снять задачу»); не закрылась за --wait С (5) — повторите с --force
   suspend <цель>             Приостановить (заморозить) процесс
   resume <цель>              Возобновить процесс
   prio <цель> [уровень]      Показать или задать приоритет: idle|below|normal|above|high
-  restart <цель>             Перезапустить: завершить и запустить с той же командной строкой
+  restart <цель>             Перезапустить как было: тот же файл, командная строка, папка, окружение
+                               и права; новый процесс создаётся до завершения старого.
+                               Не для служб, приложений из Store и процессов других пользователей
   events                     Журнал: проблемы и перегрузки, замеченные движком
   history                    Кто нагружал систему раньше (нужен движок: tm daemon start)
                                --range 2m|15m|1h|3h|24h (по умолчанию 15m)
@@ -62,6 +65,9 @@ tm — диспетчер задач для терминала и ИИ-аген�
   --app                      всё приложение, к которому относится процесс
   --all                      разрешить действие, если имя совпало с несколькими процессами
   --dry-run                  показать, что будет сделано, ничего не меняя
+  --force                    принудительно: не ждать закрытия окон и не спрашивать о рискованном
+                               (приостановка dwm, explorer и т.п.)
+  --wait С                   сколько секунд ждать, пока программа закроет окно (по умолчанию 5)
 
 ОБЩИЕ ПАРАМЕТРЫ
   --json                     машиночитаемый вывод (для скриптов и ИИ-агентов)
@@ -70,7 +76,10 @@ tm — диспетчер задач для терминала и ИИ-аген�
 
 Если движок запущен, команды отвечают мгновенно его свежими данными (скорости за 1 с).
 
-Критические процессы Windows (csrss, lsass, wininit, …) и сам tm защищены от действий.
+Защищены от действий: ядро и критические процессы Windows (csrss, lsass, … из System32,
+а также помеченные Windows как критические), сам tm и его окно, процессы из списка
+«protected» в %LOCALAPPDATA%\\tm\\settings.json. Защищённый процесс закрывает всё своё дерево;
+группы «Службы Windows» и «Windows» не затрагиваются через --app и --all.
 Коды выхода: 0 — успех, 1 — ошибка или частичный сбой, 2 — неверные аргументы.
 ";
 
@@ -81,7 +90,7 @@ struct Args {
     flags: HashMap<String, String>,
 }
 
-const VALUED: &[&str] = &["sort", "by", "n", "depth", "interval", "range", "port", "root"];
+const VALUED: &[&str] = &["sort", "by", "n", "depth", "interval", "range", "port", "root", "wait", "max-targets"];
 
 impl Args {
     fn parse(raw: impl Iterator<Item = String>) -> Result<Self, String> {
@@ -688,31 +697,30 @@ fn cmd_action(args: &Args, action: Action) -> Res<bool> {
             found.len(), list.join(", ")
         ));
     }
-    let mut set: Vec<usize> = Vec::new();
-    let mut seen = HashSet::new();
-    let keys = args.has("app").then(|| apps::keys(procs, &snap.tree));
-    for &i in &found {
-        let group: Vec<usize> = if let Some(keys) = &keys {
-            (0..procs.len()).filter(|&j| keys[j] == keys[i] && procs[j].pid != 0).collect()
-        } else if args.has("tree") {
-            std::iter::once(i).chain(snap.tree.descendants(i)).collect()
-        } else {
-            vec![i]
-        };
-        set.extend(group.into_iter().filter(|j| seen.insert(*j)));
+    let scope = if args.has("app") {
+        actions::Scope::App
+    } else if args.has("tree") {
+        actions::Scope::Tree
+    } else {
+        actions::Scope::One
+    };
+    let guard = actions::Guard::new(procs, &snap.tree);
+    let plan = actions::plan(procs, &snap.tree, &found, scope, action, &guard);
+    // предел числа целей (его ставит MCP-сервер, чтобы агент не завершил полсистемы одной командой)
+    let limit = args.num("max-targets", 0)?;
+    if limit > 0 && plan.order.len() > limit as usize {
+        return Err(Fail::Error(format!(
+            "действие затронет {} процессов — больше предела {limit}; сузьте цель (PID вместо имени, без --app/--tree)",
+            plan.order.len()
+        )));
     }
-    let order = actions::deepest_first(&snap.tree, &set);
     let dry = args.has("dry-run");
     let results = if dry {
-        order
-            .iter()
-            .map(|&i| {
-                let why = actions::protected_reason(&procs[i]);
-                actions::Outcome { pid: procs[i].pid, create_time: procs[i].create_time, name: procs[i].name.clone(), ok: why.is_none(), error: why.map(str::to_string) }
-            })
-            .collect()
+        plan.preview(procs)
     } else {
-        actions::apply(procs, &order, action, prio)
+        let wait = args.num("wait", 5)?.clamp(0, 120) as u64;
+        let opts = actions::Opts { priority: prio, force: args.has("force"), confirmed: false, close_wait: Duration::from_secs(wait) };
+        actions::execute(procs, &snap.tree, &plan, action, opts)
     };
     let ok = results.iter().all(|r| r.ok);
     if args.has("json") {
@@ -726,13 +734,18 @@ fn cmd_action(args: &Args, action: Action) -> Res<bool> {
             Action::Restart => "перезапустить",
         };
         if dry {
-            println!("Будет {what} — процессов: {}, в этом порядке:", results.len());
+            println!("Будет {what} — процессов: {}, в этом порядке:", plan.order.len());
         }
         for r in &results {
+            let note = r.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
+            let new = r.new_pid.map(|p| format!(" → новый PID {p}")).unwrap_or_default();
             match &r.error {
-                None => println!("{} {:>7}  {}", if dry { "·" } else { "✓" }, r.pid, r.name),
+                None => println!("{} {:>7}  {}{new}{note}", if dry { "·" } else { "✓" }, r.pid, r.name),
                 Some(e) => println!("✗ {:>7}  {} — {e}", r.pid, r.name),
             }
+        }
+        if results.iter().any(|r| r.can_force) {
+            println!("Повторите с --force, чтобы выполнить принудительно.");
         }
     }
     Ok(ok)
