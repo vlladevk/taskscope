@@ -718,7 +718,7 @@ fn cmd_action(args: &Args, action: Action) -> Res<bool> {
     }
     let dry = args.has("dry-run");
     let results = if dry {
-        plan.preview(procs)
+        plan.preview(procs, action)
     } else {
         let wait = args.num("wait", 5)?.clamp(0, 120) as u64;
         let opts = actions::Opts { priority: prio, force: args.has("force"), confirmed: false, close_wait: Duration::from_secs(wait) };

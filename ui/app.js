@@ -18,6 +18,7 @@ const fmtMbit=v=>v<0.005?'0 Мбит/с':v<0.1?Math.round(v*1000)+' Кбит/с'
 const hexA=(hex,a)=>{const n=parseInt(hex.slice(1),16);return `rgba(${n>>16},${n>>8&255},${n&255},${a})`;};
 const agoStr=s=>s<60?Math.round(s)+' с':s<3600?Math.round(s/60)+' мин':s<86400?Math.floor(s/3600)+' ч '+Math.round(s%3600/60)+' мин':Math.floor(s/86400)+' д '+Math.floor(s%86400/3600)+' ч';
 const CHEV='<svg width="10" height="10" viewBox="0 0 10 10"><path d="M3.5 1.5 7 5l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_WARN='<svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 1.8 15 14H1z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 6.2v3.8M8 11.8v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 const ICON_INFO='<svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M7 6.2v3.6M7 4.2v.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const ctToMs=ct=>(ct-116444736000000000)/10000;
@@ -213,8 +214,8 @@ try{const u=JSON.parse(localStorage.getItem('tm-ui')||'{}');for(const k of ['cha
 const saveUI=()=>{try{localStorage.setItem('tm-ui',JSON.stringify({chartMode:S.chartMode,rail:S.rail,main:S.main,right:S.right,bottom:S.bottom,btab:S.btab,res:S.res,bh:S.bh,rw:S.rw,more:S.more,procMode:S.procMode,incl:S.incl}));}catch(e){}};
 /* настройки общие с CLI и MCP (%LOCALAPPDATA%	msettings.json): защищённые процессы, подтверждение */
 let SETTINGS={protected:[],confirm_kill:true};
-const stem=x=>String(x).toLowerCase().replace(/.exe$/,'');
-const isProt=n=>SETTINGS.protected.some(p=>!/[\/]/.test(p)&&stem(p)===stem(n.exe));
+const stem=x=>String(x).toLowerCase().replace(/\.exe$/,'');
+const isProt=n=>SETTINGS.protected.some(p=>!/[\\/]/.test(p)&&stem(p)===stem(n.exe));
 async function loadSettings(){
   try{SETTINGS={...SETTINGS,...await rpc('settings_get')};}catch(e){return;}
   /* перенос старого списка защищённых из localStorage окна */
@@ -266,14 +267,17 @@ async function doAct(action,nodes,opts={}){
 /* отказы и неудачи — одним сообщением; «не закрылся» — с кнопкой «принудительно» */
 function reportBad(r,action,opts){
   const bad=r.results.filter(x=>!x.ok);if(!bad.length)return;
-  const b=bad[0],more=bad.length>1?` (и ещё ${bad.length-1})`:'';
+  const b=bad[0],who=b.name||('PID '+b.pid);
   const forceable=bad.filter(x=>x.can_force);
   if(forceable.length&&action==='kill'){
     const nodes=forceable.map(x=>NODES.get(x.pid+':'+x.create_time)).filter(alive);
-    toast(`${b.name||('PID '+b.pid)}: ${b.error}${more}`,'yel',12000,nodes.length?{t:'Завершить принудительно',f:()=>runAct('kill',nodes,{...opts,force:true,confirmed:true})}:null);
-  }else toast(`${b.name||('PID '+b.pid)}: ${b.error}${more}`,'red',6500);
+    toast(`${who}: ${b.error}${bad.length>1?` (и ещё ${bad.length-1})`:''}`,'yel',12000,nodes.length?{t:'Завершить принудительно',f:()=>runAct('kill',nodes,{...opts,force:true,confirmed:true})}:null);
+  }else if(bad.length>1&&!r.results.some(x=>x.ok))
+    toast(`Не выполнено: ${who} — ${b.error}. Не затронуто процессов: ${bad.length}.`,'red',9000);
+  else toast(`Не выполнено: ${who} — ${b.error}${bad.length>1?` (и ещё ${bad.length-1})`:''}`,'red',b.error.length>60?9000:6500);
 }
 const VERBS={kill:'Завершить',suspend:'Приостановить',resume:'Возобновить',restart:'Перезапустить'};
+let DIALOG=null; /* одно окно подтверждения за раз */
 /* окно подтверждения: цели и отказы — из пробного прогона ядра (dry_run), те же правила, что у tm kill */
 function dialog({title,body,ok,danger,check}){
   return new Promise(res=>{
@@ -282,46 +286,62 @@ function dialog({title,body,ok,danger,check}){
       ${check?`<label class="m-check"><input type="checkbox"> ${esc(check)}</label>`:''}
       <div class="m-acts"><button class="btn" data-r="0">Отмена</button>${ok?`<button class="btn ${danger?'danger-fill':'primary'}" data-r="1">${esc(ok)}</button>`:''}</div></div>`;
     const prevFocus=document.activeElement;
-    const done=v=>{const c=bg.querySelector('.m-check input');bg.remove();document.removeEventListener('keydown',key,true);if(prevFocus&&prevFocus.focus)prevFocus.focus();res(v?{check:!!(c&&c.checked)}:null);};
+    const done=v=>{const c=bg.querySelector('.m-check input');bg.remove();DIALOG=null;document.removeEventListener('keydown',key,true);if(prevFocus&&prevFocus.focus)prevFocus.focus();res(v?{check:!!(c&&c.checked)}:null);};
     const key=e=>{
-      e.stopPropagation(); /* пока окно открыто, горячие клавиши списка (Delete и т.п.) не срабатывают */
+      /* пока окно открыто, горячие клавиши списка (Delete и т.п.) не срабатывают */
+      e.stopImmediatePropagation();
+      if(e.repeat){e.preventDefault();return;} /* удержанный Enter не подтверждает действие */
       if(e.key==='Escape'){e.preventDefault();done(false);}
-      else if(e.key==='Enter'&&!e.target.matches('input')){e.preventDefault();done(e.target.dataset.r!=='0'&&!!ok);}
+      else if(e.key==='Enter'&&!e.target.matches('input')){e.preventDefault();done(e.target.dataset.r==='1');}
       else if(e.key==='Tab'){const f=[...bg.querySelectorAll('button,input')];const i=f.indexOf(document.activeElement);e.preventDefault();f[(i+(e.shiftKey?f.length-1:1))%f.length].focus();}
     };
     bg.addEventListener('click',e=>{const b=e.target.closest('[data-r]');if(b)done(b.dataset.r==='1');else if(e.target===bg)done(false);});
     document.addEventListener('keydown',key,true);
-    document.body.appendChild(bg);(bg.querySelector('[data-r="1"]')||bg.querySelector('[data-r="0"]')).focus();
+    document.body.appendChild(bg);DIALOG=bg;
+    const mb=bg.querySelector('.m-body');if(mb.scrollHeight>mb.clientHeight+1)mb.classList.add('over');
+    /* для опасного действия фокус — на «Отмена»: Enter по привычке ничего не завершит */
+    (danger||!ok?bg.querySelector('[data-r="0"]'):bg.querySelector('[data-r="1"]')).focus();
   });
 }
 function targetRows(rs,why){
   const shown=rs.slice(0,12);
   return shown.map(r=>{const n=NODES.get(r.pid+':'+r.create_time);
-    return `<div class="m-row">${n?ico(n):'<span class="m-ico"></span>'}<span class="m-n">${esc(n?nameOf(n):r.name||('PID '+r.pid))}</span><span class="caption num">PID ${r.pid}</span>${n?`<span class="caption num m-mem">${fmtMem(cur(n,'mem',false))}</span>`:''}</div>${why&&r.error?`<div class="m-why">${esc(r.error)}</div>`:''}${!why&&r.note?`<div class="m-why warn">${esc(r.note.replace(/^внимание: /,''))}</div>`:''}`;
+    return `<div class="m-row">${n?ico(n):'<span class="m-ico"></span>'}<span class="m-n">${esc(n?nameOf(n):r.name||('PID '+r.pid))}</span><span class="caption num">${r.pid}</span><span class="caption num m-mem">${n?fmtMem(cur(n,'mem',false)):''}</span></div>${why&&r.error?`<div class="m-why">${esc(r.error)}</div>`:''}${!why&&r.note?`<div class="m-why warn">${esc(r.note.replace(/^внимание: /,''))}</div>`:''}`;
   }).join('')+(rs.length>shown.length?`<div class="caption m-more">и ещё ${rs.length-shown.length}</div>`:'');
 }
-/* действие с подтверждением. Завершение и перезапуск спрашивают всегда (завершение — пока не выбрано
-   «больше не спрашивать»); приостановка — только если затронет несколько процессов или есть предупреждение */
+/* действие с подтверждением. Завершение и перезапуск спрашивают всегда (одиночное завершение — пока не
+   выбрано «больше не спрашивать»); приостановка — если затронет несколько процессов или есть предупреждение */
 async function runAct(action,nodes,opts={}){
   const n=nodes[0];
   if(!opts.confirmed){
-    const pre=await doAct(action,nodes,{...opts,dry:true});if(!pre)return;
+    if(DIALOG||runAct.busy)return;
+    runAct.busy=true;let pre;
+    try{pre=await doAct(action,nodes,{...opts,dry:true});}finally{runAct.busy=false;}
+    if(!pre)return;
     const ok=pre.results.filter(x=>x.ok),bad=pre.results.filter(x=>!x.ok),warn=ok.filter(x=>x.note);
     if(!ok.length){reportBad(pre,action,opts);return;}
-    const ask=action==='restart'||warn.length||bad.length||(action==='kill'?SETTINGS.confirm_kill:ok.length>1);
+    const single=ok.length===1&&!opts.tree;
+    const ask=action==='restart'||warn.length||bad.length||(action==='kill'?(!single||SETTINGS.confirm_kill):ok.length>1);
     if(ask){
       const others=new Map();
       if(opts.tree)for(const r of nodes)for(const x of desc(r))if(x!==r&&x.appKey!==r.appKey&&x.alive){const ap=appOf(x);const k=x.appKey||x.exe;if(!others.has(k))others.set(k,ap?ap.title:nameOf(x));}
-      const title=ok.length>1?`${VERBS[action]} процессы: ${ok.length}?`:`${VERBS[action]} «${label(n)}»?`;
-      const lead={kill:'Программе с окном сначала предлагается закрыться самой (как при закрытии окна) — она успеет сохранить данные. Остальные процессы завершаются сразу.',
+      /* корни — первыми в списке, чтобы было видно, чьё это дерево */
+      const roots=new Set(nodes.map(x=>x.pid+':'+x.ct));
+      ok.sort((a,b)=>roots.has(b.pid+':'+b.create_time)-roots.has(a.pid+':'+a.create_time));
+      const title=opts.tree?`${VERBS[action]} «${label(n)}» и дочерние (${ok.length})?`:ok.length>1?`${VERBS[action]} процессы: ${ok.length}?`:`${VERBS[action]} «${label(n)}»?`;
+      const win=ok.filter(x=>x.window).length;
+      const lead={
+        kill:win===ok.length?'Программу сначала попросят закрыться, как при закрытии её окна, — она успеет сохранить данные.'
+          :win?'Программам с окном сначала предложат закрыться самим — они успеют сохранить данные. Остальные процессы завершатся сразу.'
+          :'Процесс завершится сразу; несохранённые данные в нём пропадут.',
         restart:'Процесс будет завершён и запущен заново с тем же файлом, командной строкой, папкой и правами. Несохранённые данные в нём пропадут.',
         suspend:'Приостановленный процесс не получает время процессора и не отвечает, пока его не возобновят. Окна и память остаются на месте.',
         resume:''}[action];
       const body=`${lead?`<p class="m-lead">${lead}</p>`:''}
-        ${others.size?`<p class="m-lead warn">Вместе с ним завершатся программы, запущенные из него: ${esc([...others.values()].slice(0,8).join(', '))}${others.size>8?` и ещё ${others.size-8}`:''}.</p>`:''}
+        ${others.size?`<div class="m-warn">${ICON_WARN}<span>Вместе с ним завершатся программы, запущенные из него: ${esc([...others.values()].slice(0,8).join(', '))}${others.size>8?` и ещё ${others.size-8}`:''}.</span></div>`:''}
         <div class="m-list">${targetRows(ok,false)}</div>
         ${bad.length?`<div class="m-sub">Не будут затронуты</div><div class="m-list">${targetRows(bad,true)}</div>`:''}`;
-      const r=await dialog({title,body,ok:VERBS[action],danger:action==='kill'||action==='restart',check:action==='kill'&&!warn.length?'Больше не спрашивать при завершении':null});
+      const r=await dialog({title,body,ok:VERBS[action],danger:action==='kill'||action==='restart',check:action==='kill'&&single&&!warn.length?'Больше не спрашивать при завершении одного процесса':null});
       if(!r)return;
       if(r.check){SETTINGS.confirm_kill=false;saveSettings();}
     }
@@ -379,9 +399,9 @@ function openMenu(x,y,ids){
   it.push({h:many?`Выбрано: ${ids.length}`:`${nameOf(n)} · PID ${n.pid}`});
   it.push({t:many?'Завершить выбранные':'Завершить',a:'kill',k:'Del',d:1});
   if(hasKids)it.push({t:'Завершить вместе с дочерними',a:'tree',k:'Shift+Del',d:1});
-  it.push({t:sp?'Возобновить':'Приостановить',a:'suspend'});
+  it.push('-',{t:sp?'Возобновить':'Приостановить',a:'suspend'});
   if(hasKids&&!sp)it.push({t:'Приостановить с дочерними',a:'suspend_tree'});
-  it.push({t:'Перезапустить',a:'restart'});
+  it.push({t:'Перезапустить',a:'restart',d:1});
   it.push('-',{h:'Приоритет'},...['idle','below_normal','normal','above_normal','high'].map(p=>({t:PRIO_NAMES[p],a:'prio:'+p,c:n.prio===p})));
   it.push('-',{t:'Открыть отдельной вкладкой',a:'open'},{t:'Открыть расположение файла',a:'folder'},{t:'Копировать командную строку',a:'copycmd'},{t:'Что это за процесс?',a:'web'},{t:isProt(n)?'Снять защиту':'Защитить от завершения',a:'protect'});
   menu.innerHTML=it.map(i=>i==='-'?'<div class="sep"></div>':i.h?`<div class="mh">${esc(i.h)}</div>`:`<div class="mi${i.d?' danger':''}" data-a="${i.a}"><span>${i.c?'✓ ':''}${esc(i.t)}</span>${i.k?`<kbd>${i.k}</kbd>`:''}</div>`).join('');

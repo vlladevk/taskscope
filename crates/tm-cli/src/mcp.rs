@@ -100,7 +100,7 @@ fn tools(allow_actions: bool) -> Value {
         },
         {
             "name": "act",
-            "description": "Действие над процессом: kill (завершить; программе с окном сначала посылается «закрыть окно»), suspend (заморозить), resume, restart (перезапустить с тем же файлом, командной строкой, папкой и правами), prio (сменить приоритет). Защищены: ядро и критические процессы Windows, сам tm, процессы из списка защищённых пользователя; группы «Службы Windows» и «Windows» нельзя затронуть через app/all. Не больше 20 процессов за раз. Если имя совпадает с несколькими процессами, нужен all=true. Сначала проверьте с dry_run=true.",
+            "description": "Действие над процессом: kill (завершить; программе с окном сначала посылается «закрыть окно»), suspend (заморозить), resume, restart (перезапустить с тем же файлом, командной строкой, папкой и правами), prio (сменить приоритет). Защищены: ядро и критические процессы Windows, сам tm, процессы из списка защищённых пользователя; группы «Службы Windows» и «Windows» нельзя затронуть через app/all. Не больше 20 процессов за раз. Принудительного режима у агента нет: если программа не закрыла окно (например, спрашивает о сохранении) или действие рискованное (dwm, explorer), попросите человека сделать это в окне диспетчера или командой tm с --force. Если имя совпадает с несколькими процессами, нужен all=true. Сначала проверьте с dry_run=true.",
             "inputSchema": { "type": "object", "properties": {
                 "action": { "type": "string", "enum": ["kill", "suspend", "resume", "restart", "prio"] },
                 "target": target,
@@ -108,8 +108,7 @@ fn tools(allow_actions: bool) -> Value {
                 "tree": { "type": "boolean", "description": "вместе со всеми потомками" },
                 "app": { "type": "boolean", "description": "всё приложение, к которому относится процесс" },
                 "all": { "type": "boolean", "description": "разрешить, если имя совпало с несколькими процессами" },
-                "dry_run": { "type": "boolean", "description": "показать, что будет сделано, ничего не меняя" },
-                "force": { "type": "boolean", "description": "принудительно: не ждать закрытия окна и не спрашивать о рискованном. Только после подтверждения человека" }
+                "dry_run": { "type": "boolean", "description": "показать, что будет сделано, ничего не меняя" }
             }, "required": ["action", "target"] },
             "annotations": { "destructiveHint": true }
         }
@@ -228,9 +227,6 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
             }
             if b("dry_run") {
                 v.push("--dry-run".into());
-            }
-            if b("force") {
-                v.push("--force".into());
             }
             v.push("--max-targets".into());
             v.push(MAX_TARGETS.to_string());

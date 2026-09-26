@@ -301,7 +301,7 @@ impl Service {
         let plan = actions::plan(&frame.procs, &tree, &roots, scope, p.action, &guard);
         let mem_of = |pid: u32, ct: i64| frame.procs.iter().find(|x| x.pid == pid && x.create_time == ct).map_or(0, |x| x.mem);
         let mut results: Vec<Outcome> = if p.dry_run {
-            plan.preview(&frame.procs)
+            plan.preview(&frame.procs, p.action)
         } else {
             let opts = actions::Opts { priority: p.priority, force: p.force, confirmed: p.confirmed, ..Default::default() };
             actions::execute(&frame.procs, &tree, &plan, p.action, opts)

@@ -100,6 +100,9 @@ pub struct Outcome {
     /// PID нового процесса после перезапуска.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_pid: Option<u32>,
+    /// У процесса есть окно: при завершении его сначала попросят закрыться (для окна подтверждения).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub window: bool,
 }
 
 impl Outcome {
@@ -144,9 +147,13 @@ fn is_critical(h: &ProcHandle) -> bool {
     unsafe { IsProcessCritical(h.raw(), &mut crit) != 0 && crit != 0 }
 }
 
+/// Папка System32 — у Windows, а не из переменной окружения, которую может подменить пользователь.
 fn system32() -> String {
-    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    lower(&format!(r"{}\System32\", root.trim_end_matches('\\')))
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buf = [0u16; 260];
+    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    let dir = if n > 0 && n < buf.len() { String::from_utf16_lossy(&buf[..n]) } else { r"C:\Windows\System32".into() };
+    lower(&format!(r"{}\", dir.trim_end_matches('\\')))
 }
 
 /// Что трогать нельзя: ядро и критические процессы Windows, сам tm с его окном (WebView),
@@ -181,6 +188,12 @@ impl Guard {
 
     /// Почему процесс нельзя трогать никаким действием (None — можно).
     pub fn reason(&self, p: &ProcStat) -> Option<String> {
+        self.reason_for(p, None)
+    }
+
+    /// Как `reason`, но с учётом действия: «возобновить» не мешает список защищённых
+    /// пользователем — иначе приостановленный, а потом защищённый процесс остался бы замороженным.
+    pub fn reason_for(&self, p: &ProcStat, action: Option<Action>) -> Option<String> {
         let n = lower(&p.name);
         if p.pid == 0 || p.pid == 4 || KERNEL.contains(&n.as_str()) {
             return Some("часть ядра Windows".into());
@@ -202,7 +215,7 @@ impl Guard {
                 return Some("критический системный процесс — его завершение приведёт к сбою Windows".into());
             }
         }
-        if self.settings.is_protected(&p.name, path.as_deref()) {
+        if action != Some(Action::Resume) && self.settings.is_protected(&p.name, path.as_deref()) {
             return Some("защищён в настройках диспетчера".into());
         }
         None
@@ -265,6 +278,14 @@ pub fn plan(procs: &[ProcStat], tree: &Tree, roots: &[usize], scope: Scope, acti
     let mut seen = HashSet::new();
     let mut take = Vec::new();
     let mut plan = Plan::default();
+    // перезапуск — только одного процесса, как в System Informer: дочерние процессы
+    // (рендеры браузера и т.п.) с прежней командной строкой запустились бы сломанными
+    if action == Action::Restart && (scope != Scope::One || roots.len() > 1) {
+        for &root in roots {
+            plan.refused.push((root, "перезапустить можно только один процесс — без дочерних и не всё приложение".into()));
+        }
+        return plan;
+    }
     for &root in roots {
         let members: Vec<usize> = match (scope, &keys) {
             (Scope::App, Some(keys)) => (0..procs.len()).filter(|&j| keys[j] == keys[root] && procs[j].pid != 0).collect(),
@@ -285,7 +306,7 @@ pub fn plan(procs: &[ProcStat], tree: &Tree, roots: &[usize], scope: Scope, acti
     // защищённый процесс закрывает всё своё поддерево
     let mut blocked: HashMap<usize, String> = HashMap::new();
     for &i in &take {
-        if let Some(why) = guard.reason(&procs[i]) {
+        if let Some(why) = guard.reason_for(&procs[i], Some(action)) {
             blocked.insert(i, why);
         }
     }
@@ -312,11 +333,17 @@ pub fn plan(procs: &[ProcStat], tree: &Tree, roots: &[usize], scope: Scope, acti
 
 impl Plan {
     /// Итог без выполнения (dry-run): что будет сделано, что нет и почему.
-    pub fn preview(&self, procs: &[ProcStat]) -> Vec<Outcome> {
+    pub fn preview(&self, procs: &[ProcStat], action: Action) -> Vec<Outcome> {
+        let wins = if action == Action::Kill { with_windows(procs, &self.order) } else { HashSet::new() };
         let mut v: Vec<Outcome> = self
             .order
             .iter()
-            .map(|&i| Outcome { ok: true, note: self.warnings.get(&i).map(|w| format!("внимание: {w}")), ..Outcome::of(&procs[i]) })
+            .map(|&i| Outcome {
+                ok: true,
+                note: self.warnings.get(&i).map(|w| format!("внимание: {w}")),
+                window: wins.contains(&procs[i].pid),
+                ..Outcome::of(&procs[i])
+            })
             .collect();
         v.extend(self.refused.iter().map(|(i, why)| Outcome::refused(&procs[*i], why.clone())));
         v
@@ -408,6 +435,25 @@ fn main_windows(pids: &HashSet<u32>) -> HashMap<u32, Vec<HWND>> {
     ctx.out
 }
 
+/// PID процесса оболочки (окно рабочего стола).
+fn shell_pid() -> Option<u32> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
+    let w = unsafe { GetShellWindow() };
+    if w.is_null() {
+        return None;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(w, &mut pid) };
+    (pid != 0).then_some(pid)
+}
+
+/// PID процессов из списка, у которых есть главные окна (их сначала просят закрыться).
+pub fn with_windows(procs: &[ProcStat], order: &[usize]) -> HashSet<u32> {
+    let shell = shell_pid();
+    let pids: HashSet<u32> = order.iter().map(|&i| procs[i].pid).filter(|&pid| Some(pid) != shell).collect();
+    main_windows(&pids).into_keys().collect()
+}
+
 /// Ждёт завершения процесса не дольше `until`. true — процесс завершился.
 fn wait_exit(h: &ProcHandle, until: Instant) -> bool {
     let ms = until.saturating_duration_since(Instant::now()).as_millis().min(u32::MAX as u128) as u32;
@@ -415,9 +461,15 @@ fn wait_exit(h: &ProcHandle, until: Instant) -> bool {
 }
 
 fn terminate(p: &ProcStat) -> io::Result<()> {
-    let h = open(p, PROCESS_TERMINATE)?;
+    let h = open(p, PROCESS_TERMINATE | PROCESS_SYNCHRONIZE)?;
     if unsafe { TerminateProcess(h.raw(), 1) } == 0 {
-        return Err(io::Error::last_os_error());
+        let e = io::Error::last_os_error();
+        // уже завершается или завершился (например, вслед за закрытым родителем): Windows
+        // отвечает «нет доступа», но цель достигнута
+        if unsafe { WaitForSingleObject(h.raw(), 0) } == WAIT_OBJECT_0 {
+            return Err(gone());
+        }
+        return Err(e);
     }
     Ok(())
 }
@@ -436,7 +488,11 @@ fn kill_many(procs: &[ProcStat], tree: &Tree, order: &[usize], opts: Opts) -> Ve
     let mut rest: Vec<usize> = order.to_vec();
     if !opts.force {
         use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-        let pids: HashSet<u32> = order.iter().map(|&i| procs[i].pid).collect();
+        // оболочке (explorer с рабочим столом и панелью задач) WM_CLOSE не посылаем: закрыть окно
+        // рабочего стола — это Alt+F4 на рабочем столе, то есть окно «Завершение работы Windows».
+        // System Informer тоже завершает оболочку отдельно
+        let shell = shell_pid();
+        let pids: HashSet<u32> = order.iter().map(|&i| procs[i].pid).filter(|&pid| Some(pid) != shell).collect();
         let wins = main_windows(&pids);
         let mut asked = Vec::new();
         for &i in order {
@@ -576,7 +632,8 @@ fn restart(p: &ProcStat, procs: &[ProcStat], tree: &Tree) -> io::Result<u32> {
     si.lpAttributeList = attrs;
     let app = crate::system::wide(&path);
     let mut cmd = crate::system::wide(&cmdline);
-    let cwd = crate::system::wide(launch.cwd.trim_end_matches('\\'));
+    // папку передаём как есть: «C:\» без слэша стала бы «текущей папкой диска C» самого tm
+    let cwd = crate::system::wide(&launch.cwd);
     let cwd_ptr = if launch.cwd.is_empty() || !std::path::Path::new(&launch.cwd).is_dir() { std::ptr::null() } else { cwd.as_ptr() };
     let env_ptr = if launch.env.is_empty() { std::ptr::null() } else { launch.env.as_ptr().cast() };
     let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
@@ -609,11 +666,19 @@ fn restart(p: &ProcStat, procs: &[ProcStat], tree: &Tree) -> io::Result<u32> {
         }
         return Err(io::Error::new(e.kind(), format!("не удалось завершить старый процесс: {e}")));
     }
-    wait_exit(&old, Instant::now() + Duration::from_secs(5));
+    // старый уже завершается; если он не успел за 5 с (завис в драйвере), новый всё равно
+    // запускаем — иначе программа пропала бы совсем
+    let _ = wait_exit(&old, Instant::now() + Duration::from_secs(5));
+    let resumed = unsafe { ResumeThread(pi.hThread) } != u32::MAX;
+    if !resumed {
+        unsafe { TerminateProcess(pi.hProcess, 1) };
+    }
     unsafe {
-        ResumeThread(pi.hThread);
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
+    }
+    if !resumed {
+        return Err(io::Error::other("новый процесс создан, но не запустился — старый уже завершён"));
     }
     Ok(pi.dwProcessId)
 }
