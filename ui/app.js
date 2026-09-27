@@ -196,9 +196,26 @@ function nameOf(n){
   if(sv&&sv.length)return sv.length===1?sv[0].display:`${sv[0].display} и ещё ${sv.length-1}`;
   const i=INFO.get(n.id),a=appOf(n);
   if(i&&i.role)return i.role;
-  if(a&&a.rootPid===n.pid&&a.key!=='windows')return a.title;
-  if(i&&i.description&&i.description.length<60)return i.description;
-  return n.exe.replace(/\.exe$/i,'');
+  const base=a&&a.rootPid===n.pid&&a.key!=='windows'?a.title:i&&i.description&&i.description.length<60?i.description:n.exe.replace(/\.exe$/i,'');
+  const w=winTitle(n,base);
+  return w?`${base} — ${w}`:base;
+}
+/* Заголовки главных окон процессов (опрос раз в 3 с): у браузера — открытая вкладка, у редактора — файл
+   и проект. Хвост «- Brave», «— Cursor» и заголовок, совпадающий с именем программы, не повторяем. */
+let WTITLES=new Map(),WT_AT=0,WT_BUSY=false;
+function pollWindows(){
+  if(WT_BUSY||Date.now()-WT_AT<3000)return;WT_BUSY=true;
+  rpc('windows').then(r=>{WTITLES=new Map(Object.entries(r).map(([k,v])=>[+k,v]));WT_AT=Date.now();WT_BUSY=false;})
+    .catch(()=>{WT_AT=Date.now();WT_BUSY=false;});
+}
+function winTitle(n,base){
+  const list=WTITLES.get(n.pid);if(!list||!list.length)return '';
+  const i=INFO.get(n.id),names=[base,i&&i.description,n.exe.replace(/\.exe$/i,''),n.exe==='explorer.exe'&&'file explorer'].filter(Boolean).map(s=>s.toLowerCase());
+  const same=s=>{const l=s.trim().toLowerCase();return !l||names.some(x=>x===l||x.split(' ')[0]===l||l.split(' ')[0]===x);};
+  const clean=t=>{const m=t.match(/^(.*\S)\s+[-–—]\s+([^-–—]+)$/);return m&&same(m[2])?m[1]:t;};
+  const ts=list.map(clean).filter(t=>!same(t));
+  if(!ts.length)return '';
+  return ts[0]+(ts.length>1?` (и ещё ${ts.length-1} ${plural(ts.length-1,'окно','окна','окон')})`:'');
 }
 const label=n=>nameOf(n);
 
@@ -528,6 +545,7 @@ let iconsBusy=false;
    и длинный base64 в каждой строке заставлял бы браузер заново разбирать и декодировать картинки */
 function blobUrl(d){try{const b=atob(d.slice(d.indexOf(',')+1)),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return URL.createObjectURL(new Blob([u],{type:'image/png'}));}catch(e){return d;}}
 async function ensureInfos(){
+  pollWindows();
   if(NEWKEYS.length){
     const ids=NEWKEYS.splice(0,NEWKEYS.length).filter(id=>NODES.has(id)),keys=ids.map(id=>{const n=NODES.get(id);return [n.pid,n.ct];});
     for(let i=0;i<keys.length;i+=600){
@@ -2141,6 +2159,35 @@ function chartFiles(){
   return `<div class="dfs"><div class="dfs-h">Файлы · наблюдение ${dfSince(D.d)}</div>${rows.map(f=>{const x=dfName(f),n=nodeByPid(f.pid);
     return `<div class="dfs-r" ${n?`data-id="${esc(n.id)}"`:''} title="${esc(x.full||x.dir)}"><span class="dfs-p">${esc(n?nameOf(n):'PID '+f.pid)}</span><span class="dfs-f">${esc(x.name)} <span class="caption">${esc(x.dir)}</span></span><span class="num">${esc(dfAmount(f))}</span></div>`;}).join('')}</div>`;
 }
+/* Вкладки браузера на Chromium: список берём так же, как программы чтения с экрана (UI Automation).
+   Какой рендерер какой вкладке, браузер наружу не сообщает — поэтому список у всего браузера. */
+const BROWSERS=new Set(['chrome.exe','msedge.exe','brave.exe','opera.exe','vivaldi.exe','browser.exe','chromium.exe','thorium.exe','arc.exe','comet.exe']);
+let BTABS={pid:0,at:0,tabs:null,err:'',busy:false};
+function browserTabs(pid){
+  if(!BTABS.busy&&(BTABS.pid!==pid||Date.now()-BTABS.at>10000)){BTABS.busy=true;
+    rpc('browser_tabs',{pid}).then(r=>{BTABS={pid,at:Date.now(),tabs:r.tabs,wins:r.windows||[],err:'',busy:false};renderDetails();})
+      .catch(e=>{BTABS={pid,at:Date.now(),tabs:null,err:String(e&&e.message||e),busy:false};renderDetails();});}
+  return BTABS.pid===pid?BTABS:null;
+}
+function detailTabs(n,secOpen){
+  const a=appOf(n),root=a&&nodeByPid(a.rootPid);
+  if(!root||!BROWSERS.has(root.exe.toLowerCase()))return '';
+  const open=secOpen('tabs'),T=open?browserTabs(root.pid):(BTABS.pid===root.pid?BTABS:null),list=T&&T.tabs;
+  const cap=list?`${list.length} ${plural(list.length,'вкладка','вкладки','вкладок')}${list.some(t=>t.sleeping)?` · выгружено ${list.filter(t=>t.sleeping).length}`:''}`:'что открыто';
+  let h=`<details class="dsec" data-s="tabs" ${open}><summary>${CHEV}Вкладки браузера<span class="caption">${cap}</span></summary><div class="kids">`;
+  if(!open)return h+'</div></details>';
+  if(!T||(!list&&!T.err))return h+'<div class="caption" style="padding:4px 8px">Читаю вкладки…</div></div></details>';
+  if(!list)return h+`<div class="caption" style="padding:4px 8px">${esc(T.err)}</div></div></details>`;
+  /* по окнам; окно во весь экран прячет полосу вкладок — от него видна только открытая вкладка (заголовок окна) */
+  const W=T.wins||[],nw=Math.max(W.length,...list.map(t=>t.window+1)),row=(title,st,dim)=>`<div class="kid2${dim?' dim':''}" title="${esc(title)}"><span class="df-n">${esc(title)}</span><span class="caption num">${esc(st)}</span></div>`;
+  for(let i=0;i<nw;i++){
+    const tabs=list.filter(t=>t.window===i);
+    if(nw>1)h+=`<div class="caption" style="padding:6px 8px 2px">Окно ${i+1}</div>`;
+    if(!tabs.length){if(W[i])h+=row(W[i].replace(/\s+[-–—]\s+[^-–—]+$/,''),'открыта · другие вкладки окна не видны (во весь экран?)');continue;}
+    for(const t of tabs)h+=row(t.title,[t.audio?'♪ звук':'',t.sleeping?'выгружена':'',t.mem_mb!=null?(t.sleeping?'освобождено ':'')+fmtMem(t.mem_mb):''].filter(Boolean).join(' · '),t.sleeping);
+  }
+  return h+'<div class="caption" style="padding:2px 8px">Память — как её показывает сам браузер. Какой процесс «Рендерер» какой вкладке, браузер наружу не сообщает.</div></div></details>';
+}
 function detailExtras(n,secOpen){
   const svcs=SVC_BY_PID.get(n.pid)||[];
   /* сеть — всего приложения: у браузера соединения держит дочерний «сетевой» процесс, а не главный */
@@ -2148,7 +2195,7 @@ function detailExtras(n,secOpen){
     rpc('connections').then(d=>{DCONN={at:Date.now(),list:d.connections,busy:false};renderDetails();}).catch(()=>{DCONN={at:Date.now(),list:DCONN.list,busy:false};});}
   const tree=appDesc(n),pids=new Set(tree.map(x=>x.pid));
   const conns=DCONN.list?DCONN.list.filter(c=>pids.has(c.pid)):[];
-  let h=detailFiles(tree,pids,secOpen);
+  let h=detailTabs(n,secOpen)+detailFiles(tree,pids,secOpen);
   if(svcs.length)h+=`<details class="dsec" data-s="svcs" ${secOpen('svcs')}><summary>${CHEV}Службы в процессе<span class="caption">${svcs.length}</span></summary>
     <div class="kids">${svcs.slice(0,20).map(s=>`<div class="kid2"><span>${esc(s.display)}</span><span class="caption">${esc(s.name)}</span></div>`).join('')}${svcs.length>20?`<div class="caption" style="padding:2px 8px">и ещё ${svcs.length-20}</div>`:''}</div></details>`;
   if(conns.length){
@@ -2241,7 +2288,7 @@ $('#details').addEventListener('click',e=>{
   if(a){if(a.dataset.a==='more'){const r=a.getBoundingClientRect();openMenu(r.left,r.bottom+4,[S.sel]);}else if(a.dataset.a==='open')openProcTab(S.sel);else act(a.dataset.a,[S.sel]);return;}
   const j=e.target.closest('[data-go]');if(j)select(j.dataset.go,true);
 });
-$('#details').addEventListener('toggle',e=>{const d=e.target.closest('.dsec');if(d){SEC[d.dataset.s]=d.open;if(d.open&&d.dataset.s==='files')setTimeout(renderDetails);}},true);
+$('#details').addEventListener('toggle',e=>{const d=e.target.closest('.dsec');if(d){SEC[d.dataset.s]=d.open;if(d.open&&(d.dataset.s==='files'||d.dataset.s==='tabs'))setTimeout(renderDetails);}},true);
 $('#details').addEventListener('dblclick',e=>{if(e.target.closest('.d-cv'))setMax('detail');});
 $('#details').addEventListener('mousemove',e=>{const cv=e.target.closest('canvas');if(cv)chartHover(cv,cv.nextElementSibling,e);});
 $('#details').addEventListener('mouseout',e=>{if(e.target.tagName==='CANVAS'){S.hoverT=null;e.target.nextElementSibling.style.display='none';renderCharts();}});
