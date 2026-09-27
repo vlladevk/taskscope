@@ -797,11 +797,21 @@ const COLS_ALL=[
 const COLS_KEY='tm-cols';
 let COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
 try{const j=JSON.parse(localStorage.getItem(COLS_KEY)||'null');if(Array.isArray(j))COL_ON=new Set(j);}catch(e){}
+/* порядок и ширины колонок — как их расставил пользователь (перетаскивание заголовков и их краёв) */
+const COLW_KEY='tm-colw',CORD_KEY='tm-colorder';
+let COL_W={},COL_ORD=[];
+try{COL_W=JSON.parse(localStorage.getItem(COLW_KEY)||'{}')||{};COL_ORD=JSON.parse(localStorage.getItem(CORD_KEY)||'[]')||[];}catch(e){}
+const saveColLayout=()=>{try{localStorage.setItem(COLW_KEY,JSON.stringify(COL_W));localStorage.setItem(CORD_KEY,JSON.stringify(COL_ORD));}catch(e){}};
+const SPARK_W=88;
+const colW=c=>COL_W[c.k]||c.w,sparkW=()=>COL_W.spark||SPARK_W;
+/* все колонки в порядке пользователя; новые (появились в обновлении) — на своём обычном месте в конце */
+const colsOrdered=()=>{const by=new Map(COLS_ALL.map(c=>[c.k,c]));const o=COL_ORD.filter(k=>by.has(k)).map(k=>by.get(k));return [...o,...COLS_ALL.filter(c=>!COL_ORD.includes(c.k))];};
 const colOn=c=>COL_ON.has(c.k)&&(c.k!=='net'||NETPP);
 const colByK=k=>COLS_ALL.find(c=>c.k===k);
 /* колонка «Сеть» — только когда движок видит трафик процессов (запуск от администратора) */
-let COLS=COLS_ALL.filter(colOn);
+let COLS=colsOrdered().filter(colOn);
 const PANEL_EL={};
+let CDRAG=null,CRESIZE=null,CSKIP=false; // перетаскивание колонки, изменение ширины, «клик после перетаскивания — не сортировка»
 function mountProcs(el){
   el.innerHTML=`<div class="ph">
       <input class="search p-q" placeholder="Поиск: имя, описание, PID…  (Ctrl+F)">
@@ -823,7 +833,39 @@ function mountProcs(el){
   wrap.addEventListener('mouseleave',()=>{S.freeze=false;$('.p-frz',el).style.visibility='hidden';});
   $('.p-short',el).addEventListener('click',e=>{const a=e.target.closest('[data-app]');if(!a)return;const ap=APPS.get(a.dataset.app);if(!ap)return;
     const n=[...NODES.values()].find(x=>alive(x)&&x.pid===ap.rootPid);if(n){openPath(n);select(n.id,true);revealRow(n.id);}});
-  $('thead',el).addEventListener('click',e=>{const th=e.target.closest('th[data-k]');if(!th)return;const k=th.dataset.k;
+  /* край заголовка — ширина колонки; сам заголовок — перетащить колонку на другое место.
+     Колонки выровнены вправо и «Имя» забирает остаток, поэтому ручка ширины — у левого края:
+     тянем влево — колонка шире, граница идёт за мышью */
+  const thead=$('thead',el);
+  thead.addEventListener('pointerdown',e=>{
+    if(e.button!==0)return;const th=e.target.closest('th[data-k]');if(!th)return;const k=th.dataset.k;
+    if(e.target.closest('.crz')){
+      const c=colByK(k),w0=k==='spark'?sparkW():colW(c),x0=e.clientX;
+      thead.setPointerCapture(e.pointerId);CRESIZE={k,w0,x0};document.body.classList.add('col-resizing');e.preventDefault();return;
+    }
+    if(k==='name'||k==='spark')return;
+    CDRAG={k,x0:e.clientX,moved:false,to:null,side:null};thead.setPointerCapture(e.pointerId);
+  });
+  thead.addEventListener('pointermove',e=>{
+    if(CRESIZE){const c=colByK(CRESIZE.k),min=CRESIZE.k==='spark'?40:Math.max(48,c.t.length*7+24);
+      COL_W[CRESIZE.k]=Math.round(clamp(CRESIZE.w0+(CRESIZE.x0-e.clientX),min,480));renderProcs();return;}
+    if(!CDRAG)return;
+    if(!CDRAG.moved&&Math.abs(e.clientX-CDRAG.x0)<6)return;
+    CDRAG.moved=true;CDRAG.to=null;
+    for(const th of thead.querySelectorAll('th[data-k]')){const k=th.dataset.k;if(k==='name'||k==='spark'||k===CDRAG.k)continue;
+      const r=th.getBoundingClientRect();if(e.clientX>=r.left&&e.clientX<r.right){CDRAG.to=k;CDRAG.side=e.clientX<r.left+r.width/2?'l':'r';break;}}
+    renderProcs();
+  });
+  const endCol=e=>{
+    if(CRESIZE){CRESIZE=null;document.body.classList.remove('col-resizing');saveColLayout();CSKIP=true;return;}
+    if(!CDRAG)return;const d=CDRAG;CDRAG=null;
+    if(d.moved){CSKIP=true;
+      if(d.to){const ord=colsOrdered().map(c=>c.k).filter(k=>k!==d.k);let i=ord.indexOf(d.to);if(d.side==='r')i++;ord.splice(i,0,d.k);COL_ORD=ord;saveColLayout();}}
+    renderProcs();
+  };
+  thead.addEventListener('pointerup',endCol);thead.addEventListener('pointercancel',endCol);
+  thead.addEventListener('dblclick',e=>{const z=e.target.closest('.crz');if(!z)return;const th=z.closest('th[data-k]');delete COL_W[th.dataset.k];saveColLayout();renderProcs();});
+  $('thead',el).addEventListener('click',e=>{if(CSKIP||e.target.closest('.crz')){CSKIP=false;return;}const th=e.target.closest('th[data-k]');if(!th||th.dataset.k==='spark')return;const k=th.dataset.k;
     /* имя и PID — по возрастанию, ресурсы — по убыванию */
     if(S.sort===k)S.dir*=-1;else{S.sort=k;S.dir=k==='name'||(colByK(k)||{}).asc?1:-1;}S.order=null;renderProcs();});
   $('thead',el).addEventListener('contextmenu',e=>{e.preventDefault();colMenu(e.clientX,e.clientY);});
@@ -916,14 +958,14 @@ function renderShort(el){
 function colMenu(x,y){
   menuIds=null;
   menu.innerHTML='<div class="mh">Колонки</div>'+COLS_ALL.filter(c=>c.k!=='net'||NETPP).map(c=>`<div class="mi" data-col="${c.k}"><span><input type="checkbox" ${COL_ON.has(c.k)?'checked':''}>${esc(c.t)}</span></div>`).join('')
-    +'<div class="sep"></div><div class="mi" data-col="-"><span>Как было</span></div>';
+    +'<div class="sep"></div><div class="mi" data-col="-"><span>Как было (колонки, порядок и ширина)</span></div><div class="mh" style="font-weight:400">Колонки можно перетаскивать за заголовок, ширину — за его край</div>';
   menu.classList.add('col-menu');menu.style.display='block';const r=menu.getBoundingClientRect();
   menu.style.left=Math.min(x,innerWidth-r.width-8)+'px';menu.style.top=Math.max(8,Math.min(y,innerHeight-r.height-8))+'px';
 }
 menu.addEventListener('click',e=>{
   const mi=e.target.closest('[data-col]');if(!mi)return;e.stopPropagation();
   const k=mi.dataset.col;
-  if(k==='-')COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
+  if(k==='-'){COL_ON=new Set(['cpu','mem','dsk','gpu','net']);COL_W={};COL_ORD=[];saveColLayout();}
   else if(COL_ON.has(k)){if(k!=='cpu'&&k!=='mem')COL_ON.delete(k);else return toast('ЦП и память скрыть нельзя: по ним строятся графики и карта','info');}
   else COL_ON.add(k);
   try{localStorage.setItem(COLS_KEY,JSON.stringify([...COL_ON]));}catch(x){}
@@ -982,14 +1024,14 @@ function renderProcs(){
   const el=PANEL_EL.procs;if(!vis(el)||!SYS)return;
   $('.p-mode',el).querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.m===S.procMode));
   $('.p-incl',el).checked=S.incl;
-  const want=COLS_ALL.filter(colOn);
+  const want=colsOrdered().filter(colOn);
   if(want.map(c=>c.k).join()!==COLS.map(c=>c.k).join()){COLS=want;const tb=$('tbody',el);tb._rows=null;tb.innerHTML='';if(S.sort!=='name'&&!COLS.some(c=>c.k===S.sort))S.sort='cpu';}
-  setHTML($('colgroup',el),'<col>'+COLS.map(c=>`<col style="width:${c.w}px">`).join('')+'<col style="width:88px">');
+  setHTML($('colgroup',el),'<col>'+COLS.map(c=>`<col style="width:${colW(c)}px">`).join('')+`<col style="width:${sparkW()}px">`);
   /* имени — не меньше 180 px: в узкой панели таблица прокручивается вбок, а не сжимает имена до значка */
-  $('table',el).style.minWidth=180+COLS.reduce((a,c)=>a+c.w,0)+88+'px';
+  $('table',el).style.minWidth=180+COLS.reduce((a,c)=>a+colW(c),0)+sparkW()+'px';
   const act=SORT_OF(curRes());
   const arrow=k=>S.sort===k?(S.dir<0?' ↓':' ↑'):'';
-  setHTML($('thead',el),`<tr><th data-k="name" class="${S.sort==='name'?'on':''}" title="Сортировать по имени · правый клик — выбор колонок">Имя${arrow('name')}</th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''}">${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}</th>`).join('')}<th style="cursor:default">ЦП · 2 мин</th></tr>`);
+  setHTML($('thead',el),`<tr><th data-k="name" class="${S.sort==='name'?'on':''}" title="Сортировать по имени · правый клик — выбор колонок">Имя${arrow('name')}</th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''} ${CDRAG&&CDRAG.k===c.k&&CDRAG.moved?'cdrag':''} ${CDRAG&&CDRAG.to===c.k?'cdrop-'+CDRAG.side:''}"><span class="crz" title="Ширина · двойной клик — как было"></span>${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}</th>`).join('')}<th data-k="spark" style="cursor:default"><span class="crz" title="Ширина · двойной клик — как было"></span>ЦП · 2 мин</th></tr>`);
   const rows=procRows();
   if(!S.freeze||!S.order)S.order=new Map(rows.map((r,i)=>[r.n.id,i]));
   const core=100/CPUS;

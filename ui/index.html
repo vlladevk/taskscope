@@ -203,6 +203,15 @@ button,input{font:inherit;color:inherit}
 .tbl th:first-child{text-align:left}
 .tbl th:hover{color:var(--text-1)}
 .tbl th.on{color:var(--text-1)}
+/* ручка ширины — у левого края заголовка (колонки выровнены вправо, «Имя» забирает остаток) */
+.tbl th .crz{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize;z-index:3}
+.tbl th .crz::after{content:'';position:absolute;left:3px;top:7px;bottom:7px;width:1px;background:var(--divider);opacity:0;transition:opacity .12s}
+.tbl thead:hover th .crz::after{opacity:1}
+.tbl th .crz:hover::after,body.col-resizing .tbl th .crz::after{background:var(--accent);opacity:1}
+body.col-resizing,body.col-resizing *{cursor:col-resize!important;user-select:none}
+.tbl th.cdrag{color:var(--text-1);background:var(--subtle-hover);cursor:grabbing}
+.tbl th.cdrop-l{box-shadow:inset 2px 0 0 var(--accent)}
+.tbl th.cdrop-r{box-shadow:inset -2px 0 0 var(--accent)}
 .tbl td{padding:0 10px;height:32px;white-space:nowrap;text-align:right;position:relative}
 .tbl.left td{text-align:left}
 .tbl.left td.num{text-align:right}
