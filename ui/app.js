@@ -792,7 +792,7 @@ const COLS_ALL=[
   {k:'priv',t:'Выделено',m:'priv',fmt:fmtMem,w:88,own:1,extra:1},
   {k:'started',t:'Запущен',m:'ct',fmt:ct=>{const t=new Date(ctToMs(ct));return (t.toDateString()===new Date().toDateString()?'':t.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})+' ')+t.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});},w:96,own:1,extra:1},
   /* сколько процесс уже работает; сортировка ↓ — самые давние сверху */
-  {k:'up',t:'Работает',m:'up',fmt:agoStr,w:96,own:1,extra:1},
+  {k:'up',t:'Работает',m:'up',fmt:agoStr,w:112,own:1,extra:1},
 ];
 const COLS_KEY='tm-cols';
 let COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
@@ -804,11 +804,11 @@ try{COL_W=JSON.parse(localStorage.getItem(COLW_KEY)||'{}')||{};COL_ORD=JSON.pars
 const saveColLayout=()=>{try{localStorage.setItem(COLW_KEY,JSON.stringify(COL_W));localStorage.setItem(CORD_KEY,JSON.stringify(COL_ORD));}catch(e){}};
 const SPARK_W=88;
 /* пределы ширины: число «12,3 %» шире 120 px не бывает — растягивать дальше бессмысленно */
-const COL_LIM={name:[160,900],cpu:[56,120],gpu:[52,110],mem:[64,150],dsk:[64,150],net:[72,170],pid:[52,100],threads:[56,100],handles:[72,130],ws:[72,150],priv:[72,150],started:[80,150],up:[72,140],spark:[60,400]};
+const COL_LIM={name:[160,900],cpu:[56,120],gpu:[52,110],mem:[64,150],dsk:[64,150],net:[72,170],pid:[52,100],threads:[56,100],handles:[72,130],ws:[72,150],priv:[72,150],started:[80,150],up:[96,160],spark:[60,200]};
 const colLim=k=>COL_LIM[k]||[56,200];
-const colW=c=>COL_W[c.k]||c.w,sparkW=()=>COL_W.spark||SPARK_W;
+const colW=c=>{const [mn,mx]=colLim(c.k);return clamp(COL_W[c.k]||c.w,mn,mx);},sparkW=()=>clamp(COL_W.spark||SPARK_W,...colLim('spark'));
 /* пока пользователь ничего не растягивал, «Имя» забирает всё свободное место. Как только ширину
-   задали, «Имя» получает свою ширину, а свободное место остаётся справа (за графиком) — тогда край
+   задали, «Имя» получает свою ширину, а свободное место остаётся пустым справа от таблицы — тогда край
    любой колонки идёт ровно за мышью, как в Проводнике */
 const nameFixed=()=>COL_W.name>0;
 /* все колонки в порядке пользователя; новые (появились в обновлении) — на своём обычном месте в конце */
@@ -1047,12 +1047,14 @@ function renderProcs(){
   const want=colsOrdered().filter(colOn);
   if(want.map(c=>c.k).join()!==COLS.map(c=>c.k).join()){COLS=want;const tb=$('tbody',el);tb._rows=null;tb.innerHTML='';if(S.sort!=='name'&&!COLS.some(c=>c.k===S.sort))S.sort='cpu';}
   const nf=nameFixed();
-  setHTML($('colgroup',el),(nf?`<col style="width:${COL_W.name}px">`:'<col>')+COLS.map(c=>`<col style="width:${colW(c)}px">`).join('')+(nf?'<col>':`<col style="width:${sparkW()}px">`));
+  setHTML($('colgroup',el),(nf?`<col style="width:${COL_W.name}px">`:'<col>')+COLS.map(c=>`<col style="width:${colW(c)}px">`).join('')+`<col style="width:${sparkW()}px">`);
   /* имени — не меньше 180 px: в узкой панели таблица прокручивается вбок, а не сжимает имена до значка */
-  $('table',el).style.minWidth=(nf?COL_W.name:180)+COLS.reduce((a,c)=>a+colW(c),0)+sparkW()+'px';
+  const tw=(nf?COL_W.name:180)+COLS.reduce((a,c)=>a+colW(c),0)+sparkW();
+  /* ширины заданы — таблица ровно такой ширины, свободное место справа пустое (график не растягивается) */
+  $('table',el).style.minWidth=tw+'px';$('table',el).style.width=nf?tw+'px':'';
   const act=SORT_OF(curRes());
   const arrow=k=>S.sort===k?(S.dir<0?' ↓':' ↑'):'';
-  setHTML($('thead',el),`<tr><th data-k="name" class="${S.sort==='name'?'on':''}" title="Сортировать по имени · правый клик — выбор колонок">Имя${arrow('name')}<span class="crz" title="Потяните — ширина · двойной клик — как было"></span></th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''} ${CDRAG&&CDRAG.k===c.k&&CDRAG.moved?'cdrag':''}" title="Клик — сортировка · перетащите — другое место">${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}<span class="crz" title="Потяните — ширина · двойной клик — как было"></span></th>`).join('')}<th data-k="spark" style="cursor:default">ЦП · 2 мин${nf?'':'<span class="crz" title="Потяните — ширина · двойной клик — как было"></span>'}</th></tr>`);
+  setHTML($('thead',el),`<tr><th data-k="name" class="${S.sort==='name'?'on':''}" title="Сортировать по имени · правый клик — выбор колонок">Имя${arrow('name')}<span class="crz" title="Потяните — ширина · двойной клик — как было"></span></th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''} ${CDRAG&&CDRAG.k===c.k&&CDRAG.moved?'cdrag':''}" title="Клик — сортировка · перетащите — другое место">${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}<span class="crz" title="Потяните — ширина · двойной клик — как было"></span></th>`).join('')}<th data-k="spark" style="cursor:default">ЦП · 2 мин<span class="crz" title="Потяните — ширина · двойной клик — как было"></span></th></tr>`);
   const rows=procRows();
   if(!S.freeze||!S.order)S.order=new Map(rows.map((r,i)=>[r.n.id,i]));
   const core=100/CPUS;
