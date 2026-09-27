@@ -209,6 +209,9 @@ function pollWindows(){
     .catch(()=>{WT_AT=Date.now();WT_BUSY=false;});
 }
 function winTitle(n,base){
+  /* у браузера заголовок окна — одна из вкладок: длинная строка у всего браузера ничего не объясняет,
+     вкладки — в деталях */
+  if(BROWSERS.has(n.exe.toLowerCase()))return '';
   const list=WTITLES.get(n.pid);if(!list||!list.length)return '';
   const i=INFO.get(n.id),names=[base,i&&i.description,n.exe.replace(/\.exe$/i,''),n.exe==='explorer.exe'&&'file explorer'].filter(Boolean).map(s=>s.toLowerCase());
   const same=s=>{const l=s.trim().toLowerCase();return !l||names.some(x=>x===l||x.split(' ')[0]===l||l.split(' ')[0]===x);};

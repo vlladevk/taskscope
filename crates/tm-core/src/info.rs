@@ -25,6 +25,21 @@ pub struct ProcInfo {
     pub role: Option<String>,
 }
 
+/// Служебный Node.js в Electron (Claude, VS Code, Cursor) по командной строке не отличить; хост
+/// терминалов узнаётся по загруженному node-pty.
+fn node_host(pid: u32, create_time: i64, role: String) -> String {
+    if role != "Node.js" {
+        return role;
+    }
+    let pty = crate::inspect::modules(pid, create_time).is_ok_and(|ms| {
+        ms.iter().any(|m| {
+            let p = m.path.to_ascii_lowercase();
+            p.ends_with("conpty.node") || p.ends_with("pty.node")
+        })
+    });
+    if pty { "Терминалы (node-pty)".into() } else { role }
+}
+
 /// Понятное имя роли процесса по командной строке (Chromium/Electron, svchost).
 pub fn role_of(cmd: &str) -> Option<String> {
     let toks: Vec<&str> = cmd.split_whitespace().collect();
@@ -115,7 +130,7 @@ impl InfoCache {
         // роль у Chromium и svchost; иначе — что запущено: сессия Claude Code, скрипт, jar, команда
         let exe = path.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p)).unwrap_or("");
         let role = cmdline.as_deref().and_then(|cmd| {
-            role_of(cmd).or_else(|| {
+            role_of(cmd).map(|r| node_host(pid, create_time, r)).or_else(|| {
                 if crate::labels::is_claude_code(exe, path.as_deref(), cmd) {
                     Some(crate::labels::claude_code(pid, create_time, cmd))
                 } else {
