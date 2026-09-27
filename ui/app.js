@@ -803,7 +803,14 @@ let COL_W={},COL_ORD=[];
 try{COL_W=JSON.parse(localStorage.getItem(COLW_KEY)||'{}')||{};COL_ORD=JSON.parse(localStorage.getItem(CORD_KEY)||'[]')||[];}catch(e){}
 const saveColLayout=()=>{try{localStorage.setItem(COLW_KEY,JSON.stringify(COL_W));localStorage.setItem(CORD_KEY,JSON.stringify(COL_ORD));}catch(e){}};
 const SPARK_W=88;
+/* пределы ширины: число «12,3 %» шире 120 px не бывает — растягивать дальше бессмысленно */
+const COL_LIM={name:[160,900],cpu:[56,120],gpu:[52,110],mem:[64,150],dsk:[64,150],net:[72,170],pid:[52,100],threads:[56,100],handles:[72,130],ws:[72,150],priv:[72,150],started:[80,150],up:[72,140],spark:[60,400]};
+const colLim=k=>COL_LIM[k]||[56,200];
 const colW=c=>COL_W[c.k]||c.w,sparkW=()=>COL_W.spark||SPARK_W;
+/* пока пользователь ничего не растягивал, «Имя» забирает всё свободное место. Как только ширину
+   задали, «Имя» получает свою ширину, а свободное место остаётся справа (за графиком) — тогда край
+   любой колонки идёт ровно за мышью, как в Проводнике */
+const nameFixed=()=>COL_W.name>0;
 /* все колонки в порядке пользователя; новые (появились в обновлении) — на своём обычном месте в конце */
 const colsOrdered=()=>{const by=new Map(COLS_ALL.map(c=>[c.k,c]));const o=COL_ORD.filter(k=>by.has(k)).map(k=>by.get(k));return [...o,...COLS_ALL.filter(c=>!COL_ORD.includes(c.k))];};
 const colOn=c=>COL_ON.has(c.k)&&(c.k!=='net'||NETPP);
@@ -833,38 +840,51 @@ function mountProcs(el){
   wrap.addEventListener('mouseleave',()=>{S.freeze=false;$('.p-frz',el).style.visibility='hidden';});
   $('.p-short',el).addEventListener('click',e=>{const a=e.target.closest('[data-app]');if(!a)return;const ap=APPS.get(a.dataset.app);if(!ap)return;
     const n=[...NODES.values()].find(x=>alive(x)&&x.pid===ap.rootPid);if(n){openPath(n);select(n.id,true);revealRow(n.id);}});
-  /* край заголовка — ширина колонки; сам заголовок — перетащить колонку на другое место.
-     Колонки выровнены вправо и «Имя» забирает остаток, поэтому ручка ширины — у левого края:
-     тянем влево — колонка шире, граница идёт за мышью */
+  /* Правый край заголовка — ширина: граница идёт за мышью, колонки справа сдвигаются.
+     Сам заголовок — перестановка: он едет за курсором, колонки меняются местами на ходу. */
   const thead=$('thead',el);
+  let ghost=null;
+  const capture=e=>{try{thead.setPointerCapture(e.pointerId);}catch(x){}};
   thead.addEventListener('pointerdown',e=>{
     if(e.button!==0)return;const th=e.target.closest('th[data-k]');if(!th)return;const k=th.dataset.k;
     if(e.target.closest('.crz')){
-      const c=colByK(k),w0=k==='spark'?sparkW():colW(c),x0=e.clientX;
-      thead.setPointerCapture(e.pointerId);CRESIZE={k,w0,x0};document.body.classList.add('col-resizing');e.preventDefault();return;
+      /* первое растягивание: «Имя» получает свою нынешнюю ширину, чтобы колонки левее не поехали */
+      if(!nameFixed()){const n=thead.querySelector('th[data-k="name"]');COL_W.name=Math.round(n.getBoundingClientRect().width);}
+      const w0=k==='name'?COL_W.name:k==='spark'?sparkW():colW(colByK(k));
+      CRESIZE={k,w0,x0:e.clientX};capture(e);document.body.classList.add('col-resizing');e.preventDefault();renderProcs();return;
     }
     if(k==='name'||k==='spark')return;
-    CDRAG={k,x0:e.clientX,moved:false,to:null,side:null};thead.setPointerCapture(e.pointerId);
+    const r=th.getBoundingClientRect();
+    CDRAG={k,x0:e.clientX,dx:e.clientX-r.left,w:r.width,top:r.top,h:r.height,label:colByK(k).t,moved:false};capture(e);
   });
   thead.addEventListener('pointermove',e=>{
-    if(CRESIZE){const c=colByK(CRESIZE.k),min=CRESIZE.k==='spark'?40:Math.max(48,c.t.length*7+24);
-      COL_W[CRESIZE.k]=Math.round(clamp(CRESIZE.w0+(CRESIZE.x0-e.clientX),min,480));renderProcs();return;}
+    if(CRESIZE){const [mn,mx]=colLim(CRESIZE.k);COL_W[CRESIZE.k]=Math.round(clamp(CRESIZE.w0+(e.clientX-CRESIZE.x0),mn,mx));renderProcs();return;}
     if(!CDRAG)return;
-    if(!CDRAG.moved&&Math.abs(e.clientX-CDRAG.x0)<6)return;
-    CDRAG.moved=true;CDRAG.to=null;
-    for(const th of thead.querySelectorAll('th[data-k]')){const k=th.dataset.k;if(k==='name'||k==='spark'||k===CDRAG.k)continue;
-      const r=th.getBoundingClientRect();if(e.clientX>=r.left&&e.clientX<r.right){CDRAG.to=k;CDRAG.side=e.clientX<r.left+r.width/2?'l':'r';break;}}
-    renderProcs();
+    if(!CDRAG.moved){if(Math.abs(e.clientX-CDRAG.x0)<5)return;CDRAG.moved=true;document.body.classList.add('col-dragging');
+      ghost=document.createElement('div');ghost.className='col-ghost';ghost.textContent=CDRAG.label;
+      Object.assign(ghost.style,{width:CDRAG.w+'px',height:CDRAG.h+'px',top:CDRAG.top+'px'});document.body.appendChild(ghost);}
+    ghost.style.left=(e.clientX-CDRAG.dx)+'px';
+    /* куда встать: сколько видимых колонок (кроме этой) левее курсора по их серединам */
+    const ths=[...thead.querySelectorAll('th[data-k]')].filter(t=>t.dataset.k!=='name'&&t.dataset.k!=='spark');
+    const others=ths.filter(t=>t.dataset.k!==CDRAG.k);
+    const idx=others.filter(t=>{const r=t.getBoundingClientRect();return r.left+r.width/2<e.clientX;}).length;
+    const vis=ths.map(t=>t.dataset.k),cur=vis.indexOf(CDRAG.k);
+    if(idx!==cur){
+      const want=vis.filter(k=>k!==CDRAG.k);want.splice(idx,0,CDRAG.k);
+      /* скрытые колонки сохраняют своё место среди остальных */
+      const all=colsOrdered().map(c=>c.k),visSet=new Set(want);let vi=0;
+      COL_ORD=all.map(k=>visSet.has(k)?want[vi++]:k);renderProcs();
+    }
   });
-  const endCol=e=>{
-    if(CRESIZE){CRESIZE=null;document.body.classList.remove('col-resizing');saveColLayout();CSKIP=true;return;}
+  const endCol=()=>{
+    if(CRESIZE){CRESIZE=null;document.body.classList.remove('col-resizing');saveColLayout();CSKIP=true;renderProcs();return;}
     if(!CDRAG)return;const d=CDRAG;CDRAG=null;
-    if(d.moved){CSKIP=true;
-      if(d.to){const ord=colsOrdered().map(c=>c.k).filter(k=>k!==d.k);let i=ord.indexOf(d.to);if(d.side==='r')i++;ord.splice(i,0,d.k);COL_ORD=ord;saveColLayout();}}
+    if(ghost){ghost.remove();ghost=null;}document.body.classList.remove('col-dragging');
+    if(d.moved){CSKIP=true;saveColLayout();}
     renderProcs();
   };
   thead.addEventListener('pointerup',endCol);thead.addEventListener('pointercancel',endCol);
-  thead.addEventListener('dblclick',e=>{const z=e.target.closest('.crz');if(!z)return;const th=z.closest('th[data-k]');delete COL_W[th.dataset.k];saveColLayout();renderProcs();});
+  thead.addEventListener('dblclick',e=>{const z=e.target.closest('.crz');if(!z)return;const k=z.closest('th[data-k]').dataset.k;delete COL_W[k];saveColLayout();renderProcs();});
   $('thead',el).addEventListener('click',e=>{if(CSKIP||e.target.closest('.crz')){CSKIP=false;return;}const th=e.target.closest('th[data-k]');if(!th||th.dataset.k==='spark')return;const k=th.dataset.k;
     /* имя и PID — по возрастанию, ресурсы — по убыванию */
     if(S.sort===k)S.dir*=-1;else{S.sort=k;S.dir=k==='name'||(colByK(k)||{}).asc?1:-1;}S.order=null;renderProcs();});
@@ -1026,12 +1046,13 @@ function renderProcs(){
   $('.p-incl',el).checked=S.incl;
   const want=colsOrdered().filter(colOn);
   if(want.map(c=>c.k).join()!==COLS.map(c=>c.k).join()){COLS=want;const tb=$('tbody',el);tb._rows=null;tb.innerHTML='';if(S.sort!=='name'&&!COLS.some(c=>c.k===S.sort))S.sort='cpu';}
-  setHTML($('colgroup',el),'<col>'+COLS.map(c=>`<col style="width:${colW(c)}px">`).join('')+`<col style="width:${sparkW()}px">`);
+  const nf=nameFixed();
+  setHTML($('colgroup',el),(nf?`<col style="width:${COL_W.name}px">`:'<col>')+COLS.map(c=>`<col style="width:${colW(c)}px">`).join('')+(nf?'<col>':`<col style="width:${sparkW()}px">`));
   /* имени — не меньше 180 px: в узкой панели таблица прокручивается вбок, а не сжимает имена до значка */
-  $('table',el).style.minWidth=180+COLS.reduce((a,c)=>a+colW(c),0)+sparkW()+'px';
+  $('table',el).style.minWidth=(nf?COL_W.name:180)+COLS.reduce((a,c)=>a+colW(c),0)+sparkW()+'px';
   const act=SORT_OF(curRes());
   const arrow=k=>S.sort===k?(S.dir<0?' ↓':' ↑'):'';
-  setHTML($('thead',el),`<tr><th data-k="name" class="${S.sort==='name'?'on':''}" title="Сортировать по имени · правый клик — выбор колонок">Имя${arrow('name')}</th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''} ${CDRAG&&CDRAG.k===c.k&&CDRAG.moved?'cdrag':''} ${CDRAG&&CDRAG.to===c.k?'cdrop-'+CDRAG.side:''}"><span class="crz" title="Ширина · двойной клик — как было"></span>${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}</th>`).join('')}<th data-k="spark" style="cursor:default"><span class="crz" title="Ширина · двойной клик — как было"></span>ЦП · 2 мин</th></tr>`);
+  setHTML($('thead',el),`<tr><th data-k="name" class="${S.sort==='name'?'on':''}" title="Сортировать по имени · правый клик — выбор колонок">Имя${arrow('name')}<span class="crz" title="Потяните — ширина · двойной клик — как было"></span></th>${COLS.map(c=>`<th data-k="${c.k}" class="${c.k===act?'act':''} ${S.sort===c.k?'on':''} ${CDRAG&&CDRAG.k===c.k&&CDRAG.moved?'cdrag':''}" title="Клик — сортировка · перетащите — другое место">${c.t}${S.sort===c.k?(S.dir<0?' ↓':' ↑'):''}<span class="crz" title="Потяните — ширина · двойной клик — как было"></span></th>`).join('')}<th data-k="spark" style="cursor:default">ЦП · 2 мин${nf?'':'<span class="crz" title="Потяните — ширина · двойной клик — как было"></span>'}</th></tr>`);
   const rows=procRows();
   if(!S.freeze||!S.order)S.order=new Map(rows.map((r,i)=>[r.n.id,i]));
   const core=100/CPUS;

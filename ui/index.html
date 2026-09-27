@@ -203,15 +203,16 @@ button,input{font:inherit;color:inherit}
 .tbl th:first-child{text-align:left}
 .tbl th:hover{color:var(--text-1)}
 .tbl th.on{color:var(--text-1)}
-/* ручка ширины — у левого края заголовка (колонки выровнены вправо, «Имя» забирает остаток) */
-.tbl th .crz{position:absolute;left:-3px;top:0;bottom:0;width:7px;cursor:col-resize;z-index:3}
-.tbl th .crz::after{content:'';position:absolute;left:3px;top:7px;bottom:7px;width:1px;background:var(--divider);opacity:0;transition:opacity .12s}
-.tbl thead:hover th .crz::after{opacity:1}
-.tbl th .crz:hover::after,body.col-resizing .tbl th .crz::after{background:var(--accent);opacity:1}
+/* ручка ширины — правый край заголовка; видна чёрточкой при наведении на заголовки */
+.tbl th .crz{position:absolute;right:0;top:0;bottom:0;width:8px;cursor:col-resize;z-index:3}
+.tbl th .crz::after{content:'';position:absolute;left:7px;top:8px;bottom:8px;width:1px;background:var(--text-4);opacity:0;transition:opacity .12s}
+.tbl thead:hover th .crz::after{opacity:.7}
+.tbl th .crz:hover::after,body.col-resizing .tbl th .crz::after{background:var(--accent);opacity:1;top:4px;bottom:4px;width:2px;left:6px}
 body.col-resizing,body.col-resizing *{cursor:col-resize!important;user-select:none}
-.tbl th.cdrag{color:var(--text-1);background:var(--subtle-hover);cursor:grabbing}
-.tbl th.cdrop-l{box-shadow:inset 2px 0 0 var(--accent)}
-.tbl th.cdrop-r{box-shadow:inset -2px 0 0 var(--accent)}
+body.col-dragging,body.col-dragging *{cursor:grabbing!important;user-select:none}
+/* перетаскиваемая колонка: её место в таблице подсвечено, сам заголовок едет за курсором */
+.tbl th.cdrag{color:transparent;background:var(--accent-sel)}
+.col-ghost{position:fixed;z-index:1000;pointer-events:none;display:flex;align-items:center;justify-content:flex-end;padding:0 10px;box-sizing:border-box;font-size:12px;color:var(--text-1);background:var(--layer);border:1px solid var(--accent);border-radius:4px;box-shadow:0 6px 16px rgba(0,0,0,.45)}
 .tbl td{padding:0 10px;height:32px;white-space:nowrap;text-align:right;position:relative}
 .tbl.left td{text-align:left}
 .tbl.left td.num{text-align:right}
@@ -252,6 +253,8 @@ body.col-resizing,body.col-resizing *{cursor:col-resize!important;user-select:no
 tr.dead td{opacity:.4}
 tr.susp .n1{color:var(--text-3)}
 .sp{width:72px;height:18px;display:block;margin-left:auto}
+/* график растягивается вместе с колонкой */
+.tbl td .sp{width:100%;min-width:56px;max-width:320px}
 .p-short{display:flex;gap:8px;align-items:flex-start;padding:8px 14px;border-bottom:1px solid var(--divider);font-size:12px;line-height:18px;color:var(--text-2);background:rgba(252,225,0,.06);flex:none}
 .p-short[hidden]{display:none}
 .p-short svg{flex:none;margin-top:2px;color:#fce100}
