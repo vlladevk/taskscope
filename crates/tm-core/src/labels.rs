@@ -515,6 +515,104 @@ pub fn browser_tabs(pid: u32) -> Result<BrowserTabs, String> {
     }
 }
 
+// ───────────────────────── диспетчер задач браузера ─────────────────────────
+
+/// Окна встроенного диспетчера задач браузеров на Chromium (Shift+Esc): «Task Manager - Brave»,
+/// «Диспетчер задач - Google Chrome», «Browser task manager» у Edge.
+fn task_manager_windows() -> Vec<isize> {
+    use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindowTextW, IsWindowVisible};
+    unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let out = &mut *(lp as *mut Vec<isize>);
+        if IsWindowVisible(hwnd) == 0 {
+            return 1;
+        }
+        let mut cls = [0u16; 64];
+        let n = GetClassNameW(hwnd, cls.as_mut_ptr(), cls.len() as i32);
+        if String::from_utf16_lossy(&cls[..n.max(0) as usize]) != "Chrome_WidgetWin_1" {
+            return 1;
+        }
+        let mut buf = [0u16; 256];
+        let n = GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+        let t = String::from_utf16_lossy(&buf[..n.max(0) as usize]).to_lowercase();
+        if t.starts_with("task manager") || t.starts_with("диспетчер задач") || t.starts_with("browser task manager") {
+            out.push(hwnd as isize);
+        }
+        1
+    }
+    let mut out = Vec::new();
+    unsafe { EnumWindows(Some(cb), &mut out as *mut _ as LPARAM) };
+    out
+}
+
+/// Что браузер сам пишет о своих процессах в диспетчере задач: PID → [«Tab: …», «Subframe: …»,
+/// «Extension: …»]. `None` — окно диспетчера не открыто (другого способа узнать, какой процесс
+/// какой вкладке, у браузера нет). Видны только строки, которые помещаются в окно.
+pub fn browser_tasks() -> Option<Vec<(u32, String)>> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+    use windows::Win32::System::Variant::VARIANT;
+    use windows::Win32::UI::Accessibility::{CUIAutomation, IUIAutomation, TreeScope_Children, TreeScope_Descendants, UIA_ControlTypePropertyId, UIA_DataGridControlTypeId};
+    let wins = task_manager_windows();
+    if wins.is_empty() {
+        return None;
+    }
+    unsafe {
+        let init = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let r = (|| -> windows::core::Result<Vec<(u32, String)>> {
+            let ua: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER)?;
+            let is_grid = ua.CreatePropertyCondition(UIA_ControlTypePropertyId, &VARIANT::from(UIA_DataGridControlTypeId.0))?;
+            let all = ua.CreateTrueCondition()?;
+            let mut out = Vec::new();
+            for &w in &wins {
+                let Ok(el) = ua.ElementFromHandle(HWND(w as *mut _)) else { continue };
+                let Ok(grid) = el.FindFirst(TreeScope_Descendants, &is_grid) else { continue };
+                let Ok(rows) = grid.FindAll(TreeScope_Children, &all) else { continue };
+                // первая строка — заголовки: где задача и где PID
+                let mut task_col = 0usize;
+                let mut pid_col = None;
+                let mut cur: Option<u32> = None;
+                for i in 0..rows.Length().unwrap_or(0) {
+                    let Ok(row) = rows.GetElement(i) else { continue };
+                    let Ok(cells) = row.FindAll(TreeScope_Children, &all) else { continue };
+                    let names: Vec<String> = (0..cells.Length().unwrap_or(0))
+                        .map(|j| cells.GetElement(j).and_then(|c| c.CurrentName()).map(|s| s.to_string()).unwrap_or_default())
+                        .collect();
+                    if i == 0 {
+                        for (j, n) in names.iter().enumerate() {
+                            let l = n.to_lowercase();
+                            if l.contains("process id") || l.contains("идентификатор процесса") || l.contains("id процесса") {
+                                pid_col = Some(j);
+                            }
+                            if l.contains("task") || l.contains("задача") {
+                                task_col = j;
+                            }
+                        }
+                        continue;
+                    }
+                    let Some(pc) = pid_col else { break };
+                    // строка без PID — ещё одна задача того же процесса, что строка выше
+                    if let Some(p) = names.get(pc).and_then(|s| s.trim().parse::<u32>().ok()) {
+                        cur = Some(p);
+                    } else if names.iter().enumerate().any(|(j, s)| j != task_col && !s.trim().is_empty()) {
+                        cur = None; // свои значения, но без PID — не угадываем
+                    }
+                    if let (Some(p), Some(t)) = (cur, names.get(task_col)) {
+                        if !t.trim().is_empty() {
+                            out.push((p, t.trim().to_string()));
+                        }
+                    }
+                }
+            }
+            Ok(out)
+        })();
+        if init {
+            CoUninitialize();
+        }
+        r.ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

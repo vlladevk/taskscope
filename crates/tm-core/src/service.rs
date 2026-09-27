@@ -20,6 +20,8 @@ pub struct Service {
     pub engine: Engine,
     icons: IconCache,
     info: std::sync::Mutex<InfoCache>,
+    /// что браузеры пишут о своих процессах (диспетчер задач браузера): (PID, время создания) → задачи
+    btasks: std::sync::Mutex<(Option<std::time::Instant>, bool, std::collections::HashMap<ProcKey, Vec<String>>)>,
     docker: crate::docker::DockerWatch,
 }
 
@@ -63,7 +65,7 @@ fn fmt_mem(b: u64) -> String {
 
 impl Service {
     pub fn new(engine: Engine) -> Self {
-        Self { engine, icons: IconCache::default(), info: Default::default(), docker: crate::docker::DockerWatch::start() }
+        Self { engine, icons: IconCache::default(), info: Default::default(), btasks: Default::default(), docker: crate::docker::DockerWatch::start() }
     }
 
     fn wait_first(&self) -> Result<Snapshot, String> {
@@ -277,6 +279,35 @@ impl Service {
             }
             // заголовки главных окон по PID: вкладка браузера, файл в редакторе, проект в IDE
             "windows" => Ok(json!(crate::labels::window_titles())),
+            // какой процесс браузера какой вкладке: читается из его диспетчера задач (Shift+Esc), пока тот
+            // открыт; прочитанное помним, пока процесс жив
+            "browser_tasks" => {
+                let mut g = self.btasks.lock().unwrap_or_else(|e| e.into_inner());
+                if g.0.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
+                    g.0 = Some(std::time::Instant::now());
+                    g.1 = false;
+                    if let (Some(list), Some(s)) = (crate::labels::browser_tasks(), self.engine.snapshot()) {
+                        g.1 = true;
+                        let ct: std::collections::HashMap<u32, i64> = s.frame.procs.iter().map(|p| (p.pid, p.create_time)).collect();
+                        let mut fresh: std::collections::HashMap<ProcKey, Vec<String>> = Default::default();
+                        for (pid, t) in list {
+                            if let Some(&c) = ct.get(&pid) {
+                                let v = fresh.entry((pid, c)).or_default();
+                                if !v.contains(&t) {
+                                    v.push(t);
+                                }
+                            }
+                        }
+                        g.2.extend(fresh);
+                    }
+                    if let Some(s) = self.engine.snapshot() {
+                        let alive: std::collections::HashSet<ProcKey> = s.frame.procs.iter().map(|p| p.key()).collect();
+                        g.2.retain(|k, _| alive.contains(k));
+                    }
+                }
+                let tasks: serde_json::Map<String, Value> = g.2.iter().map(|(k, v)| (crate::sampler::key_str(*k), json!(v))).collect();
+                Ok(json!({ "open": g.1, "tasks": tasks }))
+            }
             // открытые вкладки браузера на Chromium (pid — его главный процесс)
             "browser_tabs" => {
                 let pid = params.get("pid").and_then(Value::as_u64).ok_or("нужен pid")? as u32;

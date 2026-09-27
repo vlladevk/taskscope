@@ -194,11 +194,34 @@ function nameOf(n){
   /* svchost.exe — по службам внутри, как в System Informer */
   const sv=n.exe==='svchost.exe'&&SVC_BY_PID.get(n.pid);
   if(sv&&sv.length)return sv.length===1?sv[0].display:`${sv[0].display} и ещё ${sv.length-1}`;
+  const bt=BTASKS.tasks.get(n.id);if(bt)return taskLabel(bt);
   const i=INFO.get(n.id),a=appOf(n);
   if(i&&i.role)return i.role;
   const base=a&&a.rootPid===n.pid&&a.key!=='windows'?a.title:i&&i.description&&i.description.length<60?i.description:n.exe.replace(/\.exe$/i,'');
   const w=winTitle(n,base);
   return w?`${base} — ${w}`:base;
+}
+/* Какой процесс браузера какой вкладке, знает только сам браузер: он пишет это в своём диспетчере задач
+   (Shift+Esc). Пока тот открыт, движок читает его строки; прочитанное помнит, пока процесс жив. */
+let BTASKS={open:false,tasks:new Map(),at:0,busy:false};
+function pollBrowserTasks(){
+  if(BTASKS.busy||Date.now()-BTASKS.at<3000)return;BTASKS.busy=true;
+  rpc('browser_tasks').then(r=>{BTASKS={open:r.open,tasks:new Map(Object.entries(r.tasks)),at:Date.now(),busy:false};})
+    .catch(()=>{BTASKS.at=Date.now();BTASKS.busy=false;});
+}
+const TASK_KIND=[[/^Tab: /,'Вкладка: '],[/^Subframe: /,'Фрейм: '],[/^Extension: /,'Расширение: '],[/^App: /,'Приложение: '],
+  [/^Service Worker: /,'Service Worker: '],[/^Shared Worker: /,'Shared Worker: '],[/^Dedicated Worker: /,'Worker: '],[/^Prerender: /,'Предзагрузка: '],
+  [/^Back\/Forward cache: /,'Кэш «Назад»: '],[/^Tool: Preloaded UI Renderer$/,'Интерфейс браузера (заготовка)'],[/^Tool: /,'Интерфейс браузера: ']];
+function taskText(t){
+  for(const [re,ru] of TASK_KIND)if(re.test(t)){t=t.replace(re,ru);break;}
+  return t.replace(/https?:\/\/([^/]+)\/?\S*/,'$1'); // у фрейма и воркера важен сайт, а не полный адрес
+}
+/* вкладки главнее фреймов и воркеров: процесс называем по первой вкладке, остальное — «и ещё N» */
+function taskLabel(list){
+  const rank=t=>/^(Tab|Вкладка)/.test(t)?0:/^(Extension|App)/.test(t)?1:/^Subframe/.test(t)?2:3;
+  const s=list.slice().sort((a,b)=>rank(a)-rank(b)),first=taskText(s[0]);
+  const same=s.filter(t=>taskText(t)===first).length,more=s.length-same;
+  return first+(more?` (и ещё ${more})`:'');
 }
 /* Заголовки главных окон процессов (опрос раз в 3 с): у браузера — открытая вкладка, у редактора — файл
    и проект. Хвост «- Brave», «— Cursor» и заголовок, совпадающий с именем программы, не повторяем. */
@@ -548,7 +571,7 @@ let iconsBusy=false;
    и длинный base64 в каждой строке заставлял бы браузер заново разбирать и декодировать картинки */
 function blobUrl(d){try{const b=atob(d.slice(d.indexOf(',')+1)),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return URL.createObjectURL(new Blob([u],{type:'image/png'}));}catch(e){return d;}}
 async function ensureInfos(){
-  pollWindows();
+  pollWindows();pollBrowserTasks();
   if(NEWKEYS.length){
     const ids=NEWKEYS.splice(0,NEWKEYS.length).filter(id=>NODES.has(id)),keys=ids.map(id=>{const n=NODES.get(id);return [n.pid,n.ct];});
     for(let i=0;i<keys.length;i+=600){
@@ -2175,9 +2198,14 @@ function browserTabs(pid){
 function detailTabs(n,secOpen){
   const a=appOf(n),root=a&&nodeByPid(a.rootPid);
   if(!root||!BROWSERS.has(root.exe.toLowerCase()))return '';
+  /* что браузер пишет об этом процессе; у процесса без подписи — как её получить */
+  const bt=BTASKS.tasks.get(n.id),i=INFO.get(n.id),page=i&&i.role&&/^(Рендерер|Расширение)/.test(i.role);
+  let own='';
+  if(bt&&bt.length>1)own=`<details class="dsec" data-s="ptasks" open><summary>${CHEV}Что в этом процессе<span class="caption">${bt.length}</span></summary><div class="kids">${bt.map(t=>`<div class="kid2" title="${esc(t)}"><span class="df-n">${esc(taskText(t))}</span><span></span></div>`).join('')}</div></details>`;
+  else if(!bt&&page)own=`<div class="caption" style="padding:6px 12px">Какая это вкладка, браузер сообщает только в своём диспетчере задач: нажмите в нём <b>Shift+Esc</b> — процессы подпишутся, пока окно открыто${BTASKS.open?' (окно открыто: прокрутите в нём список, если этого процесса там не видно)':''}.</div>`;
   const open=secOpen('tabs'),T=open?browserTabs(root.pid):(BTABS.pid===root.pid?BTABS:null),list=T&&T.tabs;
   const cap=list?`${list.length} ${plural(list.length,'вкладка','вкладки','вкладок')}${list.some(t=>t.sleeping)?` · выгружено ${list.filter(t=>t.sleeping).length}`:''}`:'что открыто';
-  let h=`<details class="dsec" data-s="tabs" ${open}><summary>${CHEV}Вкладки браузера<span class="caption">${cap}</span></summary><div class="kids">`;
+  let h=own+`<details class="dsec" data-s="tabs" ${open}><summary>${CHEV}Вкладки браузера<span class="caption">${cap}</span></summary><div class="kids">`;
   if(!open)return h+'</div></details>';
   if(!T||(!list&&!T.err))return h+'<div class="caption" style="padding:4px 8px">Читаю вкладки…</div></div></details>';
   if(!list)return h+`<div class="caption" style="padding:4px 8px">${esc(T.err)}</div></div></details>`;
@@ -2189,7 +2217,7 @@ function detailTabs(n,secOpen){
     if(!tabs.length){if(W[i])h+=row(W[i].replace(/\s+[-–—]\s+[^-–—]+$/,''),'открыта · другие вкладки окна не видны (во весь экран?)');continue;}
     for(const t of tabs)h+=row(t.title,[t.audio?'♪ звук':'',t.sleeping?'выгружена':'',t.mem_mb!=null?(t.sleeping?'освобождено ':'')+fmtMem(t.mem_mb):''].filter(Boolean).join(' · '),t.sleeping);
   }
-  return h+'<div class="caption" style="padding:2px 8px">Память — как её показывает сам браузер. Какой процесс «Рендерер» какой вкладке, браузер наружу не сообщает.</div></div></details>';
+  return h+'<div class="caption" style="padding:2px 8px">Память — как её показывает сам браузер. Какой процесс какой вкладке, браузер пишет только в своём диспетчере задач (Shift+Esc): пока он открыт, процессы здесь подписываются.</div></div></details>';
 }
 function detailExtras(n,secOpen){
   const svcs=SVC_BY_PID.get(n.pid)||[];
