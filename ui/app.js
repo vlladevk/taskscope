@@ -100,7 +100,7 @@ function applySnap(s){
     let n=NODES.get(id);
     if(!n){n={id,pid:p.pid,ct:p.create_time,exe:p.name,kids:[],parent:null,rc:ring(),rio:ring(),appKey:null,bornAt:BOOTING?0:NOW};NODES.set(id,n);NEWKEYS.push(id);}
     n.alive=true;n.ppid=p.ppid;n.cpu=p.cpu;n.mem=p.mem/MB;n.rd=p.io_read_bps/MB;n.wr=p.io_write_bps/MB;n.dsk=n.rd+n.wr;
-    n.threads=p.threads;n.handles=p.handles;n.session=p.session;n.susp=!!p.suspended;n.cpuMs=p.cpu_time_ms;n.ws=p.working_set/MB;n.priv=p.private_bytes/MB;n.bprio=p.base_priority;n.gpu=p.gpu||0;n.gmem=(p.gpu_mem||0)/MB;n.nrx=(p.net_rx_bps||0)*8/1e6;n.ntx=(p.net_tx_bps||0)*8/1e6;n.net=n.nrx+n.ntx;
+    n.threads=p.threads;n.handles=p.handles;n.up=Math.max(0,(NOW-ctToMs(p.create_time))/1000);n.session=p.session;n.susp=!!p.suspended;n.cpuMs=p.cpu_time_ms;n.ws=p.working_set/MB;n.priv=p.private_bytes/MB;n.bprio=p.base_priority;n.gpu=p.gpu||0;n.gmem=(p.gpu_mem||0)/MB;n.nrx=(p.net_rx_bps||0)*8/1e6;n.ntx=(p.net_tx_bps||0)*8/1e6;n.net=n.nrx+n.ntx;
     n.netBy=null;if(p.net_by){n.netBy={};for(const x of p.net_by)n.netBy[x.key]={rx:x.rx_bps*8/1e6,tx:x.tx_bps*8/1e6};}
     rpush(n.rc,n.cpu);rpush(n.rio,n.dsk);seen.add(id);
   }
@@ -791,6 +791,8 @@ const COLS_ALL=[
   {k:'ws',t:'Рабочий набор',m:'ws',fmt:fmtMem,w:104,own:1,extra:1},
   {k:'priv',t:'Выделено',m:'priv',fmt:fmtMem,w:88,own:1,extra:1},
   {k:'started',t:'Запущен',m:'ct',fmt:ct=>{const t=new Date(ctToMs(ct));return (t.toDateString()===new Date().toDateString()?'':t.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})+' ')+t.toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});},w:96,own:1,extra:1},
+  /* сколько процесс уже работает; сортировка ↓ — самые давние сверху */
+  {k:'up',t:'Работает',m:'up',fmt:agoStr,w:96,own:1,extra:1},
 ];
 const COLS_KEY='tm-cols';
 let COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
