@@ -33,6 +33,7 @@ pub fn role_of(cmd: &str) -> Option<String> {
         return Some(match t.as_str() {
             "gpu-process" => "GPU-процесс".into(),
             "renderer" if cmd.contains("--extension-process") => "Расширение".into(),
+            "renderer" if cmd.contains("--top-chrome-webui") => "Интерфейс браузера".into(),
             "renderer" => "Рендерер (вкладка или окно)".into(),
             "utility" => match arg("--utility-sub-type=") {
                 Some(s) if s.starts_with("network.") => "Сетевая служба".into(),
@@ -111,7 +112,17 @@ impl InfoCache {
             Some(p) => self.files.entry(p.clone()).or_insert_with(|| file_meta(p)).clone(),
             None => FileMeta::default(),
         };
-        let role = cmdline.as_deref().and_then(role_of);
+        // роль у Chromium и svchost; иначе — что запущено: сессия Claude Code, скрипт, jar, команда
+        let exe = path.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p)).unwrap_or("");
+        let role = cmdline.as_deref().and_then(|cmd| {
+            role_of(cmd).or_else(|| {
+                if crate::labels::is_claude_code(exe, path.as_deref(), cmd) {
+                    Some(crate::labels::claude_code(pid, create_time, cmd))
+                } else {
+                    crate::labels::from_cmdline(exe, cmd).or_else(|| crate::labels::shell_folder(pid, create_time, exe, cmd))
+                }
+            })
+        });
         ProcInfo { path, cmdline, description: meta.description, company: meta.company, accessible: true, role }
     }
 }

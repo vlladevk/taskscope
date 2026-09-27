@@ -275,6 +275,13 @@ impl Service {
                 let list: Vec<_> = crate::conns::list().into_iter().filter(|c| pid.is_none_or(|p| c.pid == p)).collect();
                 Ok(json!({ "connections": list }))
             }
+            // заголовки главных окон по PID: вкладка браузера, файл в редакторе, проект в IDE
+            "windows" => Ok(json!(crate::labels::window_titles())),
+            // открытые вкладки браузера на Chromium (pid — его главный процесс)
+            "browser_tabs" => {
+                let pid = params.get("pid").and_then(Value::as_u64).ok_or("нужен pid")? as u32;
+                Ok(json!(crate::labels::browser_tabs(pid)?))
+            }
             // какие файлы читают и пишут процессы (pid — только этот); первый вызов начинает наблюдение
             "disk_files" => {
                 let pid = params.get("pid").and_then(Value::as_u64).map(|p| p as u32);

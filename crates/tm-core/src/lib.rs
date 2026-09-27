@@ -16,6 +16,7 @@ pub mod history;
 pub mod icons;
 pub mod net;
 pub mod file_etw;
+pub mod labels;
 pub mod net_etw;
 pub mod nt;
 pub mod pipe;
