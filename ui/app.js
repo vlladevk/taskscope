@@ -94,6 +94,7 @@ let NEWKEYS=[], needBackfill=true;
 function applySnap(s){
   SEQ=s.seq;const f=s.frame;SYS=f.system;NOW=f.at_ms;CPUS=SYS.logical_cpus;TOTAL_MB=SYS.memory.total/MB;
   const seen=new Set();
+  GPUS=s.gpus||[];syncGpuCols();
   for(const p of f.procs){
     if(p.pid===0)continue;
     const id=p.pid+':'+p.create_time;
@@ -101,11 +102,12 @@ function applySnap(s){
     if(!n){n={id,pid:p.pid,ct:p.create_time,exe:p.name,kids:[],parent:null,rc:ring(),rio:ring(),appKey:null,bornAt:BOOTING?0:NOW};NODES.set(id,n);NEWKEYS.push(id);}
     n.alive=true;n.ppid=p.ppid;n.cpu=p.cpu;n.mem=p.mem/MB;n.rd=p.io_read_bps/MB;n.wr=p.io_write_bps/MB;n.dsk=n.rd+n.wr;
     n.threads=p.threads;n.handles=p.handles;n.up=Math.max(0,(NOW-ctToMs(p.create_time))/1000);n.session=p.session;n.susp=!!p.suspended;n.cpuMs=p.cpu_time_ms;n.ws=p.working_set/MB;n.priv=p.private_bytes/MB;n.bprio=p.base_priority;n.gpu=p.gpu||0;n.gmem=(p.gpu_mem||0)/MB;n.nrx=(p.net_rx_bps||0)*8/1e6;n.ntx=(p.net_tx_bps||0)*8/1e6;n.net=n.nrx+n.ntx;
+    for(const k of GK)n[k]=0;if(p.gpu_by)for(const x of p.gpu_by)n['g:'+x.key]=x.util;
     n.netBy=null;if(p.net_by){n.netBy={};for(const x of p.net_by)n.netBy[x.key]={rx:x.rx_bps*8/1e6,tx:x.tx_bps*8/1e6};}
     rpush(n.rc,n.cpu);rpush(n.rio,n.dsk);seen.add(id);
   }
   for(const n of NODES.values()){
-    if(n.alive&&!seen.has(n.id)){n.alive=false;n.deadAt=NOW;n.cpu=0;n.dsk=0;n.rd=0;n.wr=0;n.kids=[];n.ghostOf=n.parent?n.parent.id:null;}
+    if(n.alive&&!seen.has(n.id)){n.alive=false;n.deadAt=NOW;n.cpu=0;n.dsk=0;n.rd=0;n.wr=0;n.gpu=0;for(const k of GK)n[k]=0;n.kids=[];n.ghostOf=n.parent?n.parent.id:null;}
     // завершённые держим 2 минуты (или пока выбраны / открыты во вкладке)
     if(!n.alive&&NOW-n.deadAt>120e3&&S.sel!==n.id&&!PROC_TABS.has(n.id)){NODES.delete(n.id);INFO.delete(n.id);}
   }
@@ -128,7 +130,7 @@ function applySnap(s){
   for(const a of APPS.values())if(a.short>0||SHORT_R.has(a.key)){if(!SHORT_R.has(a.key))SHORT_R.set(a.key,ring());rpush(SHORT_R.get(a.key),a.short);shortSeen.add(a.key);}
   if(!SHORT_R.has(''))SHORT_R.set('',ring());rpush(SHORT_R.get(''),SYS.unseen_cpu||0);shortSeen.add('');
   for(const [k,r] of SHORT_R)if(!shortSeen.has(k)){rpush(r,0);if(rtail(r,SPARKN).every(v=>!v))SHORT_R.delete(k);}
-  NETS=s.nets||[];GPUS=s.gpus||[];NETPP=!!s.net_per_process;MEMD=s.mem_detail||null;POOLA=s.pool_alerts||[];
+  NETS=s.nets||[];NETPP=!!s.net_per_process;MEMD=s.mem_detail||null;POOLA=s.pool_alerts||[];
   ISS=new Map();
   for(const i of s.issues||[]){const id=i.pid+':'+i.create_time;if(!ISS.has(id))ISS.set(id,[]);ISS.get(id).push({lvl:i.level,txt:i.text,kind:i.kind});}
   for(const e of s.events||[]){
@@ -158,18 +160,18 @@ function memParts(){
 const aliveKids=n=>n.alive?n.kids:[];
 function desc(n){const out=[];const st=[n];const seen=new Set();while(st.length){const x=st.pop();if(seen.has(x))continue;seen.add(x);out.push(x);if(x.alive)for(const k of x.kids)st.push(k);}return out;}
 /* суммы по поддереву считаются один раз на замер — сортировка и таблица берут готовые */
-let AGG=new Map(),AGG_SEQ=-1;
+let AGG=new Map(),AGG_SEQ=-1,AGG_F=['cpu','mem','dsk','rd','wr','gpu','net'];
 function agg(n){
   if(AGG_SEQ!==SEQ){AGG=new Map();AGG_SEQ=SEQ;}
   let a=AGG.get(n.id);if(a)return a;
   /* Σ — только процессы того же приложения. Программы, запущенные из процесса
      (из Проводника запускается почти всё), в его сумму не входят: они — отдельные приложения.
      all — сумма по всему поддереву, для подсказки «со всем, что запущено из него». */
-  const own=()=>({cpu:n.cpu||0,mem:n.mem||0,dsk:n.dsk||0,rd:n.rd||0,wr:n.wr||0,gpu:n.gpu||0,net:n.net||0});
+  const own=()=>{const o={cpu:n.cpu||0,mem:n.mem||0,dsk:n.dsk||0,rd:n.rd||0,wr:n.wr||0,gpu:n.gpu||0,net:n.net||0};for(const k of GK)o[k]=n[k]||0;return o;};
   a={...own(),all:own(),cnt:1,spark:null};AGG.set(n.id,a);
   if(n.alive)for(const k of n.kids){
     const b=agg(k),same=k.appKey===n.appKey;a.cnt+=b.cnt;
-    for(const f of ['cpu','mem','dsk','rd','wr','gpu','net']){a.all[f]+=b.all[f];if(same)a[f]+=b[f];}
+    for(const f of AGG_F){a.all[f]+=b.all[f];if(same)a[f]+=b[f];}
   }
   return a;
 }
@@ -216,13 +218,20 @@ function taskText(t){
   for(const [re,ru] of TASK_KIND)if(re.test(t)){t=t.replace(re,ru);break;}
   return t.replace(/https?:\/\/([^/]+)\/?\S*/,'$1'); // у фрейма и воркера важен сайт, а не полный адрес
 }
+/* для плитки карты — сначала то, что отличает процесс: заголовок вкладки, сайт, имя расширения, а вид —
+   после (плитка и так внутри группы браузера, а «Вкладка: …» на узкой плитке оставляло одно «Вкла…») */
+const TASK_SHORT=[[/^Вкладка: /,''],[/^Фрейм: (.*)/,'$1 · фрейм'],[/^Расширение: (.*)/,'$1 · расширение'],[/^Приложение: (.*)/,'$1 · приложение'],
+  [/^(Service Worker|Shared Worker|Worker): (.*)/,'$2 · $1'],[/^Предзагрузка: (.*)/,'$1 · предзагрузка'],[/^Кэш «Назад»: (.*)/,'$1 · кэш «Назад»']];
+function taskShort(t){t=taskText(t);for(const [re,to] of TASK_SHORT)if(re.test(t))return t.replace(re,to);return t;}
 /* вкладки главнее фреймов и воркеров: процесс называем по первой вкладке, остальное — «и ещё N» */
-function taskLabel(list){
-  const rank=t=>/^(Tab|Вкладка)/.test(t)?0:/^(Extension|App)/.test(t)?1:/^Subframe/.test(t)?2:3;
-  const s=list.slice().sort((a,b)=>rank(a)-rank(b)),first=taskText(s[0]);
-  const same=s.filter(t=>taskText(t)===first).length,more=s.length-same;
+function taskLabel(list,short){
+  const txt=short?taskShort:taskText,rank=t=>/^(Tab|Вкладка)/.test(t)?0:/^(Extension|App)/.test(t)?1:/^Subframe/.test(t)?2:3;
+  const s=list.slice().sort((a,b)=>rank(a)-rank(b)),first=txt(s[0]);
+  const same=s.filter(t=>txt(t)===first).length,more=s.length-same;
   return first+(more?` (и ещё ${more})`:'');
 }
+/* имя процесса на плитке карты */
+function mapName(n){const bt=BTASKS.tasks.get(n.id);return mapLabel(bt?taskLabel(bt,true):nameOf(n));}
 /* Заголовки главных окон процессов (опрос раз в 3 с): у браузера — открытая вкладка, у редактора — файл
    и проект. Хвост «- Brave», «— Cursor» и заголовок, совпадающий с именем программы, не повторяем. */
 let WTITLES=new Map(),WT_AT=0,WT_BUSY=false;
@@ -612,12 +621,12 @@ function resList(){
        ...POOLA.map(a=>['Тревога в ядре',a.text.split('. ')[0]+' — вкладка «Пул ядра»'])],
      note:'Доступно = резерв + свободно: резерв — файловый кэш из недавно прочитанных файлов, Windows отдаёт его программам по первому требованию. Сжатая память — страницы, которые Windows сжала вместо выгрузки на диск; она уже входит в «Занято». «Память» процесса — его частный рабочий набор, как в диспетчере Windows. Остальное занятое: пулы ядра (память драйверов), файловый кэш и общая память программ — библиотеки DLL и общие буферы, которыми пользуются сразу несколько процессов (особенно браузеры и Electron-приложения). Невыгружаемый пул больше 1 ГБ бывает при утечке памяти в драйвере — какой драйвер растёт, видно во вкладке «Пул ядра».'},
     ...GPUS.map(g=>{
-      const short=g.name.replace(/\((TM|R)\)/g,'').replace(/^(NVIDIA GeForce|NVIDIA|AMD|Intel) /,'').trim();
+      const short=gpuShort(g);
       return {id:'gpu:'+g.key,name:GPUS.length>1?'Видеокарта · '+short:'Видеокарта',m:'gpu',gpu:g,col:3,max:100,fmt:fmtPct,sub:g.name,hist:['gpu','gpu','gpu:'+g.key],
         now:()=>g.util,line:v=>`${fmtPct(v)} · ${nf(g.mem_used/MB/1024,1)} / ${nf(g.mem_total/MB/1024,1)} ГБ`,
         keys:v=>[g.engine?`занят блок ${g.engine}`:'',`видеопамять ${fmtMem(g.mem_used/MB)} из ${fmtMem(g.mem_total/MB)}`,`общая ${fmtMem(g.shared_used/MB)}`].filter(Boolean),
         more:()=>[['Загрузка',fmtPct(g.util)],['Самый занятый блок',g.engine||'—'],['Выделенная видеопамять',`${fmtMem(g.mem_used/MB)} из ${fmtMem(g.mem_total/MB)}`],['Общая память',fmtMem(g.shared_used/MB)]],
-        note:'Загрузка — самый занятый блок видеокарты (3D, видео, копирование, вычисления), как в диспетчере Windows. Процессу приписывается его самый занятый блок, поэтому сумма по процессам может быть больше загрузки карты. Разбивка по приложениям — общая для всех видеокарт.'};
+        note:'Загрузка — самый занятый блок видеокарты (3D, видео, копирование, вычисления), как в диспетчере Windows. Процессу приписывается его самый занятый блок, поэтому сумма по процессам может быть больше загрузки карты.'+(GPUS.length>1?' Карта и колонка «ГП · '+short+'» таблицы (правый клик по заголовку) — загрузка этой видеокарты; график по приложениям — общий для всех видеокарт.':'')};
     }),
     {id:'disk',name:'Диск',m:'dsk',col:4,fmt:fmtMBs,hist:['system','io'],
      now:()=>ioR+ioW,line:v=>`↓ ${fmtMBs(ioR)} ↑ ${fmtMBs(ioW)}`,
@@ -637,7 +646,8 @@ function resList(){
 }
 let RES=[];
 const curRes=()=>RES.find(r=>r.id===S.res)||RES[0];
-const SORT_OF=r=>r.m==='mem'?'mem':r.m==='dsk'?'dsk':r.m==='gpu'?'gpu':r.m==='net'&&NETPP?'net':'cpu';
+/* у видеокарты — её собственная колонка, если она включена, иначе общая «ГП» */
+const SORT_OF=r=>r.m==='mem'?'mem':r.m==='dsk'?'dsk':r.m==='gpu'?(r.gpu&&GK.length&&COL_ON.has('g:'+r.gpu.key)?'g:'+r.gpu.key:'gpu'):r.m==='net'&&NETPP?'net':'cpu';
 function setRes(id){S.res=id;const r=curRes();if(r)S.sort=SORT_OF(r);S.dir=-1;S.order=null;S.hl=null;saveUI();renderAll();}
 function resStatus(r,v){
   if(r.id==='cpu')return v>90?'red':v>60?'yel':null;
@@ -778,7 +788,7 @@ $('#btabs').addEventListener('click',e=>{const b=e.target.closest('[data-t]');if
 /* =================================================================
    Главная зона: «Процессы»
    ================================================================= */
-const COLS_ALL=[
+const COLS_BASE=[
   {k:'cpu',t:'ЦП',m:'cpu',fmt:fmtPct,bar:100,w:76},
   {k:'mem',t:'Память',m:'mem',fmt:fmtMem,bar:4096,w:88},
   {k:'dsk',t:'Диск',m:'dsk',fmt:fmtMBs,bar:50,w:84},
@@ -794,6 +804,17 @@ const COLS_ALL=[
   /* сколько процесс уже работает; сортировка ↓ — самые давние сверху */
   {k:'up',t:'Работает',m:'up',fmt:agoStr,w:112,own:1,extra:1},
 ];
+/* видеокарт больше одной — у каждой своя колонка (включается правым кликом по заголовку): игра может
+   нагружать дискретную, а браузер — встроенную, и общая «ГП» (самый занятый блок любой из них) этого не различает */
+let COLS_ALL=COLS_BASE,GK=[];
+const gpuShort=g=>g.name.replace(/\((TM|R)\)/g,'').replace(/^(NVIDIA GeForce|NVIDIA|AMD|Intel) /,'').replace(/ (Laptop )?GPU$/,'').replace(/ Graphics$/,'').trim();
+function syncGpuCols(){
+  const gs=GPUS.length>1?GPUS:[],keys=gs.map(g=>'g:'+g.key);
+  if(keys.join()===GK.join())return;
+  GK=keys;AGG_F=['cpu','mem','dsk','rd','wr','gpu','net',...GK];AGG_SEQ=-1;
+  const i=COLS_BASE.findIndex(c=>c.k==='gpu')+1;
+  COLS_ALL=[...COLS_BASE.slice(0,i),...gs.map(g=>({k:'g:'+g.key,t:'ГП · '+gpuShort(g),mt:'ГП · '+g.name.replace(/\((TM|R)\)/g,''),m:'g:'+g.key,fmt:fmtPct,bar:100,w:112})),...COLS_BASE.slice(i)];
+}
 const COLS_KEY='tm-cols';
 let COL_ON=new Set(['cpu','mem','dsk','gpu','net']);
 try{const j=JSON.parse(localStorage.getItem(COLS_KEY)||'null');if(Array.isArray(j))COL_ON=new Set(j);}catch(e){}
@@ -804,8 +825,8 @@ try{COL_W=JSON.parse(localStorage.getItem(COLW_KEY)||'{}')||{};COL_ORD=JSON.pars
 const saveColLayout=()=>{try{localStorage.setItem(COLW_KEY,JSON.stringify(COL_W));localStorage.setItem(CORD_KEY,JSON.stringify(COL_ORD));}catch(e){}};
 const SPARK_W=88;
 /* пределы ширины: число «12,3 %» шире 120 px не бывает — растягивать дальше бессмысленно */
-const COL_LIM={name:[160,900],cpu:[56,120],gpu:[52,110],mem:[64,150],dsk:[64,150],net:[72,170],pid:[52,100],threads:[56,100],handles:[72,130],ws:[72,150],priv:[72,150],started:[80,150],up:[96,160],spark:[60,200]};
-const colLim=k=>COL_LIM[k]||[56,200];
+const COL_LIM={name:[160,900],cpu:[56,120],gpu:[52,110],g:[64,170],mem:[64,150],dsk:[64,150],net:[72,170],pid:[52,100],threads:[56,100],handles:[72,130],ws:[72,150],priv:[72,150],started:[80,150],up:[96,160],spark:[60,200]};
+const colLim=k=>COL_LIM[k]||COL_LIM[k.startsWith('g:')?'g':'']||[56,200];
 const colW=c=>{const [mn,mx]=colLim(c.k);return clamp(COL_W[c.k]||c.w,mn,mx);},sparkW=()=>clamp(COL_W.spark||SPARK_W,...colLim('spark'));
 /* пока пользователь ничего не растягивал, «Имя» забирает всё свободное место. Как только ширину
    задали, «Имя» получает свою ширину, а свободное место остаётся пустым справа от таблицы — тогда край
@@ -977,7 +998,7 @@ function renderShort(el){
 /* выбор колонок: правый клик по заголовку таблицы */
 function colMenu(x,y){
   menuIds=null;
-  menu.innerHTML='<div class="mh">Колонки</div>'+COLS_ALL.filter(c=>c.k!=='net'||NETPP).map(c=>`<div class="mi" data-col="${c.k}"><span><input type="checkbox" ${COL_ON.has(c.k)?'checked':''}>${esc(c.t)}</span></div>`).join('')
+  menu.innerHTML='<div class="mh">Колонки</div>'+COLS_ALL.filter(c=>c.k!=='net'||NETPP).map(c=>`<div class="mi" data-col="${c.k}"><span><input type="checkbox" ${COL_ON.has(c.k)?'checked':''}>${esc(c.mt||(c.k==='gpu'&&GK.length?'ГП (любая видеокарта)':c.t))}</span></div>`).join('')
     +'<div class="sep"></div><div class="mi" data-col="-"><span>Как было (колонки, порядок и ширина)</span></div><div class="mh" style="font-weight:400">Колонки можно перетаскивать за заголовок, ширину — за его край</div>';
   menu.classList.add('col-menu');menu.style.display='block';const r=menu.getBoundingClientRect();
   menu.style.left=Math.min(x,innerWidth-r.width-8)+'px';menu.style.top=Math.max(8,Math.min(y,innerHeight-r.height-8))+'px';
@@ -1125,12 +1146,15 @@ function patchRows(tb,list,pad){
    иначе плитки прыгали бы каждую секунду.
    ================================================================= */
 const mapMetric=()=>{const r=curRes();return r.m==='net'?(NETPP?'net':'cpu'):r.m;};
+/* выбрана одна из нескольких видеокарт — карта по её загрузке (история по приложениям общая, поэтому — сейчас) */
+const mapGpuKey=()=>{const r=curRes();return r.m==='gpu'&&r.gpu&&GK.length?'g:'+r.gpu.key:null;};
 const mapSecs=()=>Math.min(SPARKN,Math.round(S.range.ms/1000));
 function mapDesc(){
   const m=mapMetric(),p=S.range.label;
   if(m==='mem')return 'размер — занятая память сейчас';
   if(m==='net'){const a=curRes().net;return a?`размер — трафик процессов через «${a.name}» сейчас`+(a.kind==='vpn'?'':'. Если включён VPN, здесь и его клиент: он отправляет трафик программ зашифрованным'):'размер — сетевой трафик процессов сейчас';}
   if(curRes().m==='net')return 'трафик по процессам виден только с правами администратора (кнопка вверху) — показана загрузка ЦП';
+  if(m==='gpu'&&mapGpuKey())return `размер — загрузка «${gpuShort(curRes().gpu)}» процессами сейчас`;
   if(m==='gpu')return S.range.ms>SPARKN*1000?`размер — средняя загрузка видеокарты за ${p}`:'размер — загрузка видеокарты сейчас';
   const h=H('system',BY[m],0);const avg=h?h.total.avg:0;
   return m==='cpu'?`размер — средняя загрузка ЦП за ${p} · простой ${fmtPct(Math.max(0,100-avg))}`:`размер — средний ввод-вывод за ${p}`;
@@ -1211,7 +1235,7 @@ function squarify(items,x,y,w,h,plan){
 }
 function mapTree(){
   const m=mapMetric(),eps=m==='net'?.001:m==='mem'?1:m==='cpu'?.02:.001;
-  const long=m!=='mem'&&m!=='net'&&S.range.ms>SPARKN*1000;
+  const gk=mapGpuKey(),long=m!=='mem'&&m!=='net'&&!gk&&S.range.ms>SPARKN*1000;
   /* для длинных периодов — сколько приложение потратило за период (из истории) */
   let appAvg=null;
   if(long){const h=H('apps',BY[m],1000);if(h){appAvg=new Map();for(const s of h.series)appAvg.set(s.key,conv(m)(s.avg));}}
@@ -1225,14 +1249,14 @@ function mapTree(){
   /* сеть — только через выбранный адаптер: иначе трафик программы через VPN и тот же трафик у клиента VPN
      (зашифрованный, через Wi-Fi) складывались, и казалось, что программа идёт мимо туннеля */
   const na=curRes().net,netOf=n=>{if(!na)return n.net;const x=n.netBy&&n.netBy[na.key];return x?x.rx+x.tx:0;};
-  const own=n=>m==='mem'?n.mem:m==='gpu'?n.gpu:m==='net'?netOf(n):m==='cpu'&&long&&!PSEUDO[n.pid]?rangeCpu(n):ownAvg(n,m); /* у прерываний и DPC нет времени создания и накопленного ЦП — только история */
+  const own=n=>m==='mem'?n.mem:m==='gpu'?(gk?n[gk]||0:n.gpu):m==='net'?netOf(n):m==='cpu'&&long&&!PSEUDO[n.pid]?rangeCpu(n):ownAvg(n,m); /* у прерываний и DPC нет времени создания и накопленного ЦП — только история */
   /* приблизить можно процесс (id «pid:время») или группу-приложение («a…», «mWIN»). Внутри —
      ровно то, что было в группе на общей карте: процессы того же приложения. Программы, запущенные
      из него, — свои группы (раньше «Проводник» 100 МБ приближался в дерево на 3 ГБ из чужих программ) */
   const procRoot=S.map.root&&/^\d/.test(S.map.root);
   const mk=n=>{
     const kids=aliveKids(n).filter(k=>k.appKey===n.appKey).map(mk).filter(k=>k.v>eps);
-    const o=own(n),lbl=mapLabel(nameOf(n));
+    const o=own(n),lbl=mapName(n);
     if(!kids.length)return {key:'p'+n.id,label:lbl,v:o,node:n,cat:catOf(n)};
     return {key:'p'+n.id,label:lbl,v:o+kids.reduce((s,k)=>s+k.v,0),node:n,cat:catOf(n),kids:[{key:'s'+n.id,label:lbl,v:o,node:n,cat:catOf(n),self:1},...kids]};
   };
@@ -1270,7 +1294,7 @@ function mapTree(){
   MAP.exeName=new Map();
   for(const [k,tops] of groups){const a=APPS.get(k);if(!a)continue;const r=tops.find(t=>t.pid===a.rootPid)||tops[0];
     if(r&&INFO.has(r.id)){const e=mapExe({node:r});if(!MAP.exeName.has(e))MAP.exeName.set(e,mapLabel(a.title));}}
-  for(const n of live)if(INFO.has(n.id)){const e=mapExe({node:n});if(!MAP.exeName.has(e))MAP.exeName.set(e,mapLabel(nameOf(n)));} // как на плитках: «OpenJDK Platform binary», а не «java»
+  for(const n of live)if(INFO.has(n.id)){const e=mapExe({node:n});if(!MAP.exeName.has(e))MAP.exeName.set(e,mapName(n));} // как на плитках: «OpenJDK Platform binary», а не «java»
   return {key:'root',label:'Всё',v:apps.reduce((s,a)=>s+a.v,0),kids:apps};
 }
 /* «По программе» — как типы файлов в WizTree: у каждой программы свой цвет.
@@ -1532,6 +1556,37 @@ const relLum=c=>c.reduce((s,v,i)=>{v/=255;v=v<=.03928?v/12.92:((v+.055)/1.055)**
 const darkText=c=>{const L=relLum(c.map(v=>Math.min(255,v*1.08)));return (L+.05)/.0556>1.05/(L+.05);};
 /* поверх подушек: заголовки групп, подписи, рамки выделения и наведения.
    Всё рисуется в физических пикселях с целыми координатами — линии не размываются в полупиксель. */
+/* подпись плитки: имя и размер. Главное — размер: не влезает имя — сокращается имя, а число остаётся.
+   - Две строки (имя, под ним размер) — от 40×30, одна строка «имя размер» — от 24×14.
+   - Узкая высокая плитка (столбик шириной 30–60 px) — подпись вдоль длинной стороны, снизу вверх, как на
+     корешке книги: поперёк там помещались три буквы и никакого числа. */
+function mapTileLabel(x,n,q,r,dpr,pad,L){
+  const m=n.m,name=m.self?`${m.label} · сам`:n.pre?`${n.pre} · ${m.label}`:m.label,val=mapFmt(m.raw);
+  const lines=(a,b)=>a>=40&&b>=30?2:a>=24&&b>=14?1:0;
+  const lh=lines(r.w,r.h),lv=lines(r.h,r.w);
+  let vert=lv>lh;
+  if(!vert&&lv===lh&&lh&&r.h>r.w*1.6){const need=x.measureText(lh===2?name:name+' '+val).width;vert=need>q.w-2*pad-L&&q.h>q.w;}
+  const lvl=vert?lv:lh;if(!lvl)return;
+  const lt=darkText(n.rgb);
+  x.save();
+  let bx=q.x,by=q.y,bw=q.w,bh=q.h;
+  if(vert){x.translate(q.x,q.y+q.h);x.rotate(-Math.PI/2);bx=0;by=0;bw=q.h;bh=q.w;}
+  const mw=bw-2*pad-L,x0=bx+pad+L,vw=x.measureText(val).width,gap=Math.round(5*dpr);
+  const main=lt?'#111':'#fff',second=lt?'rgba(0,0,0,.72)':'rgba(255,255,255,.85)';
+  x.fillStyle=main;if(!lt&&!MAP.from){x.shadowColor='rgba(0,0,0,.85)';x.shadowBlur=3*dpr;} // в кадрах анимации без тени — дорого
+  if(lvl===2){
+    x.fillText(fitText(x,name,mw),x0,by+Math.round(12*dpr));
+    if(vw<=mw){x.fillStyle=second;x.fillText(val,x0,by+Math.round(27*dpr));}
+  }else{
+    const cy=by+bh/2;
+    if(x.measureText(name).width+gap+vw<=mw){x.fillText(name,x0,cy);x.fillStyle=second;x.fillText(val,x0+x.measureText(name).width+gap,cy);}
+    else{const nm=mw-vw-gap>=28*dpr?fitText(x,name,mw-vw-gap):'';
+      if(nm){x.fillText(nm,x0,cy);x.fillStyle=second;x.fillText(val,x0+x.measureText(nm).width+gap,cy);}
+      else if(vw<=mw)x.fillText(val,x0,cy); // совсем узкая — только число: имя видно при наведении
+      else x.fillText(fitText(x,name,mw),x0,cy);}
+  }
+  x.restore();
+}
 /* подушки + заголовки + подписи — в отдельный слой MAP.base; наведение перерисовывает только рамки */
 function mapCompose(cv,nodes,rect){
   const dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight,PW=Math.round(w*dpr),PH=Math.round(h*dpr);
@@ -1550,16 +1605,17 @@ function mapCompose(cv,nodes,rect){
     /* вложенные уровни — на тон светлее, чтобы стопка заголовков читалась как вложенность */
     x.fillStyle=MAP_HEAD[Math.min(n.depth,MAP_HEAD.length-1)];x.fillRect(q.x,q.y,q.w-L,hb-L);
     x.fillStyle='rgba(255,255,255,.9)';
-    const t1=`${m.label} (${mapFmt(m.raw)})`,mw=q.w-2*pad;x.fillText(x.measureText(t1).width<=mw?t1:fitText(x,m.label,mw),q.x+pad,q.y+(hb-L)/2+.5);
+    /* размер группы виден всегда: не влезает имя — сокращается имя, а не число */
+    const v=`(${mapFmt(m.raw)})`,vw=x.measureText(v).width,gap=Math.round(4*dpr),mw=q.w-2*pad,ty=q.y+(hb-L)/2+.5;
+    const t1=`${m.label} ${v}`;
+    if(x.measureText(t1).width<=mw)x.fillText(t1,q.x+pad,ty);
+    else{const nm=mw-vw-gap>=24*dpr?fitText(x,m.label,mw-vw-gap):'';
+      if(nm){x.fillText(nm,q.x+pad,ty);x.fillText(v,q.x+pad+x.measureText(nm).width+gap,ty);}
+      else if(vw<=mw)x.fillText(v.slice(1,-1),q.x+pad,ty);}
   }
   for(let i=0;i<nodes.length;i++){
-    const n=nodes[i],m=n.m,r=rect(i);
-    /* подпись: имя и размер от 70×32, только имя — от 40×16 */
-    const two=r.w>70&&r.h>32;if(n.head||!(two||r.w>40&&r.h>16))continue;
-    const q=D(r),lt=darkText(n.rgb),mw=q.w-2*pad-L;
-    x.save();x.fillStyle=lt?'#111':'#fff';if(!lt&&!MAP.from){x.shadowColor='rgba(0,0,0,.85)';x.shadowBlur=3*dpr;} // в кадрах анимации без тени — дорого
-    x.fillText(fitText(x,m.self?`${m.label} · сам`:n.pre?`${n.pre} · ${m.label}`:m.label,mw),q.x+pad+L,two?q.y+Math.round(12*dpr):q.y+q.h/2);
-    if(two){x.fillStyle=lt?'rgba(0,0,0,.72)':'rgba(255,255,255,.85)';x.fillText(fitText(x,mapFmt(m.raw),mw),q.x+pad+L,q.y+Math.round(27*dpr));}x.restore();
+    const n=nodes[i];if(n.head)continue;const r=rect(i);if(Math.min(r.w,r.h)<14||Math.max(r.w,r.h)<24)continue;
+    mapTileLabel(x,n,D(r),r,dpr,pad,L);
   }
   mapFrames(cv,nodes,rect);
 }
@@ -2360,7 +2416,7 @@ function renderDetails(){
      <dt>ЦП всего</dt><dd>${agoStr(n.cpuMs/1000)}</dd>
      <dt>Память</dt><dd>${fmtMem(n.mem)} частный рабочий набор · ${fmtMem(n.ws)} весь рабочий набор · ${fmtMem(n.priv)} выделено (commit)</dd>
      ${NETPP?`<dt>Сеть</dt><dd>↓ ${fmtMbit(n.nrx)} · ↑ ${fmtMbit(n.ntx)}${netSplit(n)}</dd>`:''}
-     ${n.gpu>=.05||n.gmem>=1?`<dt>Видеокарта</dt><dd>${fmtPct(n.gpu)} · видеопамять ${fmtMem(n.gmem)}</dd>`:''}
+     ${n.gpu>=.05||n.gmem>=1?`<dt>Видеокарта</dt><dd>${fmtPct(n.gpu)} · видеопамять ${fmtMem(n.gmem)}${GK.length?'<br>'+GPUS.filter(g=>(n['g:'+g.key]||0)>=.05).map(g=>`${esc(gpuShort(g))}: ${fmtPct(n['g:'+g.key])}`).join(' · '):''}</dd>`:''}
      <dt>Потоки</dt><dd class="num">${n.threads}</dd><dt>Дескрипторы</dt><dd class="num">${n.handles.toLocaleString('ru')}</dd>
      <dt>Сеанс</dt><dd class="num">${n.session}${n.session===0?' (службы)':''}</dd>
      <dt>Приоритет</dt><dd>${PRIO_NAMES[n.prio]||'—'}</dd>

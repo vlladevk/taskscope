@@ -56,6 +56,10 @@ pub struct ProcStat {
     /// Выделенная видеопамять, байты.
     #[serde(default)]
     pub gpu_mem: u64,
+    /// Загрузка по каждой видеокарте (ключ — как у `GpuStat::key`), только где она не нулевая:
+    /// одна программа может рисовать на встроенной, а считать на дискретной.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpu_by: Vec<GpuShare>,
     /// Сетевой трафик процесса, байт/с (только с правами администратора, иначе 0).
     #[serde(default)]
     pub net_rx_bps: f64,
@@ -68,6 +72,12 @@ pub struct ProcStat {
     /// Процесс родился после прошлого замера (его ЦП — всё время с момента запуска).
     #[serde(default)]
     pub born: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GpuShare {
+    pub key: String,
+    pub util: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -425,6 +435,7 @@ fn blank(pid: u32, name: &str) -> ProcStat {
         suspended: false,
         gpu: 0.0,
         gpu_mem: 0,
+        gpu_by: Vec::new(),
         net_rx_bps: 0.0,
         net_tx_bps: 0.0,
         net_by: Vec::new(),

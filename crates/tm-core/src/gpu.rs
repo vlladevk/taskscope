@@ -33,10 +33,12 @@ pub struct GpuStat {
     pub shared_used: u64,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ProcGpu {
     pub util: f32,
     pub mem: u64,
+    /// LUID видеокарты → самый занятый движок процесса на ней, %.
+    pub by: Vec<(String, f32)>,
 }
 
 #[derive(Default)]
@@ -203,6 +205,10 @@ impl GpuSampler {
             if let Some(pid) = i.pid {
                 let p = out.procs.entry(pid).or_default();
                 p.util = p.util.max(v as f32);
+                match p.by.iter_mut().find(|(k, _)| k == i.luid) {
+                    Some(b) => b.1 = b.1.max(v as f32),
+                    None => p.by.push((i.luid.to_string(), v as f32)),
+                }
             }
         });
         let proc_mem = self.proc_mem;
@@ -242,6 +248,11 @@ impl GpuSampler {
         out.adapters.sort_by(|a, b| b.mem_total.cmp(&a.mem_total));
         for p in out.procs.values_mut() {
             p.util = p.util.min(100.0);
+            // только показанные видеокарты и только заметная загрузка — остальное не шлём в каждом кадре
+            p.by.retain(|(k, u)| *u >= 0.05 && out.adapters.iter().any(|a| &a.key == k));
+            for b in &mut p.by {
+                b.1 = b.1.min(100.0);
+            }
         }
         out
     }

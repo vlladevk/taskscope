@@ -276,6 +276,7 @@ fn run(inner: &Inner) {
             if let Some(x) = g.procs.get(&p.pid) {
                 p.gpu = x.util;
                 p.gpu_mem = x.mem;
+                p.gpu_by = x.by.iter().map(|(k, u)| crate::sampler::GpuShare { key: k.clone(), util: *u }).collect();
             }
         }
         if let Some(e) = &etw {
