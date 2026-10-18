@@ -4,6 +4,10 @@ A task manager for Windows that replaces the built-in Task Manager. It stays fas
 It shows who is using the CPU, memory, disk, GPU, network and Docker, and lets you end, suspend
 or restart them. The CLI and an MCP server give AI agents the same features.
 
+![Processes grouped by app, with the CPU chart](docs/processes.png)
+
+![The map: who is loading the CPU right now](docs/map.png)
+
 ## What's inside
 
 | File | What it is |
