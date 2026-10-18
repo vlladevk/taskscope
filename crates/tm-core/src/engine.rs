@@ -240,6 +240,7 @@ fn run(inner: &Inner) {
     let mut next = Instant::now() + inner.interval;
     let mut last_save = Instant::now();
     let mut pool_due = true;
+    let mut last_hist: Option<u64> = None;
 
     while !inner.stop.load(Ordering::Relaxed) {
         let now = Instant::now();
@@ -344,7 +345,17 @@ fn run(inner: &Inner) {
             .filter(|p| p.pid != 0)
             .map(|p| ProcSample { key: p.key(), name: &p.name, pt: pt(p.cpu, p.gpu, p.mem, p.io_read_bps, p.io_write_bps) })
             .collect();
-        let hist_t = wall0 + t0.elapsed().as_millis() as u64;
+        // Время замера — по тику, а не по окончании работы: сам замер под полной нагрузкой длится то 50,
+        // то 400 мс, и метка «после работы» то попадала дважды в одну секундную ячейку (второй затирал
+        // первый), то перескакивала через ячейку — там оставался ноль, и график ЦП «пилил» 100 → 0 → 100.
+        // Тик пришёл примерно вовремя — ставим ровно на шаг после прошлого; сильно опоздал — по часам.
+        let real_t = wall0 + (t - t0).as_millis() as u64;
+        let iv = inner.interval.as_millis() as u64;
+        let hist_t = match last_hist {
+            Some(p) if real_t.abs_diff(p + iv) < iv / 2 => p + iv,
+            _ => real_t,
+        };
+        last_hist = Some(hist_t);
         // пул ядра — раз в минуту; сам вызов вне замка
         let pool_raw = pool_due.then(crate::pool::query);
 
