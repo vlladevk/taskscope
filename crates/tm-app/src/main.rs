@@ -22,7 +22,7 @@ use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWind
 use tm_core::engine::{default_store, Engine};
 use tm_core::{pipe, service, system, Service};
 
-const AUTOSTART_NAME: &str = "Task Manager (tm)";
+const AUTOSTART_NAME: &str = "Taskscope";
 
 /// Tauri/wry warnings and errors go to the engine log: otherwise, for example, a window creation failure
 /// from another thread disappears without a trace.
@@ -113,7 +113,7 @@ fn build_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let n = NEXT_WINDOW.fetch_add(1, Ordering::Relaxed);
     let label = if n == 0 { "main".to_string() } else { format!("main-{n}") };
     let mut b = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-        .title("Task Manager")
+        .title("Taskscope")
         .inner_size(g.map_or(1360.0, |g| g.w.max(900.0)), g.map_or(860.0, |g| g.h.max(560.0)))
         .min_inner_size(900.0, 560.0)
         .theme(Some(tauri::Theme::Dark))
@@ -266,7 +266,7 @@ fn tray_loop(app: AppHandle, engine: Engine) {
         cpu.push(s.frame.system.cpu);
         let m = &s.frame.system.memory;
         let red = s.issues.iter().filter(|i| i.level == "red").count();
-        let mut tip = format!("Task Manager\nCPU {:.0}% · memory {}%", s.frame.system.cpu, m.load_pct);
+        let mut tip = format!("Taskscope\nCPU {:.0}% · memory {}%", s.frame.system.cpu, m.load_pct);
         if let Some(top) = s.apps.iter().max_by(|a, b| a.cpu.total_cmp(&b.cpu)).filter(|a| a.cpu >= 5.0) {
             tip.push_str(&format!("\ntop: {} — {:.0}%", top.title.chars().take(40).collect::<String>(), top.cpu));
         }
@@ -460,12 +460,12 @@ fn main() {
         })
         .setup(move |app| {
             let h = app.handle().clone();
-            let open = MenuItemBuilder::with_id("open", "Open Task Manager").build(app)?;
+            let open = MenuItemBuilder::with_id("open", "Open Taskscope").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).item(&open).separator().item(&quit).build()?;
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon(&[0.0; 15]))
-                .tooltip("Task Manager")
+                .tooltip("Taskscope")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, e| match e.id().as_ref() {

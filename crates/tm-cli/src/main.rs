@@ -1,4 +1,4 @@
-//! tm — a task manager for the terminal and AI agents.
+//! tm — the Taskscope CLI: a task manager for the terminal and AI agents.
 //! Every command supports `--json`; the human-readable output and the JSON are built from the same data.
 
 mod mcp;
@@ -16,7 +16,7 @@ use tm_core::history::{HistoryResult, Metric, Query, Scope};
 use tm_core::{apps, pipe, Engine, Frame, InfoCache, ProcStat, Sampler, Tree};
 
 const HELP: &str = "\
-tm — a task manager for the terminal and AI agents
+tm — Taskscope, a task manager for the terminal and AI agents
 
 USAGE: tm <command> [options] [--json]
 

@@ -1,6 +1,6 @@
-# tm — a task manager for Windows
+# Taskscope
 
-A replacement for the Windows Task Manager. It stays fast and keeps responding under full load.
+A task manager for Windows that replaces the built-in Task Manager. It stays fast and keeps responding under full load.
 It shows who is using the CPU, memory, disk, GPU, network and Docker, and lets you end, suspend
 or restart them. The CLI and an MCP server give AI agents the same features.
 

@@ -202,10 +202,10 @@ impl Guard {
             return Some("part of the Windows kernel".into());
         }
         if p.pid == unsafe { GetCurrentProcessId() } {
-            return Some("this is the task manager itself".into());
+            return Some("this is Taskscope itself".into());
         }
         if self.own.contains(&p.key()) {
-            return Some("a process of the task manager itself (its window or WebView)".into());
+            return Some("a process of Taskscope itself (its window or WebView)".into());
         }
         let (path, critical) = probe(p);
         if critical {
@@ -219,7 +219,7 @@ impl Guard {
             }
         }
         if action != Some(Action::Resume) && self.settings.is_protected(&p.name, path.as_deref()) {
-            return Some("protected in the task manager settings".into());
+            return Some("protected in the Taskscope settings".into());
         }
         None
     }

@@ -1,6 +1,6 @@
 'use strict';
 /* =================================================================
-   Task Manager — user interface.
+   Taskscope — user interface.
    Data comes from the Rust engine (Service::call). In the app — through Tauri,
    in development mode (`tm serve`) — through POST /rpc. Same logic either way.
    ================================================================= */
@@ -2082,7 +2082,7 @@ function mountSvcs(el){
     if(!SVCS.elevated&&(off||(on&&s.can_stop)))it.push('<div class="mh">Administrator rights needed</div>');
     if(off)it.push(`<div class="mi${off2}" data-sva="start" data-name="${esc(s.name)}"><span>Start</span></div>`);
     if(on&&s.can_stop)it.push(`<div class="mi danger${off2}" data-sva="stop" data-name="${esc(s.name)}"><span>Stop</span></div>`,`<div class="mi danger${off2}" data-sva="restart" data-name="${esc(s.name)}"><span>Restart</span></div>`);
-    if(!SVCS.elevated&&(off||(on&&s.can_stop))&&TAURI)it.push('<div class="mi" data-svadm="1"><span>Restart the task manager as administrator…</span></div>');
+    if(!SVCS.elevated&&(off||(on&&s.can_stop))&&TAURI)it.push('<div class="mi" data-svadm="1"><span>Restart Taskscope as administrator…</span></div>');
     if(s.pid&&nodeByPid(s.pid))it.push('<div class="sep"></div>',`<div class="mi" data-svgo="${s.pid}"><span>Go to process</span></div>`);
     if(!it.length)it.push('<div class="mh">The service does not accept commands</div>');
     menuIds=null;
@@ -2595,7 +2595,7 @@ menu.addEventListener('click',async e=>{const mi=e.target.closest('[data-g]');if
     else if(g==='bottom')toggleBottom();
     else if(g==='right')toggleRight();
     else if(g==='admin')await runAdmin();
-    else if(g==='autostart'){autostart=await appCmd('autostart_set',!autostart);toast(autostart?'The task manager will start with Windows (in the tray)':'Autostart turned off','info');}
+    else if(g==='autostart'){autostart=await appCmd('autostart_set',!autostart);toast(autostart?'Taskscope will start with Windows (in the tray)':'Autostart turned off','info');}
     else if(g==='hide')await appCmd('hide');
     else if(g==='quit')await appCmd('quit');
   }catch(err){toast(err.message||String(err),'red');}
