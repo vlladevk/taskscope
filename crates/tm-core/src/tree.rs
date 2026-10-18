@@ -1,4 +1,4 @@
-//! Дерево «кто кого запустил» и суммы по поддеревьям.
+//! The “who started whom” tree and subtree totals.
 
 use crate::sampler::ProcStat;
 use std::collections::HashMap;
@@ -10,8 +10,8 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Строит дерево по PPID. Родитель признаётся только если он создан раньше ребёнка —
-    /// иначе PPID указывает на уже умерший процесс, чей PID занял кто-то другой.
+    /// Builds the tree by PPID. A parent is accepted only if it was created before the child —
+    /// otherwise the PPID points to a process that already died and whose PID someone else took.
     pub fn build(procs: &[ProcStat]) -> Self {
         let by_pid: HashMap<u32, usize> = procs.iter().enumerate().map(|(i, p)| (p.pid, i)).collect();
         let mut parent = vec![None; procs.len()];
@@ -35,7 +35,7 @@ impl Tree {
         Self { parent, children, roots }
     }
 
-    /// Индексы всех потомков (без самого узла).
+    /// Indices of all descendants (without the node itself).
     pub fn descendants(&self, i: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let mut stack = self.children[i].clone();
@@ -46,13 +46,13 @@ impl Tree {
         out
     }
 
-    /// Цепочка предков от корня к узлу (без самого узла).
+    /// The chain of ancestors from the root to the node (without the node itself).
     pub fn ancestors(&self, i: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let mut cur = self.parent[i];
         while let Some(j) = cur {
             if out.contains(&j) {
-                break; // защита от циклов при повреждённых данных
+                break; // protection against cycles in broken data
             }
             out.push(j);
             cur = self.parent[j];
@@ -61,16 +61,16 @@ impl Tree {
         out
     }
 
-    /// Суммы по поддеревьям (узел + все потомки) для произвольной метрики.
+    /// Subtree totals (node + all descendants) for an arbitrary metric.
     pub fn inclusive<F: Fn(usize) -> f64>(&self, n: usize, f: F) -> Vec<f64> {
         self.inclusive_if(n, f, |_, _| true)
     }
 
-    /// Как `inclusive`, но значение ребёнка добавляется к родителю, только если `joins(родитель, ребёнок)`.
-    /// Так считается сумма «по приложению»: программы, запущенные из Проводника, в его сумму не входят.
+    /// Like `inclusive`, but a child’s value is added to its parent only if `joins(parent, child)`.
+    /// That is how the “by app” total is computed: programs started from Explorer are not in its total.
     pub fn inclusive_if<F: Fn(usize) -> f64, J: Fn(usize, usize) -> bool>(&self, n: usize, f: F, joins: J) -> Vec<f64> {
         let mut acc: Vec<f64> = (0..n).map(&f).collect();
-        // обход в обратном порядке глубины: сначала листья
+        // walk in reverse depth order: leaves first
         let mut order = Vec::with_capacity(n);
         let mut stack: Vec<usize> = self.roots.clone();
         while let Some(i) = stack.pop() {

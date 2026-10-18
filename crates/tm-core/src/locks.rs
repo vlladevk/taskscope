@@ -1,18 +1,18 @@
-//! «Кто держит файл»: процессы, открывшие файл или что-нибудь в папке.
+//! “Who holds the file”: processes that opened a file or anything in a folder.
 //!
-//! Файл — через Restart Manager (тот же механизм, которым установщики выясняют, что мешает
-//! заменить файл): прав администратора не требует, видит и службы, для одного файла отвечает сразу
-//! и знает названия окон и служб.
+//! A file — through Restart Manager (the same mechanism installers use to find out what prevents
+//! replacing a file): needs no administrator rights, sees services too, answers at once for a single file
+//! and knows window and service names.
 //!
-//! Папка — двумя путями одновременно:
-//! - таблица дескрипторов всей системы, как «Найти дескрипторы» в System Informer: один проход
-//!   за секунду для папки любого размера (хоть весь C:\), с путями открытых файлов, но только
-//!   у процессов, чьи дескрипторы можно прочитать (без прав администратора — у своих);
-//! - обход папки с вопросом ядру про каждый файл и подпапку «кто тебя открыл»
-//!   (FileProcessIdsUsingFileInformation): видит всех, включая службы, без прав администратора,
-//!   но огромную папку за отведённое время не обойти — только он даёт «частично».
+//! A folder — two ways at once:
+//! - the system-wide handle table, like “Find handles” in System Informer: one pass
+//!   in a second for a folder of any size (even all of C:\), with paths of open files, but only
+//!   for processes whose handles can be read (without administrator rights — your own);
+//! - walking the folder and asking the kernel about every file and subfolder “who opened you”
+//!   (FileProcessIdsUsingFileInformation): sees everyone, services included, without administrator rights,
+//!   but a huge folder cannot be walked in the allotted time — only this one yields “partial”.
 //!
-//! Restart Manager для папок не годится: на 556 файлах он думал 39 секунд.
+//! Restart Manager is no good for folders: on 556 files it thought for 39 seconds.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::c_void;
@@ -44,32 +44,32 @@ extern "system" {
     fn NtQueryInformationFile(h: HANDLE, iosb: *mut [u64; 2], buf: *mut c_void, len: u32, class: i32) -> i32;
 }
 
-/// Обход папки — не дольше этого: огромные деревья (AppData, диск целиком) — частично.
+/// Walking the folder — no longer than this: huge trees (AppData, a whole drive) — partially.
 const WALK_BUDGET: Duration = Duration::from_secs(3);
-/// И не больше стольких файлов и подпапок.
+/// And no more than this many files and subfolders.
 const MAX_FILES: usize = 100_000;
-/// Больше путей одного процесса в ответ не кладём.
+/// No more paths per process are put into the answer.
 const FILES_PER_HOLDER: usize = 5;
-/// Имя файла может не ответить (на файле висит синхронная операция) — поток, который его
-/// спросил, остаётся ждать, а проход продолжается с новым. После стольких зависших — стоп.
+/// A file name may not answer (a synchronous operation hangs on the file) — the thread that
+/// asked stays waiting, and the pass continues with a new one. After this many hung ones — stop.
 const MAX_STUCK: usize = 8;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Holder {
     pub pid: u32,
-    /// Время создания процесса (как в замерах) — чтобы действие попало именно в него.
+    /// Process creation time (as in the samples) — so the action hits exactly this process.
     pub create_time: i64,
-    /// Имя приложения: у Restart Manager — заголовок окна или описание, иначе — имя файла программы.
+    /// The app name: from Restart Manager — the window title or description, otherwise — the program file name.
     pub app: String,
-    /// Короткое имя службы, если файл держит служба.
+    /// The short service name, if a service holds the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
     /// window, service, explorer, console, critical, other.
     pub kind: &'static str,
-    /// Какие пути внутри папки открыты (первые несколько).
+    /// Which paths inside the folder are open (the first few).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
-    /// Сколько всего открыто внутри папки (дескрипторов или найденных путей).
+    /// How many are open inside the folder in total (handles or found paths).
     #[serde(skip_serializing_if = "is_zero")]
     pub open: usize,
 }
@@ -81,17 +81,17 @@ fn is_zero(n: &usize) -> bool {
 #[derive(Clone, Debug, Serialize)]
 pub struct Holders {
     pub holders: Vec<Holder>,
-    /// Сколько файлов и подпапок проверено обходом.
+    /// How many files and subfolders the walk checked.
     pub files: usize,
-    /// Папка обойдена не целиком, и есть процессы, чьи дескрипторы не прочитать, — «никто»
-    /// тогда не окончательно (для них).
+    /// The folder was not walked completely, and there are processes whose handles cannot be read — “nobody”
+    /// is then not final (for them).
     pub truncated: bool,
-    /// Файлы, которые не открыть даже для чтения атрибутов (нет доступа) — пропущены.
+    /// Files that cannot be opened even to read attributes (no access) — skipped.
     pub skipped: usize,
-    /// Папка проверена по таблице дескрипторов (целиком, у всех доступных процессов).
+    /// The folder was checked against the handle table (completely, for all accessible processes).
     pub scanned: bool,
-    /// Процессы с открытыми файлами, чьи дескрипторы прочитать нельзя (службы, программы от
-    /// администратора, защищённые процессы): для них — только обход папки.
+    /// Processes with open files whose handles cannot be read (services, programs running as
+    /// administrator, protected processes): only the folder walk covers them.
     pub unscanned: usize,
 }
 
@@ -107,8 +107,8 @@ fn wstr(s: &[u16]) -> String {
     String::from_utf16_lossy(&s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())])
 }
 
-/// Сетевые пути не принимаем: обращение к \\сервер\… отправило бы серверу учётные данные
-/// пользователя (NTLM), а путь может прийти от ИИ-агента или веб-страницы.
+/// Network paths are not accepted: accessing \\server\… would send the server the user’s
+/// credentials (NTLM), and the path may come from an AI agent or a web page.
 pub fn is_remote(p: &Path) -> bool {
     use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
     let s = p.to_string_lossy().replace('/', "\\");
@@ -118,7 +118,7 @@ pub fn is_remote(p: &Path) -> bool {
     if s.to_ascii_uppercase().starts_with(r"\\?\UNC\") {
         return true;
     }
-    // подключённый сетевой диск (Z:) — тот же сервер
+    // a mapped network drive (Z:) — the same server
     let root: String = s.chars().take(2).collect();
     if root.len() == 2 && root.ends_with(':') {
         const DRIVE_REMOTE: u32 = 4;
@@ -129,27 +129,27 @@ pub fn is_remote(p: &Path) -> bool {
 
 fn rm_err(code: u32) -> io::Error {
     match code {
-        5 => io::Error::new(io::ErrorKind::PermissionDenied, "нет доступа — файл держит служба или система, нужны права администратора"),
-        32 => io::Error::other("файл занят системой (например, файл подкачки или журнал) — Restart Manager его не проверяет"),
+        5 => io::Error::new(io::ErrorKind::PermissionDenied, "no access — a service or the system holds the file, administrator rights required"),
+        32 => io::Error::other("the file is in use by the system (for example, the page file or a log) — Restart Manager does not check it"),
         c => io::Error::from_raw_os_error(c as i32),
     }
 }
 
-/// Процессы, которые держат файл (или что-нибудь внутри папки).
+/// Processes that hold the file (or anything inside the folder).
 pub fn holders(path: &str) -> io::Result<Holders> {
     let p = Path::new(path.trim().trim_matches('"'));
     if is_remote(p) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "сетевые пути не проверяются — только локальные диски"));
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "network paths are not checked — only local drives"));
     }
     if !p.exists() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("нет такого файла или папки: {}", p.display())));
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("no such file or folder: {}", p.display())));
     }
     if !p.is_dir() {
         let w = wide(&p.to_string_lossy());
         return Ok(finish(query(&[&w]).map_err(rm_err)?));
     }
-    // если таблица дескрипторов прочитана у всех процессов, обход останавливаем, не дожидаясь:
-    // он нужен только для недоступных
+    // if the handle table was read for all processes, stop the walk without waiting:
+    // it is only needed for the inaccessible ones
     let stop = AtomicBool::new(false);
     let (scan, probe) = std::thread::scope(|sc| {
         let probe = std::thread::Builder::new().name("tm-who-walk".into()).spawn_scoped(sc, || probe_folder(p, &stop));
@@ -173,7 +173,7 @@ pub fn holders(path: &str) -> io::Result<Holders> {
             out.scanned = true;
             out.unscanned = scan.unscanned;
             if scan.complete() {
-                // все процессы проверены по всей папке — пропуски обхода ничего не значат
+                // all processes were checked across the whole folder — gaps in the walk mean nothing
                 out.truncated = false;
                 out.skipped = 0;
             }
@@ -182,15 +182,15 @@ pub fn holders(path: &str) -> io::Result<Holders> {
                 out.holders.push(Holder { pid: h.pid, create_time: h.create_time, app: h.image, service, kind, files: h.files, open: h.open });
             }
         }
-        Err(e) => crate::logs::warn(format!("кто держит папку: таблица дескрипторов не прочитана: {e}")),
+        Err(e) => crate::logs::warn(format!("who holds the folder: the handle table was not read: {e}")),
     }
-    // найденное обходом — к процессам, которых нет в таблице (службы, программы от администратора)
+    // what the walk found — for processes missing from the table (services, programs running as administrator)
     let me = std::process::id();
     let mut extra: Vec<(u32, Found)> = probe.found.into_iter().filter(|(pid, _)| *pid != me && *pid != 0).collect();
     extra.sort_by(|a, b| b.1.open.cmp(&a.1.open).then(a.0.cmp(&b.0)));
     for (pid, f) in extra {
         if let Some(h) = out.holders.iter_mut().find(|h| h.pid == pid) {
-            // у доступного процесса пути уже есть из таблицы; если нет — хотя бы из обхода
+            // an accessible process already has paths from the table; if not — at least from the walk
             if h.files.is_empty() {
                 h.files = f.files;
                 h.open = f.open;
@@ -204,7 +204,7 @@ pub fn holders(path: &str) -> io::Result<Holders> {
     Ok(out)
 }
 
-/// Имена процессов и служб — по требованию, один раз на проверку.
+/// Process and service names — on demand, once per check.
 #[derive(Default)]
 struct Names {
     procs: Option<HashMap<u32, (i64, String)>>,
@@ -240,7 +240,7 @@ impl Names {
     }
 }
 
-// ───────────────────────────── обход папки: «кто тебя открыл» ─────────────────────────────
+// ───────────────────────────── folder walk: “who opened you” ─────────────────────────────
 
 #[derive(Default)]
 struct Found {
@@ -256,9 +256,9 @@ struct Probe {
     truncated: bool,
 }
 
-/// Процессы, открывшие этот файл или папку (FileProcessIdsUsingFileInformation, класс 47):
-/// ядро знает само, прав администратора не нужно, службы видны. Открываем только для чтения
-/// атрибутов — это не мешает чужим блокировкам и не будит антивирус. `None` — не открыть.
+/// Processes that opened this file or folder (FileProcessIdsUsingFileInformation, class 47):
+/// the kernel knows by itself, no administrator rights needed, services are visible. Opened only to read
+/// attributes — this does not interfere with other locks and does not wake the antivirus. `None` — cannot open.
 fn pids_using(path: &Path) -> Option<Vec<u32>> {
     let w = wide(&path.to_string_lossy());
     let h = unsafe {
@@ -268,7 +268,7 @@ fn pids_using(path: &Path) -> Option<Vec<u32>> {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
-            // папки открываются только так; ссылки — сами по себе, не то, куда они ведут
+            // folders can be opened only this way; links — by themselves, not what they point to
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             std::ptr::null_mut(),
         )
@@ -277,7 +277,7 @@ fn pids_using(path: &Path) -> Option<Vec<u32>> {
         return None;
     }
     const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
-    // FILE_PROCESS_IDS_USING_FILE_INFORMATION: число (u32, выровнено до 8), затем PID по 8 байт
+    // FILE_PROCESS_IDS_USING_FILE_INFORMATION: count (u32, aligned to 8), then 8-byte PIDs
     let mut buf = vec![0u64; 256];
     let out = loop {
         let mut iosb = [0u64; 2];
@@ -296,12 +296,12 @@ fn pids_using(path: &Path) -> Option<Vec<u32>> {
     out
 }
 
-/// Папка целиком (с ней самой) — вопрос «кто тебя открыл» про каждый файл и подпапку.
+/// The whole folder (including itself) — the “who opened you” question for every file and subfolder.
 fn probe_folder(root: &Path, stop: &AtomicBool) -> Probe {
     let started = Instant::now();
     let over = || started.elapsed() > WALK_BUDGET || stop.load(Ordering::Relaxed);
-    // запрос дорогой (~40–90 мс: ядро перебирает дескрипторы всех процессов), но в несколько
-    // потоков идёт почти во столько же раз быстрее: 44 файла — 2,8 с в один поток, 0,6 с в восемь
+    // the query is expensive (~40–90 ms: the kernel goes through the handles of all processes), but with several
+    // threads it is almost that many times faster: 44 files — 2.8 s on one thread, 0.6 s on eight
     let workers = std::thread::available_parallelism().map_or(4, |n| (n.get() / 2).clamp(2, 8));
     let result = Mutex::new(Probe::default());
     let (tx, rx) = std::sync::mpsc::sync_channel::<PathBuf>(workers * 4);
@@ -312,7 +312,7 @@ fn probe_folder(root: &Path, stop: &AtomicBool) -> Probe {
             sc.spawn(|| loop {
                 let Ok(p) = rx.lock().unwrap_or_else(|e| e.into_inner()).recv() else { break };
                 if over() {
-                    // время вышло — оставшееся в очереди только выбираем, не проверяя
+                    // time is up — what is left in the queue is only drained, not checked
                     result.lock().unwrap_or_else(|e| e.into_inner()).truncated = true;
                     continue;
                 }
@@ -332,7 +332,7 @@ fn probe_folder(root: &Path, stop: &AtomicBool) -> Probe {
                 }
             });
         }
-        // папка в ширину: сначала верхние уровни — при обрезке проверено самое близкое к ней
+        // the folder breadth-first: top levels first — when cut short, what is closest to it has been checked
         let mut sent = 1usize;
         let _ = tx.send(root.to_path_buf());
         let mut queue = VecDeque::from([root.to_path_buf()]);
@@ -344,7 +344,7 @@ fn probe_folder(root: &Path, stop: &AtomicBool) -> Probe {
                     break 'walk;
                 }
                 let Ok(t) = e.file_type() else { continue };
-                // ссылки на другие папки не обходим: можно уйти в цикл или на другой диск
+                // links to other folders are not followed: that could loop or go to another drive
                 if t.is_symlink() {
                     continue;
                 }
@@ -366,7 +366,7 @@ fn probe_folder(root: &Path, stop: &AtomicBool) -> Probe {
 }
 
 
-// ───────────────────────────── таблица дескрипторов ─────────────────────────────
+// ───────────────────────────── handle table ─────────────────────────────
 
 struct Hit {
     pid: u32,
@@ -379,7 +379,7 @@ struct Hit {
 struct Scan {
     hits: Vec<Hit>,
     unscanned: usize,
-    /// Проход остановлен досрочно (слишком много файлов не ответило).
+    /// The pass stopped early (too many files did not answer).
     incomplete: bool,
 }
 
@@ -389,22 +389,22 @@ impl Scan {
     }
 }
 
-/// Папка в виде ядра («\Device\HarddiskVolume3\Users\me») и как её вернуть к букве диска.
+/// The folder in kernel form (“\Device\HarddiskVolume3\Users\me”) and how to map it back to a drive letter.
 struct NtPath {
-    /// Путь папки, строчными.
+    /// The folder path, lower-case.
     target: String,
-    /// «\Device\HarddiskVolume3», строчными.
+    /// “\Device\HarddiskVolume3”, lower-case.
     device: String,
     /// «C:».
     drive: String,
 }
 
 fn nt_path(p: &Path) -> io::Result<NtPath> {
-    // настоящий путь: без «..», коротких имён 8.3, подставленных дисков (subst) и ссылок
+    // the real path: without “..”, 8.3 short names, substituted drives (subst) and links
     let c = std::fs::canonicalize(p)?;
     let s = c.to_string_lossy();
     let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
-    let drive = s.get(..2).filter(|d| d.ends_with(':')).ok_or_else(|| io::Error::other(format!("у папки нет буквы диска: {s}")))?;
+    let drive = s.get(..2).filter(|d| d.ends_with(':')).ok_or_else(|| io::Error::other(format!("the folder has no drive letter: {s}")))?;
     let mut dev = vec![0u16; 1024];
     let n = unsafe { QueryDosDeviceW(wide(drive).as_ptr(), dev.as_mut_ptr(), dev.len() as u32) };
     if n == 0 {
@@ -415,16 +415,16 @@ fn nt_path(p: &Path) -> io::Result<NtPath> {
     Ok(NtPath { target: format!("{device}{rest}"), device, drive: drive.to_string() })
 }
 
-/// Проход по открытым файлам всех процессов: кто держит что-нибудь внутри папки.
-/// 200 тысяч дескрипторов (11 тысяч файлов у доступных процессов) — около секунды.
+/// A pass over the open files of all processes: who holds anything inside the folder.
+/// 200 thousand handles (11 thousand files of accessible processes) — about a second.
 fn scan_folder(p: &Path) -> io::Result<Scan> {
     let nt = nt_path(p)?;
     let prefix = format!("{}\\", nt.target);
     let Some(file_type) = crate::inspect::type_names().iter().find(|(_, n)| n.as_str() == "File").map(|(&i, _)| i) else {
-        return Err(io::Error::other("тип объекта File не найден"));
+        return Err(io::Error::other("the File object type was not found"));
     };
     let _debug = DebugPrivilege::enable();
-    // SystemExtendedHandleInformation (64): число, резерв, затем записи по 40 байт
+    // SystemExtendedHandleInformation (64): count, reserved, then 40-byte entries
     let buf = crate::nt::query_system(64, 8 << 20)?;
     let rd = |o: usize, n: usize| -> u64 {
         let mut a = [0u8; 8];
@@ -447,7 +447,7 @@ fn scan_folder(p: &Path) -> io::Result<Scan> {
             continue;
         }
         let pid = rd(e + 8, 8) as u32;
-        // себя не смотрим: проверка сама ничего в папке не держит
+        // skip ourselves: the check itself holds nothing in the folder
         if pid == me_pid {
             continue;
         }
@@ -480,7 +480,7 @@ fn scan_folder(p: &Path) -> io::Result<Scan> {
         let ct = *ct;
         let h = hits.entry(pid).or_insert_with(|| Hit { pid, create_time: ct, image: String::new(), files: Vec::new(), open: 0 });
         h.open += 1;
-        // обратно к букве диска: «\Device\HarddiskVolume3\x» → «C:\x»
+        // back to the drive letter: “\Device\HarddiskVolume3\x” → “C:\x”
         let dos = format!("{}{}", nt.drive, name.get(nt.device.len()..).unwrap_or(""));
         if h.files.len() < FILES_PER_HOLDER && !h.files.contains(&dos) {
             h.files.push(dos);
@@ -496,9 +496,9 @@ fn scan_folder(p: &Path) -> io::Result<Scan> {
     Ok(Scan { hits, unscanned: unscanned.len(), incomplete })
 }
 
-/// От администратора — право отладки (SeDebugPrivilege) на время прохода, чтобы прочитать
-/// дескрипторы и системных процессов. Только в копии маркера этого потока: остальная программа
-/// (завершение процессов!) работает с прежними правами.
+/// As administrator — the debug privilege (SeDebugPrivilege) for the duration of the pass, to read
+/// the handles of system processes too. Only in a copy of this thread’s token: the rest of the program
+/// (ending processes!) works with the previous rights.
 struct DebugPrivilege(bool);
 
 impl DebugPrivilege {
@@ -530,9 +530,9 @@ impl Drop for DebugPrivilege {
     }
 }
 
-// ───────────────────────────── Restart Manager (один файл) ─────────────────────────────
+// ───────────────────────────── Restart Manager (one file) ─────────────────────────────
 
-/// Один сеанс Restart Manager: регистрируем файлы и спрашиваем, кто их держит.
+/// One Restart Manager session: register the files and ask who holds them.
 fn query(files: &[&[u16]]) -> Result<Vec<RM_PROCESS_INFO>, u32> {
     let mut key = [0u16; 64]; // CCH_RM_SESSION_KEY + 1
     let mut h = 0u32;
@@ -559,7 +559,7 @@ fn query(files: &[&[u16]]) -> Result<Vec<RM_PROCESS_INFO>, u32> {
             _ => return Err(r),
         }
     }
-    // список всё время меняется — считаем отказом
+    // the list keeps changing — treat it as a failure
     Err(234)
 }
 
@@ -569,7 +569,7 @@ fn finish(list: Vec<RM_PROCESS_INFO>) -> Holders {
     let holders = list
         .iter()
         .filter(|i| seen.insert((i.Process.dwProcessId, i.Process.ProcessStartTime.dwLowDateTime, i.Process.ProcessStartTime.dwHighDateTime)))
-        // себя не показываем: проверка открывает файл сама
+        // do not show ourselves: the check opens the file itself
         .filter(|i| i.Process.dwProcessId != me && i.Process.dwProcessId != 0)
         .map(|i| {
             let ft = i.Process.ProcessStartTime;

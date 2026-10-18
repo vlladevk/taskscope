@@ -1,5 +1,5 @@
-//! Службы Windows: список (EnumServicesStatusEx), какие службы живут в каком процессе
-//! (имена служб у svchost.exe — как в System Informer), запуск, остановка и перезапуск.
+//! Windows services: the list (EnumServicesStatusEx), which services live in which process
+//! (service names for svchost.exe — as in System Informer), start, stop and restart.
 
 use std::collections::HashMap;
 use std::io;
@@ -18,8 +18,8 @@ use windows_sys::Win32::System::Services::{
 
 use crate::system::wide;
 
-/// Службы, без которых Windows перестаёт работать (вход, RPC, COM, питание, устройства).
-/// Их не останавливаем без явного «принудительно»: System Informer тоже предупреждает.
+/// Services without which Windows stops working (sign-in, RPC, COM, power, devices).
+/// They are not stopped without an explicit “force”: System Informer warns about them too.
 const CRITICAL: &[&str] = &[
     "rpcss", "rpceptmapper", "dcomlaunch", "lsm", "brokerinfrastructure", "samss", "plugplay", "power",
     "coremessagingregistrar", "systemeventsbroker", "profsvc", "gpsvc", "eventlog", "usermanager", "staterepository",
@@ -30,27 +30,27 @@ const CRITICAL: &[&str] = &[
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ServiceInfo {
-    /// Короткое имя: Dnscache, wuauserv.
+    /// Short name: Dnscache, wuauserv.
     pub name: String,
-    /// Отображаемое имя: «DNS-клиент».
+    /// Display name: “DNS Client”.
     pub display: String,
     /// running, stopped, start_pending, stop_pending, paused, …
     pub state: &'static str,
-    /// Процесс службы (0 — не запущена).
+    /// The service process (0 — not running).
     pub pid: u32,
-    /// auto, auto_delayed, manual, disabled, boot, system (пусто — неизвестно).
+    /// auto, auto_delayed, manual, disabled, boot, system (empty — unknown).
     pub start: &'static str,
-    /// Живёт в общем процессе svchost вместе с другими службами.
+    /// Lives in a shared svchost process together with other services.
     pub shared: bool,
-    /// Служба принимает команду остановки.
+    /// The service accepts the stop command.
     pub can_stop: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Системная: без неё Windows работать не будет.
+    /// System service: Windows will not work without it.
     pub critical: bool,
 }
 
-/// Дескриптор диспетчера служб или службы, закрывается сам.
+/// A handle of the service manager or a service, closed automatically.
 struct Sc(SC_HANDLE);
 
 impl Drop for Sc {
@@ -64,8 +64,8 @@ impl Drop for Sc {
 fn last_err(what: &str) -> io::Error {
     let code = unsafe { GetLastError() };
     match code {
-        5 => io::Error::new(io::ErrorKind::PermissionDenied, format!("{what}: нужны права администратора")),
-        1060 => io::Error::new(io::ErrorKind::NotFound, format!("{what}: такой службы нет")),
+        5 => io::Error::new(io::ErrorKind::PermissionDenied, format!("{what}: administrator rights required")),
+        1060 => io::Error::new(io::ErrorKind::NotFound, format!("{what}: no such service")),
         _ => io::Error::other(format!("{what}: {}", io::Error::from_raw_os_error(code as i32))),
     }
 }
@@ -73,7 +73,7 @@ fn last_err(what: &str) -> io::Error {
 fn manager(access: u32) -> io::Result<Sc> {
     let h = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), access) };
     if h.is_null() {
-        return Err(last_err("диспетчер служб"));
+        return Err(last_err("service manager"));
     }
     Ok(Sc(h))
 }
@@ -103,8 +103,8 @@ pub fn is_critical(name: &str) -> bool {
     CRITICAL.contains(&name.to_ascii_lowercase().as_str())
 }
 
-/// Тип запуска и описание меняются редко, а спрашивать их надо у каждой службы отдельно —
-/// кэшируем на 5 минут.
+/// The start type and description change rarely, but they have to be asked for each service separately —
+/// cached for 5 minutes.
 fn config_of(scm: &Sc, name: &str) -> (&'static str, Option<String>) {
     type Cache = HashMap<String, (Instant, &'static str, Option<String>)>;
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
@@ -121,7 +121,7 @@ fn config_of(scm: &Sc, name: &str) -> (&'static str, Option<String>) {
     let mut buf = vec![0u64; 1024];
     let mut need = 0u32;
     let start = if unsafe { QueryServiceConfigW(h.0, buf.as_mut_ptr().cast::<QUERY_SERVICE_CONFIGW>(), (buf.len() * 8) as u32, &mut need) } != 0 {
-        // SAFETY: буфер заполнен структурой QUERY_SERVICE_CONFIGW.
+        // SAFETY: the buffer is filled with a QUERY_SERVICE_CONFIGW struct.
         let c = unsafe { &*buf.as_ptr().cast::<QUERY_SERVICE_CONFIGW>() };
         match c.dwStartType {
             0 => "boot",
@@ -143,10 +143,10 @@ fn config_of(scm: &Sc, name: &str) -> (&'static str, Option<String>) {
         ""
     };
     let desc = if unsafe { QueryServiceConfig2W(h.0, SERVICE_CONFIG_DESCRIPTION, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32, &mut need) } != 0 {
-        // SAFETY: в начале буфера — SERVICE_DESCRIPTIONW (указатель на строку в том же буфере).
+        // SAFETY: the buffer starts with SERVICE_DESCRIPTIONW (a pointer to a string in the same buffer).
         let p = unsafe { *buf.as_ptr().cast::<*const u16>() };
         let s = pwstr(p);
-        // описания вида «@%SystemRoot%\system32\x.dll,-100» — ресурс, который не удалось прочитать
+        // descriptions like “@%SystemRoot%\system32\x.dll,-100” — a resource that could not be read
         (!s.is_empty() && !s.starts_with('@')).then_some(s)
     } else {
         None
@@ -155,11 +155,11 @@ fn config_of(scm: &Sc, name: &str) -> (&'static str, Option<String>) {
     (start, desc)
 }
 
-/// Все службы (без драйверов). `details` — ещё и тип запуска с описанием (дольше: по запросу на службу).
+/// All services (without drivers). `details` — also the start type and description (slower: one query per service).
 pub fn list(details: bool) -> io::Result<Vec<ServiceInfo>> {
     let scm = manager(SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE)?;
-    // не больше 256 КБ: с буфером крупнее служба управления отвечает ошибкой 1783
-    // (RPC_X_BAD_STUB_DATA); остальное дочитывается по resume
+    // no more than 256 KB: with a larger buffer the service manager answers with error 1783
+    // (RPC_X_BAD_STUB_DATA); the rest is read via resume
     let mut buf: Vec<u64> = vec![0; 32 * 1024];
     let mut out = Vec::new();
     let mut resume = 0u32;
@@ -181,9 +181,9 @@ pub fn list(details: bool) -> io::Result<Vec<ServiceInfo>> {
         };
         let more = ok == 0 && unsafe { GetLastError() } == 234; // ERROR_MORE_DATA
         if ok == 0 && !more {
-            return Err(last_err("список служб"));
+            return Err(last_err("service list"));
         }
-        // SAFETY: EnumServicesStatusExW положил в буфер count структур, строки — в том же буфере.
+        // SAFETY: EnumServicesStatusExW put count structs into the buffer, the strings are in the same buffer.
         let items = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<ENUM_SERVICE_STATUS_PROCESSW>(), count as usize) };
         for s in items {
             let st = &s.ServiceStatusProcess;
@@ -205,7 +205,7 @@ pub fn list(details: bool) -> io::Result<Vec<ServiceInfo>> {
             break;
         }
         if count == 0 {
-            // буфер мал даже для одной записи
+            // the buffer is too small even for one entry
             buf.resize((need as usize).div_ceil(8) + 1024, 0);
         }
     }
@@ -241,22 +241,22 @@ fn wait_state(h: &Sc, want: u32, limit: Duration) -> bool {
     false
 }
 
-/// Запуск, остановка или перезапуск службы. Системные (`CRITICAL`) останавливаются только с `force`.
-/// Возвращает итоговое состояние.
-/// Проверка «на сухую»: почему действие не выйдет — до того, как его пробовать.
+/// Start, stop or restart a service. System ones (`CRITICAL`) are stopped only with `force`.
+/// Returns the resulting state.
+/// A dry-run check: why the action would fail — before trying it.
 pub fn precheck(s: &ServiceInfo, what: Control, force: bool) -> Result<(), String> {
     if what != Control::Start && s.critical && !force {
-        return Err("системная служба: без неё Windows перестанет работать как надо — нужен --force".into());
+        return Err("system service: Windows will not work properly without it — --force required".into());
     }
     match what {
-        Control::Stop | Control::Restart if s.state == "stopped" && what == Control::Stop => return Err("уже остановлена".into()),
-        Control::Stop | Control::Restart if s.state != "stopped" && !s.can_stop => return Err("служба не принимает команду остановки".into()),
-        Control::Start if s.state == "running" => return Err("уже работает".into()),
-        Control::Start | Control::Restart if s.start == "disabled" => return Err("тип запуска «Отключена» — сначала включите её в «Службах» Windows".into()),
+        Control::Stop | Control::Restart if s.state == "stopped" && what == Control::Stop => return Err("already stopped".into()),
+        Control::Stop | Control::Restart if s.state != "stopped" && !s.can_stop => return Err("the service does not accept the stop command".into()),
+        Control::Start if s.state == "running" => return Err("already running".into()),
+        Control::Start | Control::Restart if s.start == "disabled" => return Err("start type is “Disabled” — enable it in Windows Services first".into()),
         _ => {}
     }
     if !crate::system::is_elevated() {
-        return Err("нужны права администратора".into());
+        return Err("administrator rights required".into());
     }
     Ok(())
 }
@@ -265,7 +265,7 @@ pub fn control(name: &str, what: Control, force: bool) -> io::Result<&'static st
     if what != Control::Start && is_critical(name) && !force {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("{name} — системная служба: без неё Windows перестанет работать как надо (нужно подтверждение)"),
+            format!("{name} is a system service: Windows will not work properly without it (confirmation required)"),
         ));
     }
     let scm = manager(SC_MANAGER_CONNECT)?;
@@ -284,26 +284,26 @@ pub fn control(name: &str, what: Control, force: bool) -> io::Result<&'static st
         if unsafe { ControlService(h.0, SERVICE_CONTROL_STOP, &mut st) } == 0 {
             let code = unsafe { GetLastError() };
             return Err(match code {
-                1051 => io::Error::other(format!("{name}: сначала остановите зависимые от неё службы")),
-                1052 => io::Error::other(format!("{name}: служба не принимает команду остановки")),
+                1051 => io::Error::other(format!("{name}: stop the services that depend on it first")),
+                1052 => io::Error::other(format!("{name}: the service does not accept the stop command")),
                 _ => last_err(name),
             });
         }
         if what == Control::Restart && !wait_state(&h, 1, Duration::from_secs(30)) {
-            return Err(io::Error::other(format!("{name}: не остановилась за 30 с — запуск отменён")));
+            return Err(io::Error::other(format!("{name}: did not stop within 30 s — start cancelled")));
         }
     }
     if matches!(what, Control::Start | Control::Restart) && unsafe { StartServiceW(h.0, 0, std::ptr::null()) } == 0 {
         let code = unsafe { GetLastError() };
         if code != 1056 {
-            // 1056 — уже запущена
+            // 1056 — already running
             return Err(match code {
-                1058 => io::Error::other(format!("{name}: служба отключена (тип запуска «Отключена»)")),
+                1058 => io::Error::other(format!("{name}: the service is disabled (start type “Disabled”)")),
                 _ => last_err(name),
             });
         }
     }
-    // короткое ожидание, чтобы ответить уже итоговым состоянием
+    // a short wait, to answer with the resulting state
     let want = if what == Control::Stop { 1 } else { 4 };
     wait_state(&h, want, Duration::from_secs(5));
     Ok(status(&h).map_or("unknown", |s| state_name(s.dwCurrentState)))

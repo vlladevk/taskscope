@@ -1,6 +1,6 @@
-//! Подробности одного процесса — как вкладки окна свойств процесса в System Informer:
-//! модули, потоки, дескрипторы и окружение. Всё читается по запросу (вкладка процесса
-//! открыта), а не в каждом замере: это дорого (таблица дескрипторов всей системы — мегабайты).
+//! Details of one process — like the tabs of the process properties window in System Informer:
+//! modules, threads, handles and environment. Everything is read on request (the process tab
+//! is open), not in every sample: it is expensive (the system-wide handle table is megabytes).
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -29,7 +29,7 @@ extern "system" {
     fn NtQueryObject(h: HANDLE, class: i32, buf: *mut c_void, len: u32, ret: *mut u32) -> i32;
 }
 
-/// Больше дескрипторов одного процесса не разбираем: у «течущих» процессов их сотни тысяч.
+/// No more handles of one process are parsed: “leaking” processes have hundreds of thousands.
 const MAX_HANDLES: usize = 20_000;
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,7 +43,7 @@ pub struct Module {
 #[derive(Clone, Debug, Serialize)]
 pub struct Thread {
     pub tid: u32,
-    /// Время ЦП ядра и пользователя, 100 нс — окно считает загрузку по разнице между запросами.
+    /// Kernel and user CPU time, 100 ns — the window computes the load from the difference between requests.
     pub kernel: i64,
     pub user: i64,
     pub create_time: i64,
@@ -53,7 +53,7 @@ pub struct Thread {
     /// running, ready, waiting, suspended, standby, terminated, other.
     pub state: &'static str,
     pub wait_reason: u32,
-    /// Точка входа потока: «модуль.dll+0x1a2b», как в System Informer.
+    /// The thread start address: “module.dll+0x1a2b”, as in System Informer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start: Option<String>,
 }
@@ -72,14 +72,14 @@ pub struct Handle {
 #[derive(Clone, Debug, Serialize)]
 pub struct Handles {
     pub list: Vec<Handle>,
-    /// Всего дескрипторов у процесса (список может быть обрезан до MAX_HANDLES).
+    /// Total handles of the process (the list may be cut to MAX_HANDLES).
     pub total: usize,
-    /// Удалось ли скопировать дескрипторы к себе, чтобы узнать имена (нет — у защищённых и чужих без прав).
+    /// Whether the handles could be duplicated to learn their names (no — for protected processes and other users’ without rights).
     pub names: bool,
-    /// Сколько дескрипторов какого типа — для сводки.
+    /// How many handles of each type — for the summary.
     pub by_type: Vec<(String, usize)>,
-    /// Имя одного из файлов не удалось узнать за отведённое время (на нём висит операция) —
-    /// имена остальных файлов не запрашивались.
+    /// The name of one of the files could not be obtained in time (an operation hangs on it) —
+    /// the names of the remaining files were not queried.
     pub files_skipped: bool,
 }
 
@@ -93,12 +93,12 @@ fn open_checked(pid: u32, create_time: i64, access: u32) -> io::Result<ProcHandl
     ProcHandle::open(pid, access | PROCESS_QUERY_LIMITED_INFORMATION, Some(create_time))
 }
 
-/// Загруженные модули (EXE и DLL), по адресу загрузки.
+/// Loaded modules (EXE and DLL), by load address.
 pub fn modules(pid: u32, create_time: i64) -> io::Result<Vec<Module>> {
-    // проверка времени создания: PID мог достаться другому процессу
+    // creation time check: the PID may have gone to another process
     drop(open_checked(pid, create_time, 0)?);
     let mut snap = ptr::null_mut();
-    // ERROR_BAD_LENGTH: процесс как раз загружает модуль — повторяем
+    // ERROR_BAD_LENGTH: the process is loading a module right now — retry
     for _ in 0..5 {
         snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) };
         if snap as isize != -1 || io::Error::last_os_error().raw_os_error() != Some(24) {
@@ -122,8 +122,8 @@ pub fn modules(pid: u32, create_time: i64) -> io::Result<Vec<Module>> {
     Ok(out)
 }
 
-/// Модули для подписи точек входа: окно обновляет потоки раз в 2 с, а список модулей
-/// меняется редко — держим его 10 с (последний процесс).
+/// Modules for labelling start addresses: the window refreshes threads every 2 s, while the module list
+/// changes rarely — keep it for 10 s (last process).
 fn modules_cached(pid: u32, create_time: i64) -> Vec<Module> {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
@@ -151,7 +151,7 @@ fn thread_state(state: u32, reason: u32) -> &'static str {
     }
 }
 
-/// «модуль+0xСМЕЩЕНИЕ» по списку модулей (отсортирован по адресу).
+/// “module+0xOFFSET” from the module list (sorted by address).
 fn symbolize(addr: u64, mods: &[Module]) -> String {
     let i = mods.partition_point(|m| m.base <= addr);
     match i.checked_sub(1).map(|i| &mods[i]) {
@@ -160,23 +160,23 @@ fn symbolize(addr: u64, mods: &[Module]) -> String {
     }
 }
 
-/// Потоки процесса из общего снимка (SYSTEM_THREAD_INFORMATION) и их точки входа.
+/// Process threads from the system snapshot (SYSTEM_THREAD_INFORMATION) and their start addresses.
 pub fn threads(pid: u32, create_time: i64) -> io::Result<Vec<Thread>> {
     let buf = nt::query_system(5, 1 << 20)?;
-    // смещения SYSTEM_PROCESS_INFORMATION (x64): число потоков, время создания, PID; потоки — сразу после 256 байт
+    // SYSTEM_PROCESS_INFORMATION offsets (x64): thread count, creation time, PID; threads — right after 256 bytes
     let rd32 = |o: usize| buf.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
     let rd64 = |o: usize| buf.get(o..o + 8).map_or(0, |b| i64::from_le_bytes(b.try_into().unwrap()));
     let mut off = 0usize;
     let entry = loop {
         if off + 256 > buf.len() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "процесс завершился"));
+            return Err(io::Error::new(io::ErrorKind::NotFound, "the process has exited"));
         }
         if rd64(off + 0x50) as u32 == pid && nt::js_safe(rd64(off + 32)) == create_time {
             break off;
         }
         let next = rd32(off) as usize;
         if next == 0 {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "процесс завершился"));
+            return Err(io::Error::new(io::ErrorKind::NotFound, "the process has exited"));
         }
         off += next;
     };
@@ -190,9 +190,9 @@ pub fn threads(pid: u32, create_time: i64) -> io::Result<Vec<Thread>> {
         }
         let tid = rd64(t + 48) as u32;
         let (state, reason) = (rd32(t + 68), rd32(t + 72));
-        // адрес из снимка — обычно RtlUserThreadStart; настоящая точка входа — Win32StartAddress (класс 9)
+        // the address from the snapshot is usually RtlUserThreadStart; the real start address is Win32StartAddress (class 9)
         let start = unsafe {
-            // класс 9 требует полного права запроса; «ограниченного» хватает не везде
+            // class 9 needs the full query right; the “limited” one is not enough everywhere
             let mut h = OpenThread(THREAD_QUERY_INFORMATION, 0, tid);
             if h.is_null() {
                 h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, 0, tid);
@@ -222,7 +222,7 @@ pub fn threads(pid: u32, create_time: i64) -> io::Result<Vec<Thread>> {
     Ok(out)
 }
 
-/// Имена типов объектов ядра по номеру (ObjectTypesInformation) — один раз за запуск.
+/// Kernel object type names by index (ObjectTypesInformation) — once per run.
 pub(crate) fn type_names() -> &'static HashMap<u16, String> {
     static T: OnceLock<HashMap<u16, String>> = OnceLock::new();
     T.get_or_init(|| {
@@ -235,7 +235,7 @@ pub(crate) fn type_names() -> &'static HashMap<u16, String> {
         }
         let b: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast(), buf.len() * 8) };
         let n = u32::from_le_bytes(b[0..4].try_into().unwrap()) as usize;
-        // OBJECT_TYPE_INFORMATION — 104 байта (x64), за ним имя, выровненное по 8
+        // OBJECT_TYPE_INFORMATION — 104 bytes (x64), followed by the name aligned to 8
         let mut off = 8usize;
         for i in 0..n {
             if off + 104 > b.len() {
@@ -245,7 +245,7 @@ pub(crate) fn type_names() -> &'static HashMap<u16, String> {
             let max = u16::from_le_bytes(b[off + 2..off + 4].try_into().unwrap()) as usize;
             let p = u64::from_le_bytes(b[off + 8..off + 16].try_into().unwrap()) as *const u16;
             let name = if p.is_null() { String::new() } else { String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len / 2) }) };
-            // TypeIndex (Windows 8.1+); на старых системах номера идут с 2
+            // TypeIndex (Windows 8.1+); on old systems the indices start at 2
             let idx = b[off + 90];
             map.insert(if idx != 0 { idx as u16 } else { i as u16 + 2 }, name);
             off += 104 + ((max + 7) & !7);
@@ -254,10 +254,10 @@ pub(crate) fn type_names() -> &'static HashMap<u16, String> {
     })
 }
 
-/// «\REGISTRY\MACHINE\…» → «HKLM\…», «\REGISTRY\USER\<SID>…» → «HKCU…» (свой SID) или «HKU\…».
+/// “\REGISTRY\MACHINE\…” → “HKLM\…”, “\REGISTRY\USER\<SID>…” → “HKCU…” (own SID) or “HKU\…”.
 fn pretty_key(name: &str) -> String {
     static SID: OnceLock<Option<String>> = OnceLock::new();
-    // регистр бывает любым: «\REGISTRY\MACHINE» и «\Registry\Machine»
+    // the case can be anything: “\REGISTRY\MACHINE” and “\Registry\Machine”
     const MACHINE: &str = r"\REGISTRY\MACHINE";
     const USER: &str = r"\REGISTRY\USER\";
     let upper = name.to_ascii_uppercase();
@@ -268,7 +268,7 @@ fn pretty_key(name: &str) -> String {
         let rest = &name[USER.len()..];
         if let Some(sid) = SID.get_or_init(crate::system::current_user_sid) {
             if let Some(tail) = rest.strip_prefix(sid.as_str()) {
-                // «<SID>_Classes\…» — это HKCU\Software\Classes, а не «HKCU_Classes»
+                // “<SID>_Classes\…” is HKCU\Software\Classes, not “HKCU_Classes”
                 if let Some(t) = tail.strip_prefix("_Classes") {
                     if t.is_empty() || t.starts_with('\\') {
                         return format!(r"HKCU\Software\Classes{t}");
@@ -290,7 +290,7 @@ fn object_name(h: HANDLE) -> String {
     if st < 0 {
         return String::new();
     }
-    // OBJECT_NAME_INFORMATION — UNICODE_STRING в начале буфера
+    // OBJECT_NAME_INFORMATION — a UNICODE_STRING at the start of the buffer
     let b: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast(), 16) };
     let len = u16::from_le_bytes([b[0], b[1]]) as usize;
     let p = u64::from_le_bytes(b[8..16].try_into().unwrap()) as *const u16;
@@ -300,12 +300,12 @@ fn object_name(h: HANDLE) -> String {
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len / 2) })
 }
 
-/// Имя объекта по скопированному дескриптору. Имена файлов-каналов не спрашиваем: запрос
-/// к синхронному каналу может зависнуть навсегда (System Informer обходит это отдельным потоком).
+/// The object name from a duplicated handle. Names of pipe files are not queried: a query
+/// to a synchronous pipe can hang forever (System Informer works around this with a separate thread).
 fn name_of(kind: &str, h: HANDLE) -> String {
     match kind {
         "File" => file_name(h),
-        // 0 — нет права узнать номер: пусто, а не «PID 0»
+        // 0 — no right to learn the number: empty, not “PID 0”
         "Process" => match unsafe { GetProcessId(h) } {
             0 => String::new(),
             id => format!("PID {id}"),
@@ -321,7 +321,7 @@ fn name_of(kind: &str, h: HANDLE) -> String {
     }
 }
 
-/// Типы, у которых бывает имя (остальные не копируем — это тысячи лишних вызовов).
+/// Types that can have a name (the others are not duplicated — that would be thousands of extra calls).
 const NAMED: &[&str] = &[
     "File", "Process", "Thread", "Key", "Directory", "Event", "Mutant", "Section", "Semaphore", "SymbolicLink", "ALPC Port", "WindowStation",
     "Desktop", "Timer", "Job", "Partition",
@@ -340,8 +340,8 @@ fn file_name(h: HANDLE) -> String {
     s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
 }
 
-/// Имя файла в виде ядра: «\Device\HarddiskVolume3\…». Без обращения к диспетчеру томов за
-/// буквой диска — заметно быстрее, что важно при проходе по всем открытым файлам системы.
+/// The file name in kernel form: “\Device\HarddiskVolume3\…”. Without asking the volume manager for
+/// the drive letter — noticeably faster, which matters when walking all open files of the system.
 pub(crate) fn nt_file_name(h: HANDLE) -> String {
     if unsafe { GetFileType(h) } != FILE_TYPE_DISK {
         return String::new();
@@ -354,8 +354,8 @@ pub(crate) fn nt_file_name(h: HANDLE) -> String {
     String::from_utf16_lossy(&w[..n])
 }
 
-/// Имена файлов в отдельном потоке: если запрос завис, поток остаётся ждать сам (он и закроет
-/// копию дескриптора, когда операция завершится), а проверка идёт дальше без имён файлов.
+/// File names in a separate thread: if a query hangs, the thread stays waiting by itself (it will also close
+/// the handle copy when the operation finishes), and the check goes on without file names.
 pub(crate) struct FileNamer {
     tx: Option<std::sync::mpsc::Sender<usize>>,
     rx: std::sync::mpsc::Receiver<String>,
@@ -380,7 +380,7 @@ impl FileNamer {
         Self { tx: spawned.ok().map(|_| tx), rx }
     }
 
-    /// Имя файла; `None` — не ответил вовремя (копию дескриптора закроет поток, когда освободится).
+    /// The file name; `None` — no answer in time (the thread closes the handle copy when it is free).
     pub(crate) fn name(&self, h: HANDLE) -> Option<String> {
         let Some(tx) = &self.tx else {
             unsafe { CloseHandle(h) };
@@ -394,13 +394,13 @@ impl FileNamer {
     }
 }
 
-/// Дескрипторы процесса: тип, доступ и, где это безопасно, имя объекта.
+/// Process handles: type, access and, where it is safe, the object name.
 pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
     let proc = open_checked(pid, create_time, 0)?;
-    // копировать дескрипторы — нужен PROCESS_DUP_HANDLE; без него — только типы
+    // duplicating handles needs PROCESS_DUP_HANDLE; without it — types only
     let dup_from = ProcHandle::open(pid, PROCESS_DUP_HANDLE | PROCESS_QUERY_LIMITED_INFORMATION, Some(create_time)).ok();
     drop(proc);
-    // SystemExtendedHandleInformation (64): число, резерв, затем записи по 40 байт
+    // SystemExtendedHandleInformation (64): count, reserved, then 40-byte entries
     let buf = nt::query_system(64, 4 << 20)?;
     let rd = |o: usize, n: usize| -> u64 {
         let mut a = [0u8; 8];
@@ -430,7 +430,7 @@ pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
             continue;
         }
         let hv = rd(e + 16, 8);
-        // копируем только типы, у которых вообще бывает имя (EtwRegistration, IRTimer… — нет)
+        // duplicate only types that can have a name at all (EtwRegistration, IRTimer… cannot)
         let dup = match &dup_from {
             Some(src) if NAMED.contains(&kind.as_str()) && !(kind == "File" && files_stuck) => unsafe {
                 let mut d: HANDLE = ptr::null_mut();
@@ -439,8 +439,8 @@ pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
             _ => None,
         };
         let name = match dup {
-            // имя файла — в отдельном потоке с таймаутом: запрос к файлу, на котором висит
-            // синхронная операция (ReadDirectoryChangesW, чтение канала), ждёт её завершения
+            // the file name — in a separate thread with a timeout: a query to a file with a pending
+            // synchronous operation (ReadDirectoryChangesW, a pipe read) waits for it to finish
             Some(d) if kind == "File" => match files.name(d) {
                 Some(n) => n,
                 None => {
@@ -462,7 +462,7 @@ pub fn handles(pid: u32, create_time: i64) -> io::Result<Handles> {
     Ok(Handles { list, total, names: dup_from.is_some(), by_type, files_skipped: files_stuck })
 }
 
-/// Текущая папка и переменные окружения процесса (из его PEB).
+/// The current folder and environment variables of the process (from its PEB).
 pub fn environment(pid: u32, create_time: i64) -> io::Result<Environment> {
     let h = open_checked(pid, create_time, PROCESS_VM_READ)?;
     let lp = nt::launch_params(h.raw())?;
@@ -471,7 +471,7 @@ pub fn environment(pid: u32, create_time: i64) -> io::Result<Environment> {
         .split(|&c| c == 0)
         .filter(|s| !s.is_empty())
         .map(String::from_utf16_lossy)
-        // «=C:=C:\…» — служебные переменные текущих папок дисков
+        // “=C:=C:\…” — internal variables for the current folders of drives
         .filter(|s| !s.starts_with('='))
         .filter_map(|s| s.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
         .collect();

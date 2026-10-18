@@ -1,7 +1,7 @@
-//! Настройки пользователя: `%LOCALAPPDATA%\tm\settings.json`.
+//! User settings: `%LOCALAPPDATA%\tm\settings.json`.
 //!
-//! Одни и те же для приложения, CLI и MCP — список защищённых процессов,
-//! заданный в окне, соблюдает и `tm kill`, и ИИ-агент.
+//! The same for the app, the CLI and MCP — the list of protected processes
+//! set in the window is respected by `tm kill` and by an AI agent alike.
 
 use std::path::PathBuf;
 
@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Защищённые процессы: имя exe (`chrome.exe`, без учёта регистра) или полный путь.
+    /// Protected processes: an exe name (`chrome.exe`, case-insensitive) or a full path.
     pub protected: Vec<String>,
-    /// Спрашивать подтверждение перед завершением («больше не спрашивать» выключает).
+    /// Ask for confirmation before ending (“don’t ask again” turns it off).
     pub confirm_kill: bool,
 }
 
@@ -27,7 +27,7 @@ pub fn path() -> Option<PathBuf> {
 }
 
 impl Settings {
-    /// Читает настройки; нет файла или он повреждён — значения по умолчанию.
+    /// Reads the settings; a missing or broken file gives the defaults.
     pub fn load() -> Self {
         path()
             .and_then(|p| std::fs::read(p).ok())
@@ -35,9 +35,9 @@ impl Settings {
             .unwrap_or_default()
     }
 
-    /// Пишет атомарно: во временный файл и переименованием, чтобы не оставить половину файла.
+    /// Writes atomically: to a temporary file and then a rename, so half a file is never left behind.
     pub fn save(&self) -> std::io::Result<()> {
-        let p = path().ok_or_else(|| std::io::Error::other("не задана переменная LOCALAPPDATA"))?;
+        let p = path().ok_or_else(|| std::io::Error::other("the LOCALAPPDATA variable is not set"))?;
         if let Some(dir) = p.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -46,7 +46,7 @@ impl Settings {
         std::fs::rename(&tmp, &p)
     }
 
-    /// Защищён ли процесс пользователем: по имени (с `.exe` или без) или по полному пути.
+    /// Whether the user protected the process: by name (with or without `.exe`) or by full path.
     pub fn is_protected(&self, name: &str, path: Option<&str>) -> bool {
         let n = name.to_ascii_lowercase();
         let stem = n.strip_suffix(".exe").unwrap_or(&n);

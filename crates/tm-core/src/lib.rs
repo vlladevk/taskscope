@@ -1,5 +1,5 @@
-//! Ядро tm: сбор данных о процессах и системе, дерево, группировка по приложениям, действия.
-//! Используется и CLI (`tm`), и приложением с интерфейсом — логика одна.
+//! The tm core: collecting data about processes and the system, the tree, grouping by app, actions.
+//! Used both by the CLI (`tm`) and by the app with the interface — one shared logic.
 
 pub mod actions;
 pub mod apps;

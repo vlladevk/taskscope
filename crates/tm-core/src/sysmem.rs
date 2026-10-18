@@ -1,11 +1,11 @@
-//! Из чего состоит память, которая занята, но не принадлежит ни одному процессу лично:
-//! пулы ядра (память драйверов), файловый кэш, код ядра и драйверов, изменённые страницы.
-//! Плюс списки страниц: резерв (standby), свободная, сжатая.
-//! Остаток — общая память программ (DLL, общие буферы браузеров и Electron-приложений,
-//! таблицы страниц): в «частную память» процессов она не входит.
+//! What the memory that is in use but not owned by any single process consists of:
+//! kernel pools (driver memory), the file cache, kernel and driver code, modified pages.
+//! Plus the page lists: standby, free, compressed.
+//! The remainder is shared program memory (DLLs, shared buffers of browsers and Electron apps,
+//! page tables): it is not part of the processes’ “private memory”.
 //!
-//! Источник — счётчики «Memory» (без прав администратора). Замер дешёвый: одно
-//! обращение к PDH на все счётчики.
+//! The source is the “Memory” counters (no administrator rights needed). The sample is cheap: one
+//! PDH call for all counters.
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::System::Performance::{
@@ -14,24 +14,24 @@ use windows_sys::Win32::System::Performance::{
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MemDetail {
-    /// Невыгружаемый пул ядра — память драйверов, всегда в ОЗУ. Обычно 0,2–0,6 ГБ.
+    /// Non-paged kernel pool — driver memory, always in RAM. Usually 0.2–0.6 GB.
     pub pool_nonpaged: u64,
-    /// Выгружаемый пул ядра, часть в ОЗУ.
+    /// Paged kernel pool, partly in RAM.
     pub pool_paged: u64,
-    /// Файловый кэш системы (его рабочий набор).
+    /// The system file cache (its working set).
     pub cache: u64,
-    /// Код ядра и драйверов в ОЗУ.
+    /// Kernel and driver code in RAM.
     pub kernel_code: u64,
-    /// Изменённые страницы: ждут записи на диск, потом освободятся.
+    /// Modified pages: waiting to be written to disk, then they are freed.
     pub modified: u64,
-    /// Резерв (standby): кэш недавно использованных страниц. Занятой памятью не считается —
-    /// Windows отдаёт его программам по первому требованию.
+    /// Standby: a cache of recently used pages. Not counted as used memory —
+    /// Windows hands it to programs on first request.
     #[serde(default)]
     pub standby: u64,
-    /// Свободная и обнулённая память — совсем ничем не занята.
+    /// Free and zeroed memory — not used by anything at all.
     #[serde(default)]
     pub free: u64,
-    /// Сжатая память: рабочий набор процесса «Memory Compression» (заполняет движок).
+    /// Compressed memory: the working set of the “Memory Compression” process (filled in by the engine).
     #[serde(default)]
     pub compressed: u64,
 }
@@ -67,7 +67,7 @@ impl MemSampler {
         let mut counters = Vec::new();
         for path in COUNTERS {
             let mut c = 0isize;
-            // недоступный счётчик остаётся нулём, остальные работают
+            // an unavailable counter stays zero, the others keep working
             let _ = unsafe { PdhAddEnglishCounterW(query, wide(path).as_ptr(), 0, &mut c) };
             counters.push(c);
         }

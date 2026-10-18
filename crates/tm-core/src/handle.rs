@@ -1,4 +1,4 @@
-//! Дескриптор процесса, который гарантированно закрывается (RAII) — утечь не может.
+//! A process handle that is guaranteed to be closed (RAII) — it cannot leak.
 
 use std::io;
 
@@ -8,7 +8,7 @@ use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess};
 pub struct ProcHandle(HANDLE);
 
 impl ProcHandle {
-    /// Открывает процесс и проверяет, что это тот же процесс (PID мог быть переиспользован).
+    /// Opens the process and checks that it is the same process (the PID may have been reused).
     pub fn open(pid: u32, access: u32, create_time: Option<i64>) -> io::Result<Self> {
         let h = unsafe { OpenProcess(access, 0, pid) };
         if h.is_null() {
@@ -17,7 +17,7 @@ impl ProcHandle {
         let this = Self(h);
         if let Some(expected) = create_time {
             if this.create_time()? != expected {
-                return Err(io::Error::new(io::ErrorKind::NotFound, "процесс с этим PID уже завершился (PID занят другим процессом)"));
+                return Err(io::Error::new(io::ErrorKind::NotFound, "the process with this PID has already exited (the PID belongs to another process)"));
             }
         }
         Ok(this)

@@ -1,5 +1,5 @@
-//! Сеть по адаптерам: скорость приёма и отправки для каждого работающего интерфейса
-//! (Ethernet, Wi-Fi, туннели VPN вроде WireGuard). Один вызов `GetIfTable2`.
+//! Network by adapter: receive and send speed for every active interface
+//! (Ethernet, Wi-Fi, VPN tunnels such as WireGuard). One `GetIfTable2` call.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -17,16 +17,16 @@ const IF_OPER_UP: i32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NetStat {
-    /// Стабильный ключ адаптера (LUID).
+    /// Stable adapter key (LUID).
     pub key: String,
-    /// Имя, как в «Сетевых подключениях»: «Ethernet», «VPN» и т.п.
+    /// The name as in “Network Connections”: “Ethernet”, “Wi-Fi” and so on.
     pub name: String,
     pub description: String,
     /// ethernet | wifi | vpn | other
     pub kind: String,
     pub rx_bps: f64,
     pub tx_bps: f64,
-    /// Скорость подключения, бит/с (0 — неизвестна).
+    /// Link speed, bit/s (0 — unknown).
     pub link_bps: u64,
 }
 
@@ -54,7 +54,7 @@ impl NetSampler {
         if unsafe { GetIfTable2(&mut table) } != 0 || table.is_null() {
             return Vec::new();
         }
-        // SAFETY: таблица выделена GetIfTable2 и освобождается ниже через FreeMibTable.
+        // SAFETY: the table is allocated by GetIfTable2 and freed below with FreeMibTable.
         let rows: &[MIB_IF_ROW2] = unsafe {
             let n = (*table).NumEntries as usize;
             std::slice::from_raw_parts((*table).Table.as_ptr(), n)
@@ -68,7 +68,7 @@ impl NetSampler {
             let hardware = flags & 1 != 0;
             let filter = flags & 2 != 0;
             let tunnel = matches!(r.Type, IF_TYPE_PROP_VIRTUAL | IF_TYPE_TUNNEL);
-            // служебные туннели Windows для IPv6 (Teredo, ISATAP, 6to4, IP-HTTPS) — не VPN, только шум
+            // Windows service tunnels for IPv6 (Teredo, ISATAP, 6to4, IP-HTTPS) — not a VPN, just noise
             let transition = r.Type == IF_TYPE_TUNNEL && matches!(r.TunnelType as i32, 11 | 13 | 14 | 15);
             if r.OperStatus != IF_OPER_UP || r.Type == IF_TYPE_LOOPBACK || filter || transition || !(hardware || tunnel) {
                 continue;
@@ -99,12 +99,12 @@ impl NetSampler {
         unsafe { FreeMibTable(table.cast()) };
         self.prev = next;
         self.at = Some(now);
-        // VPN первыми: весь трафик приложений идёт через туннель
+        // VPNs first: all app traffic goes through the tunnel
         out.sort_by_key(|n| (n.kind != "vpn", n.name.to_lowercase()));
         out
     }
 
-    /// Адреса этого компьютера → ключ адаптера. Раз в 5 с: после переподключения VPN адрес туннеля меняется.
+    /// Addresses of this computer → adapter key. Every 5 s: after a VPN reconnect the tunnel address changes.
     pub fn addresses(&mut self) -> &HashMap<IpAddr, String> {
         use windows_sys::Win32::NetworkManagement::IpHelper::{GetUnicastIpAddressTable, MIB_UNICASTIPADDRESS_ROW, MIB_UNICASTIPADDRESS_TABLE};
         if self.addrs_at.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
@@ -115,7 +115,7 @@ impl NetSampler {
         if unsafe { GetUnicastIpAddressTable(0, &mut table) } != 0 || table.is_null() {
             return &self.addrs;
         }
-        // SAFETY: таблица выделена GetUnicastIpAddressTable и освобождается ниже.
+        // SAFETY: the table is allocated by GetUnicastIpAddressTable and freed below.
         let rows: &[MIB_UNICASTIPADDRESS_ROW] = unsafe { std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize) };
         self.addrs.clear();
         for r in rows {

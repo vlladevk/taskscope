@@ -1,6 +1,6 @@
-//! Подпись файла (WinVerifyTrust — встроенная подпись, а если её нет, каталог Windows,
-//! как у системных файлов) и SHA-256 для ссылки на VirusTotal. Проверка без сети:
-//! отзыв сертификатов не запрашиваем, только кэш — иначе проверка висела бы на таймаутах.
+//! File signature (WinVerifyTrust — the embedded signature, and if there is none, the Windows catalog,
+//! as with system files) and SHA-256 for a VirusTotal link. Checked offline:
+//! certificate revocation is not fetched, only the cache — otherwise the check would hang on timeouts.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -36,19 +36,19 @@ const WTD_STATEACTION_VERIFY: u32 = 1;
 const WTD_STATEACTION_CLOSE: u32 = 2;
 const WTD_CACHE_ONLY_URL_RETRIEVAL: u32 = 0x1000;
 const TRUST_E_NOSIGNATURE: i32 = 0x800B_0100_u32 as i32;
-/// Формат файла без встроенной подписи (текст, картинка, архив): подписывать тут нечего.
+/// A file format without an embedded signature (text, image, archive): nothing to sign here.
 const TRUST_E_SUBJECT_FORM_UNKNOWN: i32 = 0x800B_0003_u32 as i32;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Signature {
     /// signed, unsigned, untrusted, expired, revoked, bad_digest, distrusted, error.
     pub status: &'static str,
-    /// Кем подписан (имя из сертификата): «Microsoft Windows», «Google LLC».
+    /// Who signed it (the name from the certificate): “Microsoft Windows”, “Google LLC”.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signer: Option<String>,
-    /// Подпись из каталога Windows (у системных файлов нет встроенной подписи).
+    /// Signed through the Windows catalog (system files have no embedded signature).
     pub catalog: bool,
-    /// SHA-256 файла (для VirusTotal); None — файл не прочитать.
+    /// SHA-256 of the file (for VirusTotal); None — the file cannot be read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
@@ -62,13 +62,13 @@ fn status_of(code: i32) -> &'static str {
         0x800B_010C => "revoked",
         0x8009_6010 => "bad_digest",
         0x800B_0111 => "distrusted",
-        // не программа и не в каталоге Windows — «не применимо», а не ошибка проверки
+        // not a program and not in the Windows catalog — “not applicable”, not a check error
         0x800B_0003 => "not_applicable",
         _ => "error",
     }
 }
 
-/// Имя подписавшего из данных проверки (до WTD_STATEACTION_CLOSE).
+/// The signer name from the verification data (before WTD_STATEACTION_CLOSE).
 unsafe fn signer_of(state: *mut c_void) -> Option<String> {
     let pd = WTHelperProvDataFromStateData(state as _);
     if pd.is_null() {
@@ -87,7 +87,7 @@ unsafe fn signer_of(state: *mut c_void) -> Option<String> {
     (n > 1).then(|| String::from_utf16_lossy(&buf[..n - 1]))
 }
 
-/// Один вызов WinVerifyTrust: код результата и подписавший.
+/// One WinVerifyTrust call: the result code and the signer.
 unsafe fn verify(choice: u32, info: *mut c_void) -> (i32, Option<String>) {
     let mut wd: WINTRUST_DATA = std::mem::zeroed();
     wd.cbStruct = size_of::<WINTRUST_DATA>() as u32;
@@ -109,7 +109,7 @@ unsafe fn verify(choice: u32, info: *mut c_void) -> (i32, Option<String>) {
     (code, signer)
 }
 
-/// Подпись через каталог: хеш файла ищется в каталогах Windows (так подписаны notepad.exe, svchost.exe…).
+/// Signature through a catalog: the file hash is looked up in the Windows catalogs (that is how notepad.exe, svchost.exe… are signed).
 unsafe fn verify_catalog(path: &[u16], file: &std::fs::File) -> Option<(i32, Option<String>)> {
     for alg in ["SHA256", "SHA1"] {
         let mut admin: isize = 0;
@@ -150,7 +150,7 @@ unsafe fn verify_catalog(path: &[u16], file: &std::fs::File) -> Option<(i32, Opt
     None
 }
 
-/// SHA-256 файла потоком (файлы бывают в сотни мегабайт).
+/// SHA-256 of a file, streamed (files can be hundreds of megabytes).
 fn sha256(file: &mut std::fs::File) -> Option<String> {
     unsafe {
         let mut h = ptr::null_mut();
@@ -183,11 +183,11 @@ fn sha256(file: &mut std::fs::File) -> Option<String> {
 
 type Key = (String, Option<SystemTime>, u64);
 
-/// Подпись и SHA-256 файла. Результат кэшируется по пути, времени изменения и размеру.
+/// Signature and SHA-256 of a file. The result is cached by path, modification time and size.
 pub fn check(path: &str) -> std::io::Result<Signature> {
-    // сетевой путь: обращение к \\сервер\… отдало бы серверу NTLM-учётку (путь может прийти от агента)
+    // network path: accessing \\server\… would hand the server an NTLM credential (the path may come from an agent)
     if crate::locks::is_remote(std::path::Path::new(path)) {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "сетевые пути не проверяются — только локальные файлы"));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "network paths are not checked — only local files"));
     }
     static CACHE: OnceLock<Mutex<HashMap<Key, Signature>>> = OnceLock::new();
     let meta = std::fs::metadata(path)?;
@@ -203,7 +203,7 @@ pub fn check(path: &str) -> std::io::Result<Signature> {
         fi.cbStruct = size_of::<WINTRUST_FILE_INFO>() as u32;
         fi.pcwszFilePath = wpath.as_ptr();
         let (code, signer) = verify(WTD_CHOICE_FILE, (&mut fi as *mut WINTRUST_FILE_INFO).cast());
-        // файлы без встроенной подписи (и не программы: .inf, .ps1 без подписи) бывают в каталоге
+        // files without an embedded signature (and non-programs: .inf, unsigned .ps1) can be in a catalog
         if code == TRUST_E_NOSIGNATURE || code == TRUST_E_SUBJECT_FORM_UNKNOWN {
             match verify_catalog(&wpath, &file) {
                 Some((c, s)) => (c, s, true),
@@ -214,7 +214,7 @@ pub fn check(path: &str) -> std::io::Result<Signature> {
             (code, signer, false)
         }
     };
-    // больше 1 ГБ не хешируем: долго, а VirusTotal такие файлы всё равно не принимает
+    // files over 1 GB are not hashed: it takes long, and VirusTotal does not accept such files anyway
     let hash = if meta.len() <= 1 << 30 { sha256(&mut file) } else { None };
     let sig = Signature { status: status_of(code), signer, catalog, sha256: hash };
     let mut c = cache.lock().unwrap_or_else(|e| e.into_inner());

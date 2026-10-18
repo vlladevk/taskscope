@@ -1,8 +1,8 @@
-//! Единая точка входа ко всем возможностям: окно приложения, CLI (через канал),
-//! MCP и режим разработки по HTTP вызывают одно и то же `Service::call(метод, параметры)`.
+//! The single entry point to all features: the app window, the CLI (through the pipe),
+//! MCP and the HTTP development mode all call the same `Service::call(method, params)`.
 //!
-//! Методы, которые что-то меняют в системе (`act`, `reveal`, `web`), помечены `is_mutating`:
-//! канал их не пропускает — клиент выполняет действия сам, со своими правами.
+//! Methods that change something in the system (`act`, `reveal`, `web`) are marked `is_mutating`:
+//! the pipe does not let them through — the client performs actions itself, with its own rights.
 
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ pub struct Service {
     pub engine: Engine,
     icons: IconCache,
     info: std::sync::Mutex<InfoCache>,
-    /// что браузеры пишут о своих процессах (диспетчер задач браузера): (PID, время создания) → задачи
+    /// what browsers report about their processes (the browser task manager): (PID, creation time) → tasks
     btasks: std::sync::Mutex<(Option<std::time::Instant>, bool, std::collections::HashMap<ProcKey, Vec<String>>)>,
     docker: crate::docker::DockerWatch,
 }
@@ -29,16 +29,16 @@ pub fn is_mutating(method: &str) -> bool {
     matches!(method, "act" | "reveal" | "web" | "docker_act" | "settings_set" | "service_act")
 }
 
-/// Методы, которые через канал не выполняются: действия, а также чтение чужих процессов
-/// изнутри (окружение, дескрипторы, файлы, которые они читают и пишут), подпись файлов и запись в журнал. Движок может работать
-/// от администратора, а канал открыт и обычным процессам того же пользователя — иначе они
-/// читали бы окружение и файлы с правами администратора. Клиент (tm) делает это сам.
+/// Methods not executed through the pipe: actions, and also reading other processes
+/// from the inside (environment, handles, files they read and write), file signatures and log writes. The engine may run
+/// as administrator, while the pipe is open to regular processes of the same user too — otherwise they
+/// would read environments and files with administrator rights. The client (tm) does this itself.
 pub fn is_local_only(method: &str) -> bool {
     is_mutating(method) || matches!(method, "inspect" | "signature" | "log" | "disk_files")
 }
 
 fn arg<T: for<'de> Deserialize<'de>>(params: &Value) -> Result<T, String> {
-    serde_json::from_value(params.clone()).map_err(|e| format!("неверные параметры: {e}"))
+    serde_json::from_value(params.clone()).map_err(|e| format!("invalid parameters: {e}"))
 }
 
 fn snapshot_json(s: &Snapshot) -> Value {
@@ -57,9 +57,9 @@ fn snapshot_json(s: &Snapshot) -> Value {
 
 fn fmt_mem(b: u64) -> String {
     if b >= 1 << 30 {
-        format!("{:.1} ГБ", b as f64 / (1u64 << 30) as f64).replace('.', ",")
+        format!("{:.1} GB", b as f64 / (1u64 << 30) as f64)
     } else {
-        format!("{} МБ", b >> 20)
+        format!("{} MB", b >> 20)
     }
 }
 
@@ -69,12 +69,12 @@ impl Service {
     }
 
     fn wait_first(&self) -> Result<Snapshot, String> {
-        self.engine.wait_newer(0, self.engine.interval() * 3).ok_or_else(|| "данные ещё не собраны".to_string())
+        self.engine.wait_newer(0, self.engine.interval() * 3).ok_or_else(|| "no data collected yet".to_string())
     }
 
     pub fn call(&self, method: &str, params: &Value) -> Result<Value, String> {
         let r = self.call_inner(method, params);
-        // отказы действий — в журнал ошибок: «почему не завершилось» можно выяснить и потом
+        // refused actions go to the error log: “why didn’t it end” can be found out later
         if let Err(e) = &r {
             if is_mutating(method) {
                 crate::logs::warn(format!("{method}: {e}"));
@@ -87,13 +87,13 @@ impl Service {
         match method {
             "ping" => Ok(json!("pong")),
             "status" => Ok(self.engine.status()),
-            // совместимость с CLI: только кадр / кадр + приложения
+            // CLI compatibility: frame only / frame + apps
             "frame" => Ok(serde_json::to_value(&*self.wait_first()?.frame).map_err(|e| e.to_string())?),
             "snapshot" => {
                 let s = self.wait_first()?;
                 Ok(json!({ "frame": &*s.frame, "apps": &*s.apps, "gpus": &*s.gpus, "nets": &*s.nets, "mem_detail": &s.mem_detail }))
             }
-            // окно: ждём следующий замер (длинный опрос), вместе с новыми событиями журнала
+            // the window: wait for the next sample (long poll), together with new log events
             "tick" => {
                 #[derive(Deserialize)]
                 struct P {
@@ -103,7 +103,7 @@ impl Service {
                     after_event: u64,
                 }
                 let p: P = arg(params)?;
-                let s = self.engine.wait_newer(p.after, Duration::from_secs(2)).ok_or("данные ещё не собраны")?;
+                let s = self.engine.wait_newer(p.after, Duration::from_secs(2)).ok_or("no data collected yet")?;
                 let mut v = snapshot_json(&s);
                 v["events"] = serde_json::to_value(self.engine.events_after(p.after_event)).unwrap_or_default();
                 Ok(v)
@@ -153,15 +153,15 @@ impl Service {
                     .and_then(|x| actions::get_priority(&x));
                 Ok(json!({ "info": info, "priority": prio }))
             }
-            // несколько вызовов за один проход (окно запрашивает всё нужное раз в секунду)
+            // several calls in one pass (the window asks for everything it needs once a second)
             "batch" => {
-                let calls = params.as_array().ok_or("batch: ожидается массив вызовов")?;
+                let calls = params.as_array().ok_or("batch: an array of calls expected")?;
                 Ok(Value::Array(
                     calls
                         .iter()
                         .map(|c| {
                             let m = c["method"].as_str().unwrap_or("");
-                            let r = if is_local_only(m) || m == "batch" { Err("в batch можно только читать".to_string()) } else { self.call(m, &c["params"]) };
+                            let r = if is_local_only(m) || m == "batch" { Err("batch is read-only".to_string()) } else { self.call(m, &c["params"]) };
                             match r {
                                 Ok(v) => json!({ "result": v }),
                                 Err(e) => json!({ "error": e }),
@@ -170,7 +170,7 @@ impl Service {
                         .collect(),
                 ))
             }
-            // путь, описание, издатель и роль для многих процессов сразу (без командных строк)
+            // path, description, publisher and role for many processes at once (without command lines)
             "infos" => {
                 #[derive(Deserialize)]
                 struct P {
@@ -198,7 +198,7 @@ impl Service {
                     "cpu_name": crate::system::reg_hklm(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString"),
                     "logical_cpus": s.frame.system.logical_cpus,
                     "memory_total": s.frame.system.memory.total,
-                    "os": format!("{win} {ver} (сборка {build})"),
+                    "os": format!("{win} {ver} (build {build})"),
                     "computer": std::env::var("COMPUTERNAME").ok(),
                     "elevated": crate::system::is_elevated(),
                 }))
@@ -216,7 +216,7 @@ impl Service {
                 }
                 Ok(Value::Object(out))
             }
-            // пул ядра по меткам: n крупнейших (by=size) или быстрее всех растущих (by=growth)
+            // kernel pool by tag: the n largest (by=size) or the fastest growing (by=growth)
             "pool" => {
                 #[derive(Deserialize)]
                 struct P {
@@ -232,18 +232,18 @@ impl Service {
                 self.wait_first()?;
                 Ok(serde_json::to_value(self.engine.pool_report(p.n.min(2000), p.by.as_deref().unwrap_or("size"))).map_err(|e| e.to_string())?)
             }
-            // найти драйверы по меткам (в фоне, 10–30 с); результат придёт в следующих "pool"
+            // find drivers by tag (in the background, 10–30 s); the result comes in the next "pool" calls
             "pool_owners" => Ok(serde_json::to_value(crate::pool::start_owner_scan(self.engine.pool_tracked())).map_err(|e| e.to_string())?),
             "act" => self.act(params),
             "settings_get" => serde_json::to_value(crate::settings::Settings::load()).map_err(|e| e.to_string()),
             "settings_set" => {
                 let s: crate::settings::Settings = arg(params)?;
-                s.save().map_err(|e| format!("не удалось сохранить настройки: {e}"))?;
+                s.save().map_err(|e| format!("could not save the settings: {e}"))?;
                 Ok(json!({ "ok": true }))
             }
-            // контейнеры Docker и их нагрузка (пока смотрят — обновляется раз в 2 с)
+            // Docker containers and their load (while watched — refreshed every 2 s)
             "docker" => Ok(serde_json::to_value(self.docker.get()).map_err(|e| e.to_string())?),
-            // службы Windows: details — ещё тип запуска и описание (дольше, но кэшируется)
+            // Windows services: details — also the start type and description (slower, but cached)
             "services" => {
                 let details = params.get("details").and_then(Value::as_bool).unwrap_or(true);
                 let list = crate::services::list(details).map_err(|e| e.to_string())?;
@@ -262,25 +262,25 @@ impl Service {
                     "start" => crate::services::Control::Start,
                     "stop" => crate::services::Control::Stop,
                     "restart" => crate::services::Control::Restart,
-                    o => return Err(format!("неизвестное действие со службой «{o}»")),
+                    o => return Err(format!("unknown service action “{o}”")),
                 };
                 let state = crate::services::control(&p.name, what, p.force).map_err(|e| {
-                    self.engine.log("warn", format!("Служба {}: {} не выполнено — {e}", p.name, p.action), None);
+                    self.engine.log("warn", format!("Service {}: {} failed — {e}", p.name, p.action), None);
                     e.to_string()
                 })?;
-                self.engine.log("info", format!("Служба {}: {} → {state}", p.name, p.action), None);
+                self.engine.log("info", format!("Service {}: {} → {state}", p.name, p.action), None);
                 Ok(json!({ "ok": true, "state": state }))
             }
-            // сетевые подключения и открытые порты (pid — только этого процесса)
+            // network connections and open ports (pid — only this process)
             "connections" => {
                 let pid = params.get("pid").and_then(Value::as_u64).map(|p| p as u32);
                 let list: Vec<_> = crate::conns::list().into_iter().filter(|c| pid.is_none_or(|p| c.pid == p)).collect();
                 Ok(json!({ "connections": list }))
             }
-            // заголовки главных окон по PID: вкладка браузера, файл в редакторе, проект в IDE
+            // main window titles by PID: a browser tab, a file in an editor, a project in an IDE
             "windows" => Ok(json!(crate::labels::window_titles())),
-            // какой процесс браузера какой вкладке: читается из его диспетчера задач (Shift+Esc), пока тот
-            // открыт; прочитанное помним, пока процесс жив
+            // which browser process serves which tab: read from its task manager (Shift+Esc) while it is
+            // open; what was read is remembered while the process lives
             "browser_tasks" => {
                 let mut g = self.btasks.lock().unwrap_or_else(|e| e.into_inner());
                 if g.0.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
@@ -308,18 +308,18 @@ impl Service {
                 let tasks: serde_json::Map<String, Value> = g.2.iter().map(|(k, v)| (crate::sampler::key_str(*k), json!(v))).collect();
                 Ok(json!({ "open": g.1, "tasks": tasks }))
             }
-            // открытые вкладки браузера на Chromium (pid — его главный процесс)
+            // open tabs of a Chromium browser (pid — its main process)
             "browser_tabs" => {
-                let pid = params.get("pid").and_then(Value::as_u64).ok_or("нужен pid")? as u32;
+                let pid = params.get("pid").and_then(Value::as_u64).ok_or("pid required")? as u32;
                 Ok(json!(crate::labels::browser_tabs(pid)?))
             }
-            // какие файлы читают и пишут процессы (pid — только этот); первый вызов начинает наблюдение
+            // which files processes read and write (pid — only this one); the first call starts the observation
             "disk_files" => {
                 let pid = params.get("pid").and_then(Value::as_u64).map(|p| p as u32);
                 let limit = params.get("limit").and_then(Value::as_u64).unwrap_or(40).min(500) as usize;
                 Ok(serde_json::to_value(crate::file_etw::report(pid, limit)?).map_err(|e| e.to_string())?)
             }
-            // вкладка процесса: модули, потоки, дескрипторы, окружение — по запросу
+            // the process tab: modules, threads, handles, environment — on request
             "inspect" => {
                 #[derive(Deserialize)]
                 struct P {
@@ -330,7 +330,7 @@ impl Service {
                 let p: P = arg(params)?;
                 let ct = crate::nt::js_safe(p.create_time);
                 let e = |e: std::io::Error| match e.raw_os_error() {
-                    Some(5) => "нет доступа — нужны права администратора".to_string(),
+                    Some(5) => "no access — administrator rights required".to_string(),
                     _ => e.to_string(),
                 };
                 use crate::inspect;
@@ -339,23 +339,23 @@ impl Service {
                     "threads" => Ok(json!({ "threads": inspect::threads(p.pid, ct).map_err(e)? })),
                     "handles" => Ok(json!(inspect::handles(p.pid, ct).map_err(e)?)),
                     "env" => Ok(json!(inspect::environment(p.pid, ct).map_err(e)?)),
-                    w => Err(format!("inspect: неизвестный раздел «{w}» (modules, threads, handles, env)")),
+                    w => Err(format!("inspect: unknown section “{w}” (modules, threads, handles, env)")),
                 }
             }
-            // ошибки окна (window.onerror) — в журнал ошибок; длина ограничена
+            // window errors (window.onerror) — into the error log; length is limited
             "log" => {
                 let msg: String = params.get("msg").and_then(Value::as_str).unwrap_or("").chars().take(2000).collect();
                 crate::logs::write_ui(&msg);
                 Ok(json!({ "ok": true }))
             }
-            // подпись файла и SHA-256 (для ссылки на VirusTotal)
+            // file signature and SHA-256 (for the VirusTotal link)
             "signature" => {
-                let path = params.get("path").and_then(Value::as_str).ok_or("нужен path")?;
+                let path = params.get("path").and_then(Value::as_str).ok_or("path required")?;
                 Ok(json!(crate::signature::check(path).map_err(|e| e.to_string())?))
             }
-            // кто держит файл или файлы в папке (Restart Manager)
+            // who holds the file or the files in a folder (Restart Manager)
             "file_holders" => {
-                let path = params.get("path").and_then(Value::as_str).ok_or("нужен path")?;
+                let path = params.get("path").and_then(Value::as_str).ok_or("path required")?;
                 Ok(json!(crate::locks::holders(path).map_err(|e| e.to_string())?))
             }
             "docker_act" => {
@@ -381,11 +381,11 @@ impl Service {
                 crate::system::reveal_in_explorer(&arg::<P>(params)?.path).map_err(|e| e.to_string())?;
                 Ok(json!({ "ok": true }))
             }
-            // страница файла на VirusTotal по SHA-256: только этот адрес, никаких произвольных ссылок
+            // the file’s VirusTotal page by SHA-256: only this address, no arbitrary links
             "web" if params.get("sha256").is_some() => {
                 let h = params.get("sha256").and_then(Value::as_str).unwrap_or("");
                 if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
-                    return Err("sha256: ожидается 64 шестнадцатеричных знака".into());
+                    return Err("sha256: 64 hexadecimal characters expected".into());
                 }
                 crate::system::shell_execute("open", &format!("https://www.virustotal.com/gui/file/{}", h.to_ascii_lowercase()), "").map_err(|e| e.to_string())?;
                 Ok(json!({ "ok": true }))
@@ -403,12 +403,12 @@ impl Service {
                 crate::system::shell_execute("open", &format!("https://www.bing.com/search?q={q}"), "").map_err(|e| e.to_string())?;
                 Ok(json!({ "ok": true }))
             }
-            _ => Err(format!("неизвестный метод «{method}»")),
+            _ => Err(format!("unknown method “{method}”")),
         }
     }
 
-    /// Действие над процессами. Цели сверяются со свежим снимком по (PID, время создания),
-    /// «с дочерними» раскрывается по свежему дереву, порядок — от самых глубоких потомков к корню.
+    /// An action on processes. Targets are matched against a fresh snapshot by (PID, creation time),
+    /// “with children” is expanded from a fresh tree, the order is from the deepest descendants to the root.
     fn act(&self, params: &Value) -> Result<Value, String> {
         #[derive(Deserialize)]
         struct P {
@@ -422,10 +422,10 @@ impl Service {
             priority: Option<Priority>,
             #[serde(default)]
             dry_run: bool,
-            /// без вежливого закрытия окон и с подтверждёнными предупреждениями
+            /// without politely closing windows and with confirmed warnings
             #[serde(default)]
             force: bool,
-            /// предупреждения показаны человеку, и он согласился
+            /// the warnings were shown to a human, and they agreed
             #[serde(default)]
             confirmed: bool,
         }
@@ -452,20 +452,20 @@ impl Service {
             actions::execute(&frame.procs, &tree, &plan, p.action, opts)
         };
         for pid in missing {
-            results.push(Outcome { pid, error: Some("процесс уже завершился".into()), ..Default::default() });
+            results.push(Outcome { pid, error: Some("the process has already exited".into()), ..Default::default() });
         }
         let done: Vec<&Outcome> = results.iter().filter(|r| r.ok).collect();
         let freed: u64 = if matches!(p.action, Action::Kill) { done.iter().map(|r| mem_of(r.pid, r.create_time)).sum() } else { 0 };
 
         if !p.dry_run && !done.is_empty() {
             let main = done.last().map(|r| r.name.clone()).unwrap_or_default();
-            let more = if done.len() > 1 { format!(" и ещё {}", done.len() - 1) } else { String::new() };
+            let more = if done.len() > 1 { format!(" and {} more", done.len() - 1) } else { String::new() };
             let text = match p.action {
-                Action::Kill => format!("Завершено: {main}{more} — освобождено {}", fmt_mem(freed)),
-                Action::Suspend => format!("Приостановлено: {main}{more}"),
-                Action::Resume => format!("Возобновлено: {main}{more}"),
-                Action::Restart => format!("Перезапущено: {main}{more}"),
-                Action::Priority => format!("Приоритет изменён: {main}{more}"),
+                Action::Kill => format!("Ended: {main}{more} — freed {}", fmt_mem(freed)),
+                Action::Suspend => format!("Suspended: {main}{more}"),
+                Action::Resume => format!("Resumed: {main}{more}"),
+                Action::Restart => format!("Restarted: {main}{more}"),
+                Action::Priority => format!("Priority changed: {main}{more}"),
             };
             let who = done.last().map(|r| (r.pid, r.create_time));
             self.engine.log("info", text, who);

@@ -20,5 +20,5 @@ log = "0.4"
 
 [features]
 default = ["custom-protocol"]
-# встраивает интерфейс в exe (без dev-сервера)
+# embeds the interface into the exe (no dev server)
 custom-protocol = ["tauri/custom-protocol"]

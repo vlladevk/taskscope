@@ -1,4 +1,4 @@
-# Сборочная среда: Rust + кросс-компиляция под Windows (MSVC ABI) через cargo-xwin.
+# Build environment: Rust + cross-compilation for Windows (MSVC ABI) via cargo-xwin.
 FROM rust:1-bookworm
 RUN apt-get update \
  && apt-get install -y --no-install-recommends clang lld llvm \

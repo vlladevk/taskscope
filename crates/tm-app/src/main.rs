@@ -1,11 +1,11 @@
-//! Диспетчер — приложение в трее. Держит движок (сбор раз в секунду, история за сутки),
-//! канал `\\.\pipe\tm` для CLI и агентов и окно на WebView2.
+//! The tray app. Holds the engine (sampling once a second, a day of history),
+//! the `\\.\pipe\tm` pipe for the CLI and agents, and the WebView2 window.
 //!
-//! Один экземпляр на машину: повторный запуск показывает окно уже работающего,
-//! а запущенный отдельно `tm daemon` уступает место приложению (история сохраняется).
+//! One instance per machine: starting it again shows the window of the running one,
+//! and a separately started `tm daemon` gives way to the app (the history is kept).
 //!
-//! Ключи запуска: `--tray` — стартовать свёрнутым в трей (так делает автозапуск),
-//! `--replace` — сменить работающий экземпляр (перезапуск от администратора).
+//! Launch flags: `--tray` — start minimised to the tray (autostart does this),
+//! `--replace` — replace the running instance (restart as administrator).
 #![windows_subsystem = "windows"]
 
 use std::path::PathBuf;
@@ -22,10 +22,10 @@ use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWind
 use tm_core::engine::{default_store, Engine};
 use tm_core::{pipe, service, system, Service};
 
-const AUTOSTART_NAME: &str = "Диспетчер задач (tm)";
+const AUTOSTART_NAME: &str = "Task Manager (tm)";
 
-/// Предупреждения и ошибки Tauri/wry — в журнал движка: иначе, например, сбой создания окна
-/// из другого потока пропадает бесследно.
+/// Tauri/wry warnings and errors go to the engine log: otherwise, for example, a window creation failure
+/// from another thread disappears without a trace.
 struct EngineLog;
 static ENGINE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
 impl log::Log for EngineLog {
@@ -40,8 +40,8 @@ impl log::Log for EngineLog {
     }
     fn flush(&self) {}
 }
-/// Спрятанное в трей дольше этого окно закрывается целиком: WebView2 отдаёт всю свою память.
-/// Движок и трей продолжают работать, следующее открытие займёт около секунды.
+/// A window hidden in the tray for longer than this is closed entirely: WebView2 gives back all its memory.
+/// The engine and the tray keep working, the next opening takes about a second.
 const DROP_WINDOW_AFTER: Duration = Duration::from_secs(60);
 
 struct Ui {
@@ -49,7 +49,7 @@ struct Ui {
     hidden_since: Mutex<Option<Instant>>,
 }
 
-/* ------------------------------------------------------------------ окно */
+/* ------------------------------------------------------------------ window */
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
 struct Geometry {
@@ -71,7 +71,7 @@ fn load_geometry() -> Option<Geometry> {
 fn save_geometry(w: &WebviewWindow) {
     let (Ok(pos), Ok(size), Ok(scale)) = (w.outer_position(), w.inner_size(), w.scale_factor()) else { return };
     let max = w.is_maximized().unwrap_or(false);
-    // у свёрнутого окна координаты бессмысленные (−32000) — не сохраняем
+    // a minimised window has meaningless coordinates (−32000) — do not save them
     if w.is_minimized().unwrap_or(false) || pos.x <= -30000 {
         return;
     }
@@ -81,7 +81,7 @@ fn save_geometry(w: &WebviewWindow) {
     }
 }
 
-/// Лежит ли точка на каком-нибудь из подключённых мониторов (монитор могли отключить).
+/// Whether the point lies on any of the connected monitors (a monitor may have been disconnected).
 fn on_screen(app: &AppHandle, g: &Geometry) -> bool {
     app.available_monitors().unwrap_or_default().iter().any(|m| {
         let s = m.scale_factor();
@@ -91,8 +91,8 @@ fn on_screen(app: &AppHandle, g: &Geometry) -> bool {
     })
 }
 
-/// Живое главное окно. Если создание WebView2 сорвалось, Tauri оставляет в своём списке мёртвое
-/// окно, которое не отвечает на запросы, — его не считаем.
+/// A live main window. If WebView2 creation failed, Tauri leaves a dead window in its list
+/// that does not answer requests — it is not counted.
 fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
     app.webview_windows()
         .into_iter()
@@ -101,19 +101,19 @@ fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
         .find(|w| w.is_visible().is_ok())
 }
 
-/// Имя может остаться за мёртвым окном, поэтому каждое новое окно получает своё: main, main-1, …
+/// The name may stay taken by a dead window, so every new window gets its own: main, main-1, …
 static NEXT_WINDOW: AtomicU32 = AtomicU32::new(0);
 
-/// Окно создаётся скрытым и показывается, только когда WebView2 уже встроен. Если встраивать его
-/// в окно, которое в этот момент показывается и разворачивается, WebView2 то и дело падает с
-/// ERROR_NOT_ENOUGH_QUOTA (0x80070718); скрытые окна создаются без сбоев. Вызывать только
-/// в главном потоке: там build() возвращается, когда WebView2 уже создан.
+/// The window is created hidden and shown only when WebView2 is already embedded. Embedding it
+/// into a window that is being shown and maximised at that moment makes WebView2 fail every now and then with
+/// ERROR_NOT_ENOUGH_QUOTA (0x80070718); hidden windows are created without failures. Call only
+/// on the main thread: there build() returns when WebView2 is already created.
 fn build_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     let g = load_geometry().filter(|g| on_screen(app, g));
     let n = NEXT_WINDOW.fetch_add(1, Ordering::Relaxed);
     let label = if n == 0 { "main".to_string() } else { format!("main-{n}") };
     let mut b = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-        .title("Диспетчер задач")
+        .title("Task Manager")
         .inner_size(g.map_or(1360.0, |g| g.w.max(900.0)), g.map_or(860.0, |g| g.h.max(560.0)))
         .min_inner_size(900.0, 560.0)
         .theme(Some(tauri::Theme::Dark))
@@ -130,8 +130,8 @@ fn build_main(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     Ok(w)
 }
 
-/// WebView2 не считает страницу скрытой, когда окно спрятано в трей или свёрнуто, —
-/// сообщаем сами: скрытая страница не опрашивает движок и ничего не рисует.
+/// WebView2 does not consider the page hidden when the window is hidden in the tray or minimised —
+/// we tell it ourselves: a hidden page does not poll the engine and draws nothing.
 fn set_page_hidden(w: &WebviewWindow, hidden: bool) {
     let _ = w.eval(format!("window.__tmHidden={hidden}"));
 }
@@ -151,9 +151,9 @@ fn show_main(app: &AppHandle) {
     }
 }
 
-/// Создаёт и показывает окно. Строим в главном потоке отдельной задачей цикла событий: из других
-/// потоков Tauri создаёт окно асинхронно и при сбое лишь пишет в свой журнал, а прямо в обработчике
-/// трея создание WebView2 может зависнуть. Проверяем, что окно появилось, и при сбое пробуем ещё.
+/// Creates and shows the window. Built on the main thread as a separate event loop task: from other
+/// threads Tauri creates the window asynchronously and on failure only writes to its log, and right in the tray
+/// handler WebView2 creation can hang. We check that the window appeared and retry on failure.
 fn open_main(app: &AppHandle, attempt: u32) {
     let log = |a: &AppHandle, lvl: &str, s: String| a.state::<Ui>().service.engine.log(lvl, s, None);
     let a = app.clone();
@@ -164,11 +164,11 @@ fn open_main(app: &AppHandle, attempt: u32) {
         match build_main(&a) {
             Ok(w) if w.is_visible().is_ok() => reveal(&w),
             Ok(_) => {}
-            Err(e) => log(&a, "red", format!("Не удалось открыть окно: {e}")),
+            Err(e) => log(&a, "red", format!("Could not open the window: {e}")),
         }
     });
     if let Err(e) = posted {
-        return log(app, "red", format!("Не удалось открыть окно: {e}"));
+        return log(app, "red", format!("Could not open the window: {e}"));
     }
     let a = app.clone();
     std::thread::spawn(move || {
@@ -177,7 +177,7 @@ fn open_main(app: &AppHandle, attempt: u32) {
             return;
         }
         if attempt < 3 {
-            log(&a, "yel", format!("Окно не открылось с {attempt}-й попытки — пробую ещё раз"));
+            log(&a, "yel", format!("The window did not open on attempt {attempt} — trying again"));
             open_main(&a, attempt + 1);
         } else {
             relaunch_with_window(&a);
@@ -185,13 +185,13 @@ fn open_main(app: &AppHandle, attempt: u32) {
     });
 }
 
-/// Крайний случай: окно не создаётся. Перезапускаемся — новый экземпляр сам попросит этот
-/// завершиться (--replace), история сохранится.
+/// Last resort: the window is not created. We restart — the new instance will itself ask this one
+/// to exit (--replace), the history is kept.
 fn relaunch_with_window(app: &AppHandle) {
     let engine = &app.state::<Ui>().service.engine;
-    engine.log("red", "Окно так и не открылось — перезапускаю приложение (причина в записях журнала выше)".into(), None);
+    engine.log("red", "The window never opened — restarting the app (see the log entries above for the cause)".into(), None);
     if let Err(e) = std::env::current_exe().and_then(|exe| system::spawn_detached(&exe, &["--replace"])) {
-        engine.log("red", format!("Не удалось перезапустить приложение: {e}"), None);
+        engine.log("red", format!("Could not restart the app: {e}"), None);
     }
 }
 
@@ -213,9 +213,9 @@ fn toggle_main(app: &AppHandle) {
     }
 }
 
-/* ------------------------------------------------------------------ трей */
+/* ------------------------------------------------------------------ tray */
 
-/// Значок трея — мини-график загрузки ЦП за последние 15 секунд (как в Process Explorer).
+/// The tray icon is a mini chart of CPU load over the last 15 seconds (as in Process Explorer).
 fn tray_icon(cpu: &[f32]) -> Image<'static> {
     const N: usize = 32;
     let mut px = vec![0u8; N * N * 4];
@@ -237,7 +237,7 @@ fn tray_icon(cpu: &[f32]) -> Image<'static> {
             put(x, y, if edge { [200, 200, 200, 255] } else { [16, 16, 16, 235] });
         }
     }
-    // 15 столбиков по 2 пикселя внутри рамки
+    // 15 bars of 2 pixels inside the frame
     let inner = N - 2;
     for (i, v) in cpu.iter().rev().take(inner / 2).enumerate() {
         let h = ((v.clamp(0.0, 100.0) / 100.0) * inner as f32).round() as usize;
@@ -266,18 +266,18 @@ fn tray_loop(app: AppHandle, engine: Engine) {
         cpu.push(s.frame.system.cpu);
         let m = &s.frame.system.memory;
         let red = s.issues.iter().filter(|i| i.level == "red").count();
-        let mut tip = format!("Диспетчер задач\nЦП {:.0} % · память {} %", s.frame.system.cpu, m.load_pct);
+        let mut tip = format!("Task Manager\nCPU {:.0}% · memory {}%", s.frame.system.cpu, m.load_pct);
         if let Some(top) = s.apps.iter().max_by(|a, b| a.cpu.total_cmp(&b.cpu)).filter(|a| a.cpu >= 5.0) {
-            tip.push_str(&format!("\nбольше всех: {} — {:.0} %", top.title.chars().take(40).collect::<String>(), top.cpu));
+            tip.push_str(&format!("\ntop: {} — {:.0}%", top.title.chars().take(40).collect::<String>(), top.cpu));
         }
         if red > 0 {
-            tip.push_str(&format!("\nпроблем: {red}"));
+            tip.push_str(&format!("\nproblems: {red}"));
         }
         if let Some(t) = app.tray_by_id("main") {
             let _ = t.set_icon(Some(tray_icon(&cpu)));
             let _ = t.set_tooltip(Some(tip));
         }
-        // долго спрятанное окно закрываем целиком — вместе с памятью WebView2
+        // a window hidden for a long time is closed entirely — together with the WebView2 memory
         let ui = app.state::<Ui>();
         let stale = ui.hidden_since.lock().unwrap().is_some_and(|t| t.elapsed() >= DROP_WINDOW_AFTER);
         if stale {
@@ -289,9 +289,9 @@ fn tray_loop(app: AppHandle, engine: Engine) {
     }
 }
 
-/* ------------------------------------------------------------------ команды окна */
+/* ------------------------------------------------------------------ window commands */
 
-/// Любой метод движка. Окно работает с правами приложения — действия разрешены.
+/// Any engine method. The window works with the app’s rights — actions are allowed.
 #[tauri::command]
 async fn rpc(ui: tauri::State<'_, Ui>, method: String, params: Option<Value>) -> Result<Value, String> {
     let service = ui.service.clone();
@@ -311,12 +311,12 @@ async fn app_cmd(app: AppHandle, cmd: String, arg: Option<Value>) -> Result<Valu
         "quit" => app.exit(0),
         "admin" => {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            // новый экземпляр сам попросит этот завершиться (--replace); отказ в UAC — просто ошибка
+            // the new instance will itself ask this one to exit (--replace); a UAC refusal is just an error
             let parent = main_window(&app).and_then(|w| w.hwnd().ok()).map_or(0, |h| h.0 as isize);
-            system::shell_execute_from(parent, "runas", &exe.display().to_string(), "--replace").map_err(|_| "запуск от администратора отменён".to_string())?;
+            system::shell_execute_from(parent, "runas", &exe.display().to_string(), "--replace").map_err(|_| "restart as administrator cancelled".to_string())?;
         }
-        // «включён» — только если Windows его действительно запустит: выключенный в «Автозагрузке»
-        // диспетчера задач автозапуск остаётся в Run, но не работает
+        // “enabled” — only if Windows will actually start it: autostart turned off in the Task Manager’s
+        // “Startup apps” stays in Run but does not work
         "autostart_get" => return Ok(json!(system::autostart_enabled(AUTOSTART_NAME))),
         "autostart_set" => {
             let on = arg.as_ref().and_then(Value::as_bool).unwrap_or(false);
@@ -324,12 +324,12 @@ async fn app_cmd(app: AppHandle, cmd: String, arg: Option<Value>) -> Result<Valu
             system::autostart_set(AUTOSTART_NAME, if on { c.as_deref() } else { None }).map_err(|e| e.to_string())?;
             return Ok(json!(system::autostart_enabled(AUTOSTART_NAME)));
         }
-        _ => return Err(format!("неизвестная команда «{cmd}»")),
+        _ => return Err(format!("unknown command “{cmd}”")),
     }
     Ok(Value::Null)
 }
 
-/* ------------------------------------------------------------------ один экземпляр */
+/* ------------------------------------------------------------------ single instance */
 
 fn wait_pipe_gone() {
     let until = Instant::now() + Duration::from_secs(6);
@@ -341,11 +341,11 @@ fn wait_pipe_gone() {
     }
 }
 
-/// Вызов по каналу с повторами: другой экземпляр может ещё запускаться и не слушать канал.
+/// A pipe call with retries: another instance may still be starting and not listening on the pipe.
 fn call_retry(method: &str, secs: u64) -> bool {
     let until = Instant::now() + Duration::from_secs(secs);
     loop {
-        // «неизвестный метод» — отвечает `tm daemon`, которого приложение вот-вот сменит: ждём приложение
+        // “unknown method” — answered by `tm daemon`, which the app is about to replace: wait for the app
         match pipe::call(method, Value::Null, Duration::from_secs(2)) {
             Ok(_) => return true,
             Err(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(150)),
@@ -354,7 +354,7 @@ fn call_retry(method: &str, secs: u64) -> bool {
     }
 }
 
-/// true — продолжать запуск; false — уже работает другой экземпляр, мы ему всё передали.
+/// true — continue starting; false — another instance is already running, we handed everything to it.
 fn claim_instance(tray: bool, replace: bool) -> bool {
     let hello = if tray || replace { "app_hello" } else { "app_show" };
     match pipe::call(hello, Value::Null, Duration::from_secs(3)) {
@@ -365,8 +365,8 @@ fn claim_instance(tray: bool, replace: bool) -> bool {
             true
         }
         Err(e) if pipe::is_not_running(&e) => true,
-        // отвечает, но про окно не знает — это `tm daemon`: просим уступить (он сохранит историю)
-        Err(e) if e.to_string().contains("неизвестный метод") => {
+        // it answers but knows nothing about the window — this is `tm daemon`: ask it to give way (it will save the history)
+        Err(e) if e.to_string().contains("unknown method") => {
             let _ = pipe::call("shutdown", Value::Null, Duration::from_secs(2));
             wait_pipe_gone();
             true
@@ -390,15 +390,15 @@ fn start_pipe(app: AppHandle, service: Arc<Service>) {
             });
             Ok(json!(true))
         }
-        m if service::is_local_only(m) => Err("действия через канал не выполняются: клиент выполняет их сам, со своими правами".into()),
+        m if service::is_local_only(m) => Err("actions are not performed through the pipe: the client performs them itself, with its own rights".into()),
         m => service.call(m, p),
     });
     std::thread::Builder::new()
         .name("tm-pipe-server".into())
         .spawn(move || {
             if let Err(e) = pipe::serve(handler) {
-                eprintln!("tm-app: канал недоступен: {e}");
-                tm_core::logs::error(format!("канал недоступен: {e}"));
+                eprintln!("tm-app: pipe unavailable: {e}");
+                tm_core::logs::error(format!("pipe unavailable: {e}"));
             }
         })
         .ok();
@@ -407,15 +407,15 @@ fn start_pipe(app: AppHandle, service: Arc<Service>) {
 /* ------------------------------------------------------------------ main */
 
 fn main() {
-    // журнал ошибок и паник: у приложения в трее нет консоли
+    // error and panic log: the tray app has no console
     tm_core::logs::init("tm-app");
     let args: Vec<String> = std::env::args().skip(1).collect();
     let tray = args.iter().any(|a| a == "--tray");
     let replace = args.iter().any(|a| a == "--replace");
-    // замок держим до конца процесса: пока он наш, второй экземпляр главным не станет
+    // the lock is held until the process ends: while it is ours, a second instance will not become the main one
     let lock = system::InstanceLock::acquire("Local\\tm-app-instance");
     if let Some((lock, false)) = &lock {
-        // экземпляр уже есть, но мог ещё не открыть канал (запущены в одну секунду) — ждём его
+        // an instance already exists, but may not have opened the pipe yet (started in the same second) — wait for it
         if !replace {
             call_retry(if tray { "app_hello" } else { "app_show" }, 10);
             return;
@@ -440,7 +440,7 @@ fn main() {
         .manage(Ui { service: service.clone(), hidden_since: Mutex::new(None) })
         .invoke_handler(tauri::generate_handler![rpc, app_cmd])
         .on_window_event(|w, e| {
-            // крестик прячет окно в трей; выход — из меню трея или «⋯ → Выйти»
+            // the close button hides the window to the tray; exit — from the tray menu or “⋯ → Quit”
             if !w.label().starts_with("main") {
                 return;
             }
@@ -460,12 +460,12 @@ fn main() {
         })
         .setup(move |app| {
             let h = app.handle().clone();
-            let open = MenuItemBuilder::with_id("open", "Открыть диспетчер").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Выйти").build(app)?;
+            let open = MenuItemBuilder::with_id("open", "Open Task Manager").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).item(&open).separator().item(&quit).build()?;
             TrayIconBuilder::with_id("main")
                 .icon(tray_icon(&[0.0; 15]))
-                .tooltip("Диспетчер задач")
+                .tooltip("Task Manager")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, e| match e.id().as_ref() {
@@ -484,17 +484,17 @@ fn main() {
             let e2 = engine.clone();
             let h2 = h.clone();
             std::thread::Builder::new().name("tm-tray".into()).spawn(move || tray_loop(h2, e2))?;
-            // в трее окна нет вовсе — оно создаётся при первом открытии
+            // in the tray there is no window at all — it is created on first opening
             if !tray {
                 open_main(&h, 1);
             }
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("не удалось запустить приложение");
+        .expect("could not start the app");
 
     app.run(move |app, e| match e {
-        // последнее окно закрылось (например, скрытое окно выгрузили) — остаёмся в трее
+        // the last window closed (for example, a hidden window was unloaded) — stay in the tray
         RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
         RunEvent::Exit => {
             if let Some(w) = main_window(app) {

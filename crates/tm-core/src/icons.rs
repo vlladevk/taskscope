@@ -1,5 +1,5 @@
-//! Иконки приложений: достаём иконку из .exe и отдаём интерфейсу как PNG (data URL).
-//! Кэш по пути файла — у одинаковых exe одна иконка.
+//! App icons: the icon is taken from the .exe and handed to the interface as a PNG (data URL).
+//! Cached by file path — identical exes share one icon.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -16,7 +16,7 @@ pub struct IconCache {
 }
 
 impl IconCache {
-    /// PNG-иконка 32×32 как data URL; `None` — у файла нет иконки или нет доступа.
+    /// A 32×32 PNG icon as a data URL; `None` — the file has no icon or there is no access.
     pub fn get(&self, path: &str) -> Option<String> {
         let key = path.to_lowercase();
         if let Some(v) = self.map.lock().unwrap().get(&key) {
@@ -55,7 +55,7 @@ fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
         bi.bmiHeader = BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: w,
-            biHeight: -h, // сверху вниз
+            biHeight: -h, // top-down
             biPlanes: 1,
             biBitCount: 32,
             biCompression: BI_RGB,
@@ -68,10 +68,10 @@ fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     const S: i32 = 32;
     let out = (|| {
         if ii.hbmColor.is_null() {
-            return None; // монохромные иконки не поддерживаем
+            return None; // monochrome icons are not supported
         }
         let mut px = read(ii.hbmColor, S, S)?;
-        // BGRA → RGBA; у старых иконок альфа нулевая — берём прозрачность из маски
+        // BGRA → RGBA; old icons have zero alpha — the transparency comes from the mask
         let no_alpha = px.chunks(4).all(|c| c[3] == 0);
         let mask = if no_alpha { read(ii.hbmMask, S, S) } else { None };
         for (i, c) in px.chunks_mut(4).enumerate() {
@@ -95,7 +95,7 @@ fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     out
 }
 
-// ───────────── минимальный PNG: несжатый deflate, этого хватает для иконок 32×32 ─────────────
+// ───────────── minimal PNG: uncompressed deflate, good enough for 32×32 icons ─────────────
 
 fn crc32(data: &[u8]) -> u32 {
     let mut c = 0xFFFF_FFFFu32;
@@ -120,7 +120,7 @@ fn adler32(data: &[u8]) -> u32 {
 pub fn png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     let mut raw = Vec::with_capacity((w * 4 + 1) as usize * h as usize);
     for row in rgba.chunks((w * 4) as usize) {
-        raw.push(0); // фильтр None
+        raw.push(0); // filter None
         raw.extend_from_slice(row);
     }
     let mut z = vec![0x78, 0x01];
@@ -144,7 +144,7 @@ pub fn png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     let mut ihdr = Vec::new();
     ihdr.extend_from_slice(&w.to_be_bytes());
     ihdr.extend_from_slice(&h.to_be_bytes());
-    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8 бит, RGBA
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8 bits, RGBA
     chunk(b"IHDR", &ihdr);
     chunk(b"IDAT", &z);
     chunk(b"IEND", &[]);

@@ -1,10 +1,10 @@
-//! Понятные подписи процессов: вместо «java», «node», «cmd», «claude» — что именно запущено.
+//! Readable process labels: instead of “java”, “node”, “cmd”, “claude” — what exactly is running.
 //!
-//! - по командной строке: jar или главный класс Java, скрипт или пакет Node и Python, команда cmd,
-//!   PowerShell и bash, COM-объект у dllhost;
-//! - сессии Claude Code: название сессии (переменная окружения, которую задаёт приложение Claude,
-//!   или последнее переименование в файле сессии) и папка проекта;
-//! - заголовки окон и вкладки браузеров (UI Automation) — они меняются, поэтому по отдельному запросу.
+//! - from the command line: a jar or the Java main class, a Node or Python script or package, a cmd,
+//!   PowerShell or bash command, the COM object of dllhost;
+//! - Claude Code sessions: the session name (an environment variable set by the Claude app,
+//!   or the last rename in the session file) and the project folder;
+//! - window titles and browser tabs (UI Automation) — they change, so on a separate request.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-/// Аргументы командной строки по правилам Windows (кавычки группируют, сами не входят).
+/// Command-line arguments by Windows rules (quotes group, but are not included themselves).
 pub fn split_args(cmd: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -60,12 +60,12 @@ fn short(s: &str, n: usize) -> String {
     }
 }
 
-/// Команды, которые Claude Code запускает в оболочке, узнаются по его обёртке.
+/// Commands Claude Code runs in a shell are recognised by its wrapper.
 fn claude_code_shell(cmd: &str) -> bool {
     cmd.contains("claude/shell-snapshots") || cmd.contains(r"claude\shell-snapshots") || cmd.contains("$__claudeCodeScript")
 }
 
-/// Подпись по командной строке; `None` — ничего полезнее имени файла нет.
+/// A label from the command line; `None` — nothing more useful than the file name.
 pub fn from_cmdline(exe: &str, cmd: &str) -> Option<String> {
     let exe = exe.to_ascii_lowercase();
     let a = split_args(cmd);
@@ -76,12 +76,12 @@ pub fn from_cmdline(exe: &str, cmd: &str) -> Option<String> {
         "python.exe" | "pythonw.exe" | "py.exe" | "python3.exe" => python(rest),
         "cmd.exe" => {
             if claude_code_shell(cmd) {
-                return Some("Команда Claude Code".into());
+                return Some("Claude Code command".into());
             }
             let i = rest.iter().position(|t| t.eq_ignore_ascii_case("/c") || t.eq_ignore_ascii_case("/k"))?;
             let prog = rest.get(i + 1)?;
-            // «cmd /c "C:\…\java -jar …"» — внутри кавычек вся команда; у программы оставляем только имя.
-            // Путь с пробелами («C:\Program Files\…\x.exe») — одна программа, а не несколько слов
+            // “cmd /c "C:\…\java -jar …"” — the whole command is inside the quotes; only the name is kept for the program.
+            // A path with spaces (“C:\Program Files\…\x.exe”) is one program, not several words
             let low = prog.to_ascii_lowercase();
             let end = [".exe", ".bat", ".cmd", ".com", ".ps1"].iter().filter_map(|e| low.find(e).map(|i| i + e.len())).min();
             let mut words: Vec<String> = match end {
@@ -98,20 +98,20 @@ pub fn from_cmdline(exe: &str, cmd: &str) -> Option<String> {
         }
         "powershell.exe" | "pwsh.exe" => {
             if claude_code_shell(cmd) {
-                return Some("Команда Claude Code".into());
+                return Some("Claude Code command".into());
             }
             let next = |k: &str| rest.iter().position(|t| t.eq_ignore_ascii_case(k)).and_then(|i| rest.get(i + 1));
             if let Some(f) = next("-File").or_else(|| next("-f")) {
                 return Some(format!("PowerShell: {}", file_name(f)));
             }
             if next("-EncodedCommand").or_else(|| next("-enc")).or_else(|| next("-e")).is_some() {
-                return Some("PowerShell: закодированная команда".into());
+                return Some("PowerShell: encoded command".into());
             }
             next("-Command").or_else(|| next("-c")).map(|c| format!("PowerShell: {}", short(c, 50)))
         }
         "bash.exe" | "sh.exe" | "zsh.exe" => {
             if claude_code_shell(cmd) {
-                return Some("Команда Claude Code".into());
+                return Some("Claude Code command".into());
             }
             let i = rest.iter().position(|t| t == "-c")?;
             rest.get(i + 1).map(|c| format!("{}: {}", stem(&exe), short(c, 50)))
@@ -121,13 +121,13 @@ pub fn from_cmdline(exe: &str, cmd: &str) -> Option<String> {
             com_name(&id).map(|n| format!("COM: {n}"))
         }
         "rundll32.exe" => rest.first().map(|t| format!("rundll32: {}", file_name(t.split(',').next().unwrap_or(t)))),
-        "codex.exe" if rest.iter().any(|t| t == "app-server") => Some("Codex: сервер приложения".into()),
+        "codex.exe" if rest.iter().any(|t| t == "app-server") => Some("Codex: app server".into()),
         _ => None,
     }
 }
 
 fn java(rest: &[String]) -> Option<String> {
-    // значения этих ключей — не главный класс
+    // the values of these keys are not the main class
     const WITH_VALUE: &[&str] = &["-cp", "-classpath", "--class-path", "-p", "--module-path", "--add-opens", "--add-exports", "--add-modules", "--add-reads", "-d"];
     let mut i = 0;
     let mut main = None;
@@ -136,7 +136,7 @@ fn java(rest: &[String]) -> Option<String> {
         if t == "-jar" {
             let jar = rest.get(i + 1)?;
             if jar.to_ascii_lowercase().contains("surefire") {
-                return Some("Тесты Maven (surefire)".into());
+                return Some("Maven tests (surefire)".into());
             }
             return Some(format!("Java: {}", file_name(jar)));
         }
@@ -157,19 +157,19 @@ fn java(rest: &[String]) -> Option<String> {
     }
     let m = main?;
     let known = [
-        ("GradleDaemon", "Gradle (фоновый сборщик)"),
-        ("GradleWorkerMain", "Gradle: рабочий процесс"),
+        ("GradleDaemon", "Gradle (background daemon)"),
+        ("GradleWorkerMain", "Gradle: worker process"),
         ("GradleWrapperMain", "Gradle"),
-        ("KotlinCompileDaemon", "Kotlin: компилятор"),
-        ("org.jetbrains.jps", "IntelliJ: сборка проекта"),
-        ("com.intellij.rt", "IntelliJ: запуск"),
+        ("KotlinCompileDaemon", "Kotlin: compiler"),
+        ("org.jetbrains.jps", "IntelliJ: project build"),
+        ("com.intellij.rt", "IntelliJ: run"),
         ("plexus.classworlds", "Maven"),
         ("MavenWrapperMain", "Maven"),
-        ("surefire", "Тесты Maven (surefire)"),
+        ("surefire", "Maven tests (surefire)"),
         ("catalina.startup", "Tomcat"),
         ("org.sonarsource", "SonarLint"),
-        ("eclipse.jdt.ls", "Java: языковой сервер"),
-        ("equinox.launcher", "Java: языковой сервер"),
+        ("eclipse.jdt.ls", "Java: language server"),
+        ("equinox.launcher", "Java: language server"),
     ];
     for (k, v) in known {
         if m.contains(k) {
@@ -188,7 +188,7 @@ fn node(rest: &[String]) -> Option<String> {
     if low.contains(r"@anthropic-ai\claude-code") {
         return Some("Claude Code".into());
     }
-    // пакет — папка сразу после последнего node_modules (с @scope)
+    // the package is the folder right after the last node_modules (with @scope)
     if let Some(p) = low.rfind(r"node_modules\") {
         let tail = &script[p + 13..];
         let mut parts = tail.split('\\');
@@ -202,7 +202,7 @@ fn node(rest: &[String]) -> Option<String> {
         });
     }
     let f = file_name(&script);
-    // index.js / main.js ничего не говорят — добавляем папку
+    // index.js / main.js say nothing — add the folder
     let generic = matches!(stem(f).to_ascii_lowercase().as_str(), "index" | "main" | "server" | "app" | "cli");
     let dir = Path::new(&script).parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()).unwrap_or("");
     Some(if generic && !dir.is_empty() { format!("Node: {dir}\\{f}") } else { format!("Node: {f}") })
@@ -234,7 +234,7 @@ fn python(rest: &[String]) -> Option<String> {
     None
 }
 
-/// Имя COM-сервера, который обслуживает dllhost (по AppID, иначе по CLSID).
+/// The name of the COM server dllhost serves (by AppID, otherwise by CLSID).
 fn com_name(id: &str) -> Option<String> {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CLASSES_ROOT, RRF_RT_REG_SZ};
     let id = id.trim().trim_matches(|c| c == '{' || c == '}');
@@ -254,8 +254,8 @@ fn com_name(id: &str) -> Option<String> {
     None
 }
 
-/// Оболочка без команды (терминал в редакторе, в Windows Terminal, в приложении) — подпись по
-/// папке, в которой она открыта: иначе это десяток одинаковых «Windows PowerShell».
+/// A shell without a command (a terminal in an editor, in Windows Terminal, in an app) — labelled by
+/// the folder it is open in: otherwise it is a dozen identical “Windows PowerShell”.
 pub fn shell_folder(pid: u32, create_time: i64, exe: &str, cmd: &str) -> Option<String> {
     let name = match exe.to_ascii_lowercase().as_str() {
         "powershell.exe" | "pwsh.exe" => "PowerShell",
@@ -264,7 +264,7 @@ pub fn shell_folder(pid: u32, create_time: i64, exe: &str, cmd: &str) -> Option<
         "nu.exe" => "nu",
         _ => return None,
     };
-    // только без команды: с командой подпись уже есть
+    // only without a command: with a command there is a label already
     if split_args(cmd).iter().skip(1).any(|a| !a.starts_with('-') && !a.starts_with('/')) {
         return None;
     }
@@ -275,7 +275,7 @@ pub fn shell_folder(pid: u32, create_time: i64, exe: &str, cmd: &str) -> Option<
 
 // ───────────────────────────── Claude Code ─────────────────────────────
 
-/// Процесс — Claude Code (а не окно приложения Claude и не его служебные процессы).
+/// The process is Claude Code (not the Claude app window and not its helper processes).
 pub fn is_claude_code(exe: &str, path: Option<&str>, cmd: &str) -> bool {
     if cmd.contains(r"@anthropic-ai\claude-code") || cmd.contains("@anthropic-ai/claude-code") {
         return true;
@@ -283,11 +283,11 @@ pub fn is_claude_code(exe: &str, path: Option<&str>, cmd: &str) -> bool {
     exe.eq_ignore_ascii_case("claude.exe") && !cmd.contains("--type=") && !path.is_some_and(|p| p.contains(r"\WindowsApps\"))
 }
 
-/// «Claude Code: <название сессии>» или «Claude Code: <папка>».
+/// “Claude Code: <session name>” or “Claude Code: <folder>”.
 pub fn claude_code(pid: u32, create_time: i64, cmd: &str) -> String {
     let env = crate::inspect::environment(pid, create_time).ok();
     let var = |k: &str| env.as_ref().and_then(|e| e.vars.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone()));
-    // название, заданное при запуске; переименование позже записано в файле сессии — оно новее
+    // the name set at launch; a later rename is written in the session file — it is newer
     let mut title = var("CLAUDE_CODE_SESSION_NAME").filter(|s| !s.trim().is_empty());
     let args = split_args(cmd);
     let id = args.iter().enumerate().find_map(|(i, t)| {
@@ -311,7 +311,7 @@ pub fn claude_code(pid: u32, create_time: i64, cmd: &str) -> String {
     }
 }
 
-/// «D:\code\my app» → «my app»; рабочее дерево «…\Repo\.claude\worktrees\name» → «Repo · name».
+/// “D:\code\my app” → “my app”; a worktree “…\Repo\.claude\worktrees\name” → “Repo · name”.
 fn project_of(cwd: &str) -> String {
     let parts: Vec<&str> = cwd.split('\\').collect();
     if let Some(i) = parts.iter().position(|p| p.eq_ignore_ascii_case(".claude")) {
@@ -324,8 +324,8 @@ fn project_of(cwd: &str) -> String {
     parts.last().unwrap_or(&cwd).to_string()
 }
 
-/// Последнее название сессии из её файла (записи «custom-title»). Файл бывает в десятки МБ —
-/// читаем только конец: переименование дописывается в него при каждом ходе.
+/// The latest session name from its file (“custom-title” entries). The file can be tens of MB —
+/// only the end is read: a rename is appended to it on every turn.
 fn session_title(projects: &Path, id: &str) -> Option<String> {
     let name = format!("{id}.jsonl");
     let file = std::fs::read_dir(projects).ok()?.flatten().map(|d| d.path().join(&name)).find(|p| p.is_file())?;
@@ -342,9 +342,9 @@ fn session_title(projects: &Path, id: &str) -> Option<String> {
     })
 }
 
-// ───────────────────────────── окна ─────────────────────────────
+// ───────────────────────────── windows ─────────────────────────────
 
-/// Заголовки видимых главных окон по PID (свёрнутые тоже; скрытые и «спрятанные» системой — нет).
+/// Titles of visible main windows by PID (minimised ones too; hidden and system-“cloaked” ones — not).
 pub fn window_titles() -> HashMap<u32, Vec<String>> {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
     use windows_sys::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
@@ -377,27 +377,27 @@ pub fn window_titles() -> HashMap<u32, Vec<String>> {
     out
 }
 
-// ───────────────────────────── вкладки браузера ─────────────────────────────
+// ───────────────────────────── browser tabs ─────────────────────────────
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Tab {
     pub title: String,
-    /// память вкладки, как её показывает сам браузер (МБ); у выгруженной — сколько освобождено
+    /// tab memory as the browser itself shows it (MB); for a discarded one — how much was freed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mem_mb: Option<f64>,
-    /// выгружена браузером для экономии памяти
+    /// discarded by the browser to save memory
     pub sleeping: bool,
     pub audio: bool,
-    /// номер окна браузера (0, 1, …)
+    /// browser window number (0, 1, …)
     pub window: usize,
 }
 
 /// «… - Memory usage - 697 MB», «… - Inactive tab - 184 MB freed up», «… - Audio playing» —
-/// браузер дописывает состояние к имени вкладки; отделяем его.
+/// the browser appends the state to the tab name; split it off.
 fn parse_tab(name: &str, window: usize) -> Tab {
     let mut parts: Vec<&str> = name.split(" - ").collect();
     let mut t = Tab { title: String::new(), mem_mb: None, sleeping: false, audio: false, window };
-    // «697 MB», «184 MB freed up», «1,2 ГБ» → МБ
+    // “697 MB”, “184 MB freed up”, “1,2 ГБ” (localized) → MB
     let size = |s: &str| -> Option<f64> {
         let low = s.trim().to_lowercase();
         let (num, unit) = low.split_once(' ')?;
@@ -414,13 +414,13 @@ fn parse_tab(name: &str, window: usize) -> Tab {
         let last = parts[parts.len() - 1].trim();
         let low = last.to_lowercase();
         if let Some(mb) = size(last) {
-            // размер — отдельной частью после «Memory usage» / «Inactive tab»
+            // the size — a separate part after “Memory usage” / “Inactive tab”
             t.mem_mb = Some(mb);
             if low.contains("freed") || low.contains("освобожд") {
                 t.sleeping = true;
             }
         } else if low.contains("memory usage") || low.contains("памят") {
-            // подпись к размеру; сам размер уже снят
+            // the label for the size; the size itself is already taken
         } else if low.starts_with("inactive tab") || low.contains("неактивн") {
             t.sleeping = true;
         } else if low.contains("audio playing") || low.contains("воспроизвод") {
@@ -434,14 +434,14 @@ fn parse_tab(name: &str, window: usize) -> Tab {
     t
 }
 
-/// Открытые вкладки браузера на Chromium (Chrome, Edge, Brave, Opera, Vivaldi …) по PID его главного
-/// процесса — через UI Automation, как их видят программы чтения с экрана. Около секунды на
-/// десятки вкладок, поэтому только по запросу.
+/// Open tabs of a Chromium browser (Chrome, Edge, Brave, Opera, Vivaldi …) by the PID of its main
+/// process — through UI Automation, the way screen readers see them. About a second for
+/// dozens of tabs, so only on request.
 #[derive(Clone, Debug, Serialize)]
 pub struct BrowserTabs {
     pub tabs: Vec<Tab>,
-    /// заголовки окон браузера по номеру (`Tab::window`): у окна во весь экран полосы вкладок нет,
-    /// и видна только открытая вкладка — из заголовка
+    /// browser window titles by number (`Tab::window`): a full-screen window has no tab strip,
+    /// and only the open tab is visible — from the title
     pub windows: Vec<String>,
 }
 
@@ -494,8 +494,8 @@ pub fn browser_tabs(pid: u32) -> Result<BrowserTabs, String> {
                 let Ok(all) = el.FindAll(TreeScope_Descendants, &cond) else { continue };
                 for i in 0..all.Length().unwrap_or(0) {
                     let Ok(t) = all.GetElement(i) else { continue };
-                    // вкладки самого браузера: «Tab», «BraveTab», «EdgeTab»…; «TabbedPaneTab» и
-                    // вкладки внутри веб-страниц — не они
+                    // the browser’s own tabs: “Tab”, “BraveTab”, “EdgeTab”…; “TabbedPaneTab” and
+                    // tabs inside web pages are not them
                     let class = t.CurrentClassName().map(|s| s.to_string()).unwrap_or_default();
                     if !class.ends_with("Tab") || class == "TabbedPaneTab" {
                         continue;
@@ -515,10 +515,10 @@ pub fn browser_tabs(pid: u32) -> Result<BrowserTabs, String> {
     }
 }
 
-// ───────────────────────── диспетчер задач браузера ─────────────────────────
+// ───────────────────────── browser task manager ─────────────────────────
 
-/// Окна встроенного диспетчера задач браузеров на Chromium (Shift+Esc): «Task Manager - Brave»,
-/// «Диспетчер задач - Google Chrome», «Browser task manager» у Edge.
+/// Windows of the built-in task manager of Chromium browsers (Shift+Esc): “Task Manager - Brave”,
+/// its localized titles (Russian is matched too), “Browser task manager” in Edge.
 fn task_manager_windows() -> Vec<isize> {
     use windows_sys::Win32::Foundation::{BOOL, HWND, LPARAM};
     use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindowTextW, IsWindowVisible};
@@ -545,9 +545,9 @@ fn task_manager_windows() -> Vec<isize> {
     out
 }
 
-/// Что браузер сам пишет о своих процессах в диспетчере задач: PID → [«Tab: …», «Subframe: …»,
-/// «Extension: …»]. `None` — окно диспетчера не открыто (другого способа узнать, какой процесс
-/// какой вкладке, у браузера нет). Видны только строки, которые помещаются в окно.
+/// What the browser itself writes about its processes in its task manager: PID → [“Tab: …”, “Subframe: …”,
+/// “Extension: …”]. `None` — the task manager window is not open (the browser has no other way to tell
+/// which process serves which tab). Only the rows that fit in the window are visible.
 pub fn browser_tasks() -> Option<Vec<(u32, String)>> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
@@ -568,7 +568,7 @@ pub fn browser_tasks() -> Option<Vec<(u32, String)>> {
                 let Ok(el) = ua.ElementFromHandle(HWND(w as *mut _)) else { continue };
                 let Ok(grid) = el.FindFirst(TreeScope_Descendants, &is_grid) else { continue };
                 let Ok(rows) = grid.FindAll(TreeScope_Children, &all) else { continue };
-                // первая строка — заголовки: где задача и где PID
+                // the first row is the headers: where the task is and where the PID is
                 let mut task_col = 0usize;
                 let mut pid_col = None;
                 let mut cur: Option<u32> = None;
@@ -591,11 +591,11 @@ pub fn browser_tasks() -> Option<Vec<(u32, String)>> {
                         continue;
                     }
                     let Some(pc) = pid_col else { break };
-                    // строка без PID — ещё одна задача того же процесса, что строка выше
+                    // a row without a PID is one more task of the same process as the row above
                     if let Some(p) = names.get(pc).and_then(|s| s.trim().parse::<u32>().ok()) {
                         cur = Some(p);
                     } else if names.iter().enumerate().any(|(j, s)| j != task_col && !s.trim().is_empty()) {
-                        cur = None; // свои значения, но без PID — не угадываем
+                        cur = None; // its own values, but without a PID — do not guess
                     }
                     if let (Some(p), Some(t)) = (cur, names.get(task_col)) {
                         if !t.trim().is_empty() {
@@ -624,15 +624,15 @@ mod tests {
 
     #[test]
     fn cmdlines() {
-        assert_eq!(from_cmdline("java.exe", r"java -Xmx1g -cp a.jar org.gradle.launcher.daemon.bootstrap.GradleDaemon 8.5").as_deref(), Some("Gradle (фоновый сборщик)"));
-        assert_eq!(from_cmdline("java.exe", r"java -jar C:\Temp\surefirebooter123.jar x").as_deref(), Some("Тесты Maven (surefire)"));
+        assert_eq!(from_cmdline("java.exe", r"java -Xmx1g -cp a.jar org.gradle.launcher.daemon.bootstrap.GradleDaemon 8.5").as_deref(), Some("Gradle (background daemon)"));
+        assert_eq!(from_cmdline("java.exe", r"java -jar C:\Temp\surefirebooter123.jar x").as_deref(), Some("Maven tests (surefire)"));
         assert_eq!(from_cmdline("java.exe", r"java -cp x com.example.App").as_deref(), Some("Java: App"));
         assert_eq!(from_cmdline("node.exe", r#""C:\n\node.exe" "C:\p\node_modules\vite\bin\vite.js" dev"#).as_deref(), Some("Node: vite dev"));
         assert_eq!(from_cmdline("node.exe", r#"node "C:\n\node_modules\npm\bin\npm-cli.js" run dev"#).as_deref(), Some("npm run dev"));
         assert_eq!(from_cmdline("node.exe", r"node C:\proj\server\index.js").as_deref(), Some(r"Node: server\index.js"));
         assert_eq!(from_cmdline("python.exe", r"python -m http.server 8000").as_deref(), Some("Python: http.server 8000"));
         assert_eq!(from_cmdline("python.exe", r"python manage.py runserver").as_deref(), Some("Python: manage.py runserver"));
-        assert_eq!(from_cmdline("bash.exe", r#"bash -c "source /c/Users/x/.claude/shell-snapshots/s.sh && ls""#).as_deref(), Some("Команда Claude Code"));
+        assert_eq!(from_cmdline("bash.exe", r#"bash -c "source /c/Users/x/.claude/shell-snapshots/s.sh && ls""#).as_deref(), Some("Claude Code command"));
         assert_eq!(from_cmdline("cmd.exe", r#"cmd.exe /X /C "C:\jdkin\java -jar x.jar""#).as_deref(), Some("cmd: java -jar x.jar"));
         assert_eq!(from_cmdline("cmd.exe", r#""C:\WINDOWS\system32\cmd.exe" /C "C:\Program Files\AMD\CNext\AMDRSServ.exe""#).as_deref(), Some("cmd: AMDRSServ"));
         assert_eq!(project_of(r"C:\Users\dev\Projects\Demo\.claude\worktrees\brave-otter-1a2b3c"), "Demo · brave-otter-1a2b3c");

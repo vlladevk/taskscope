@@ -1,5 +1,5 @@
-﻿# Рисует значок приложения (три столбика, как в заголовке прототипа) и собирает icon.ico
-# из PNG-кадров 16/24/32/48/64/256. Нужен только при изменении значка.
+﻿# Draws the app icon (three bars, as in the window header) and builds icon.ico
+# from 16/24/32/48/64/256 PNG frames. Only needed when the icon changes.
 param([string]$Out = (Join-Path (Split-Path -Parent $PSScriptRoot) 'crates\tm-app\icons'))
 Add-Type -AssemblyName System.Drawing
 New-Item -ItemType Directory -Force $Out | Out-Null
@@ -29,7 +29,7 @@ foreach ($s in $sizes) {
     $frames += , @($s, $ms.ToArray())
     $bmp.Dispose()
 }
-# ICO: заголовок, каталог, затем PNG-данные кадров
+# ICO: header, directory, then the PNG data of the frames
 $fs = [System.IO.File]::Create((Join-Path $Out 'icon.ico'))
 $bw = New-Object System.IO.BinaryWriter $fs
 $bw.Write([UInt16]0); $bw.Write([UInt16]1); $bw.Write([UInt16]$frames.Count)

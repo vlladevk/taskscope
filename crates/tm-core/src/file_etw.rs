@@ -1,13 +1,13 @@
-//! Какие файлы процессы читают и пишут: события провайдера Microsoft-Windows-Kernel-File (ETW).
+//! Which files processes read and write: events of the Microsoft-Windows-Kernel-File provider (ETW).
 //!
-//! Счётчики «Диск» у процесса — только байты. Чтобы увидеть сами файлы, нужна трассировка
-//! файловых операций; своя сессия ETW требует прав администратора. Сессия запускается по
-//! первому запросу и сама останавливается через 2 минуты без запросов: событий чтения и
-//! записи бывают тысячи в секунду, и держать их, пока никто не смотрит, незачем.
+//! A process’s “Disk” counters are bytes only. To see the files themselves you need tracing of
+//! file operations; an own ETW session requires administrator rights. The session starts on
+//! the first request and stops by itself after 2 minutes without requests: read and
+//! write events come in thousands per second, and there is no point keeping them while nobody watches.
 //!
-//! Имена: событие «открытие» (Create) даёт имя для объекта файла, NameCreate — для ключа
-//! файла; чтение и запись приходят с обоими. Файлы, открытые до начала наблюдения, имени
-//! не получают — они идут одной строкой «открыт до начала наблюдения».
+//! Names: the “open” (Create) event gives the name for the file object, NameCreate — for the file
+//! key; reads and writes come with both. Files opened before the observation started get no
+//! name — they go as a single row “opened before observation started”.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -28,9 +28,9 @@ const PROVIDER: GUID = GUID::from_u128(0xedd08927_9cc4_4e65_b970_c2560fb5c289);
 /// FILENAME | CREATE | READ | WRITE
 const KEYWORDS: u64 = 0x10 | 0x80 | 0x100 | 0x200;
 const INVALID_PROCESSTRACE: u64 = u64::MAX;
-/// Без запросов дольше этого сессия останавливается.
+/// Without requests for longer than this the session stops.
 const LINGER: Duration = Duration::from_secs(120);
-/// «Сейчас» — байты, затухающие с этой постоянной времени: скорость = остаток / TAU.
+/// “Now” — bytes decaying with this time constant: rate = remainder / TAU.
 const TAU: f64 = 10.0;
 const MAX_NAMES: usize = 200_000;
 const MAX_FILES: usize = 50_000;
@@ -39,7 +39,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Свойства сессии с местом под её имя сразу за структурой (так требует ETW).
+/// Session properties with room for its name right after the struct (ETW requires this).
 struct Props {
     buf: Vec<u64>,
 }
@@ -51,12 +51,12 @@ impl Props {
         let e = p.get();
         e.Wnode.BufferSize = size as u32;
         e.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-        e.Wnode.ClientContext = 1; // часы QPC
+        e.Wnode.ClientContext = 1; // QPC clock
         e.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-        e.BufferSize = 256; // КБ: файловых событий много
+        e.BufferSize = 256; // KB: there are many file events
         e.MinimumBuffers = 8;
         e.MaximumBuffers = 64;
-        e.FlushTimer = 1; // с
+        e.FlushTimer = 1; // s
         e.LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
         p
     }
@@ -70,14 +70,14 @@ fn stop_session() {
     unsafe { ControlTraceW(CONTROLTRACE_HANDLE { Value: 0 }, wide(SESSION).as_ptr(), p.get(), EVENT_TRACE_CONTROL_STOP) };
 }
 
-/// Где в данных события лежат нужные поля. Раскладку сообщает сама Windows (TDH) —
-/// она разная у версий событий, и угадывать смещения нельзя.
+/// Where the needed fields lie in the event data. Windows itself reports the layout (TDH) —
+/// it differs between event versions, and offsets must not be guessed.
 #[derive(Clone, Copy, Default)]
 struct Layout {
     file_object: Option<(usize, usize)>,
     file_key: Option<(usize, usize)>,
     io_size: Option<(usize, usize)>,
-    /// начало строки UTF-16 с именем (она идёт до конца или до нуля)
+    /// start of the UTF-16 name string (it runs to the end or to a zero)
     file_name: Option<usize>,
 }
 
@@ -85,7 +85,7 @@ fn layout(rec: &EVENT_RECORD) -> Layout {
     let mut size = 0u32;
     let first = unsafe { TdhGetEventInformation(rec, 0, std::ptr::null(), std::ptr::null_mut(), &mut size) };
     if first != 122 || size == 0 {
-        // 122 — ERROR_INSUFFICIENT_BUFFER: иначе описания события нет
+        // 122 — ERROR_INSUFFICIENT_BUFFER: otherwise there is no event description
         return Layout::default();
     }
     let mut buf = vec![0u64; size as usize / 8 + 1];
@@ -126,7 +126,7 @@ fn layout(rec: &EVENT_RECORD) -> Layout {
         let in_type = u16_at(p + 8);
         let count = u16_at(p + 16);
         let length = u16_at(p + 18);
-        // структура, массив переменной длины или длина из другого поля — дальше смещения не посчитать
+        // a struct, a variable-length array or a length from another field — offsets cannot be computed further
         if flags & (0x1 | 0x2 | 0x4) != 0 {
             break;
         }
@@ -135,7 +135,7 @@ fn layout(rec: &EVENT_RECORD) -> Layout {
                 if name.eq_ignore_ascii_case("FileName") {
                     out.file_name = Some(off);
                 }
-                break; // строка переменной длины: после неё ничего нужного нет
+                break; // a variable-length string: nothing needed comes after it
             }
             3 | 4 => 1,
             5 | 6 => 2,
@@ -183,7 +183,7 @@ struct Acc {
     write: u64,
     reads: u64,
     writes: u64,
-    /// затухающие байты (см. TAU) на момент `at`
+    /// decaying bytes (see TAU) at the moment `at`
     rr: f64,
     rw: f64,
     at: Option<Instant>,
@@ -230,14 +230,14 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     };
     let fo = read_uint(data, l.file_object);
     let fk = read_uint(data, l.file_key);
-    // 11 — NameDelete: ключ файла больше не действует
+    // 11 — NameDelete: the file key is no longer valid
     if id == 11 {
         if let Some(k) = fk {
             s.by_key.remove(&k);
         }
         return;
     }
-    // любое событие с именем (открытие, NameCreate, перечисление при старте) — запоминаем имя
+    // any event with a name (open, NameCreate, rundown at start) — remember the name
     if let Some(name) = l.file_name.and_then(|at| read_name(data, at)) {
         if s.by_object.len() + s.by_key.len() > MAX_NAMES {
             s.by_object.clear();
@@ -252,7 +252,7 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
         }
         return;
     }
-    // 15 — чтение, 16 — запись
+    // 15 — read, 16 — write
     let write = match id {
         15 => false,
         16 => true,
@@ -263,7 +263,7 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     let pid = r.EventHeader.ProcessId;
     s.events += 1;
     if s.files.len() > MAX_FILES {
-        // выбрасываем то, что давно не трогали
+        // drop what has not been touched for a long time
         let now = Instant::now();
         s.files.retain(|_, a| a.at.is_some_and(|t| now.saturating_duration_since(t) < Duration::from_secs(60)));
     }
@@ -292,17 +292,17 @@ fn control() -> &'static Mutex<Control> {
 }
 
 fn start() -> Result<(), String> {
-    stop_session(); // сессия могла остаться от аварийно завершённого экземпляра
+    stop_session(); // the session may be left over from a crashed instance
     let mut session = CONTROLTRACE_HANDLE { Value: 0 };
     let mut p = Props::new();
     let rc = unsafe { StartTraceW(&mut session, wide(SESSION).as_ptr(), p.get()) };
     if rc != 0 {
-        return Err(format!("не удалось начать трассировку файлов (код {rc})"));
+        return Err(format!("could not start file tracing (code {rc})"));
     }
     let rc = unsafe { EnableTraceEx2(session, &PROVIDER, EVENT_CONTROL_CODE_ENABLE_PROVIDER, 4, KEYWORDS, 0, 0, std::ptr::null()) };
     if rc != 0 {
         stop_session();
-        return Err(format!("не удалось включить события файлов (код {rc})"));
+        return Err(format!("could not enable file events (code {rc})"));
     }
     let mut name = wide(SESSION);
     let mut log: EVENT_TRACE_LOGFILEW = unsafe { std::mem::zeroed() };
@@ -312,10 +312,10 @@ fn start() -> Result<(), String> {
     let trace = unsafe { OpenTraceW(&mut log) };
     if trace.Value == INVALID_PROCESSTRACE {
         stop_session();
-        return Err("не удалось открыть трассировку файлов".into());
+        return Err("could not open the file trace".into());
     }
     let h = trace.Value;
-    // ProcessTrace блокирует поток, пока сессия не остановлена
+    // ProcessTrace blocks the thread until the session is stopped
     let spawned = std::thread::Builder::new().name("tm-file-etw".into()).spawn(move || unsafe {
         let handle = PROCESSTRACE_HANDLE { Value: h };
         ProcessTrace(&handle, 1, std::ptr::null(), std::ptr::null());
@@ -324,11 +324,11 @@ fn start() -> Result<(), String> {
     if spawned.is_err() {
         unsafe { CloseTrace(trace) };
         stop_session();
-        return Err("не удалось запустить поток трассировки".into());
+        return Err("could not start the tracing thread".into());
     }
-    // имена уже открытых файлов, если провайдер умеет их перечислить (не умеет — ничего не случится)
+    // names of already open files, if the provider can enumerate them (if not — nothing happens)
     unsafe { EnableTraceEx2(session, &PROVIDER, EVENT_CONTROL_CODE_CAPTURE_STATE, 4, KEYWORDS, 0, 0, std::ptr::null()) };
-    // сторож: без запросов дольше LINGER — остановить
+    // watchdog: no requests for longer than LINGER — stop
     let _ = std::thread::Builder::new().name("tm-file-etw-idle".into()).spawn(|| loop {
         std::thread::sleep(Duration::from_secs(5));
         let mut c = control().lock().unwrap_or_else(|e| e.into_inner());
@@ -349,7 +349,7 @@ fn start() -> Result<(), String> {
     Ok(())
 }
 
-/// Останавливает сессию. Вызывать при выходе из программы: сама Windows её не остановит.
+/// Stops the session. Call on program exit: Windows itself will not stop it.
 pub fn shutdown() {
     let mut c = control().lock().unwrap_or_else(|e| e.into_inner());
     if c.running {
@@ -361,32 +361,32 @@ pub fn shutdown() {
 #[derive(Serialize)]
 pub struct FileIo {
     pub pid: u32,
-    /// путь «C:\…»; пустой — файл открыт до начала наблюдения, имени нет
+    /// a “C:\…” path; empty — the file was opened before observation started, no name
     pub path: String,
     pub read: u64,
     pub write: u64,
     pub reads: u64,
     pub writes: u64,
-    /// байт/с за последние ~10 с
+    /// bytes/s over the last ~10 s
     pub read_bps: f64,
     pub write_bps: f64,
-    /// секунд с последней операции
+    /// seconds since the last operation
     pub idle_s: f64,
 }
 
 #[derive(Serialize)]
 pub struct Report {
-    /// секунд с начала наблюдения
+    /// seconds since observation started
     pub since_s: f64,
     pub events: u64,
     pub files: Vec<FileIo>,
 }
 
-/// Файлы, которые читали и писали процессы (или один `pid`), с начала наблюдения.
-/// Первый вызов запускает наблюдение — в отчёте будет пусто, пока не придут события.
+/// Files that processes (or one `pid`) read and wrote since observation started.
+/// The first call starts the observation — the report is empty until events arrive.
 pub fn report(pid: Option<u32>, limit: usize) -> Result<Report, String> {
     if !crate::system::is_elevated() {
-        return Err("нужны права администратора".into());
+        return Err("administrator rights required".into());
     }
     let since = {
         let mut c = control().lock().unwrap_or_else(|e| e.into_inner());
@@ -399,7 +399,7 @@ pub fn report(pid: Option<u32>, limit: usize) -> Result<Report, String> {
         c.since.map_or(0.0, |t| t.elapsed().as_secs_f64())
     };
     let now = Instant::now();
-    let mut s = state().lock().map_err(|_| "трассировка файлов недоступна".to_string())?;
+    let mut s = state().lock().map_err(|_| "file tracing is unavailable".to_string())?;
     let events = s.events;
     let mut files: Vec<FileIo> = s
         .files
@@ -422,7 +422,7 @@ pub fn report(pid: Option<u32>, limit: usize) -> Result<Report, String> {
         })
         .collect();
     drop(s);
-    // сначала то, что идёт сейчас, потом — больше всего за время наблюдения
+    // first what is happening now, then — the most over the observation time
     files.sort_by(|a, b| {
         let (x, y) = (a.read_bps + a.write_bps, b.read_bps + b.write_bps);
         let total = (b.read + b.write).cmp(&(a.read + a.write));

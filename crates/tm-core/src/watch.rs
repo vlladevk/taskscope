@@ -1,11 +1,11 @@
-//! Наблюдатель: находит проблемные процессы и ведёт журнал событий.
+//! The watcher: finds problem processes and keeps an event log.
 //!
-//! Правила намеренно простые и объяснимые:
-//! - «зависший цикл» (красный): процесс держит ровно одно ядро без перерыва 3+ минуты;
-//! - «утечка памяти» (красный): память только растёт 20+ минут, быстрее 10 МБ/мин;
-//! - «высокая нагрузка» (жёлтый): процесс занимает 30 %+ всего ЦП дольше 20 секунд.
-//! В журнал пишутся начало и конец проблем и эпизоды перегрузки всей системы
-//! с главным виновником — чтобы потом было видно, кто тормозил компьютер ночью.
+//! The rules are deliberately simple and explainable:
+//! - “runaway loop” (red): the process holds exactly one core without a break for 3+ minutes;
+//! - “memory leak” (red): memory only grows for 20+ minutes, faster than 10 MB/min;
+//! - “high load” (yellow): the process takes 30 %+ of the whole CPU for longer than 20 seconds.
+//! The log records the start and end of problems and episodes of whole-system overload
+//! with the main culprit — so you can see later who slowed the computer down at night.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -16,9 +16,9 @@ use crate::{AppStat, Frame, ProcKey};
 const RUNAWAY_MS: u64 = 3 * 60_000;
 const HOT_MS: u64 = 20_000;
 const HOT_CPU: f32 = 30.0;
-const LEAK_WINDOW: usize = 21; // замеров раз в минуту → 20 минут
+const LEAK_WINDOW: usize = 21; // samples once a minute → 20 minutes
 const LEAK_MIN_GROWTH: u64 = 300 << 20;
-const LEAK_MIN_RATE: f64 = 10.0 * (1 << 20) as f64; // байт/мин
+const LEAK_MIN_RATE: f64 = 10.0 * (1 << 20) as f64; // bytes/min
 const SYS_CPU_HIGH: f32 = 90.0;
 const SYS_MEM_HIGH: u32 = 90;
 const SYS_EPISODE_MS: u64 = 30_000;
@@ -80,27 +80,27 @@ pub struct Watch {
 fn dur(ms: u64) -> String {
     let s = ms / 1000;
     if s < 60 {
-        format!("{s} с")
+        format!("{s} s")
     } else if s < 3600 {
-        format!("{} мин", s / 60)
+        format!("{} min", s / 60)
     } else {
-        format!("{} ч {} мин", s / 3600, s / 60 % 60)
+        format!("{} h {} min", s / 3600, s / 60 % 60)
     }
 }
 
 fn mb(b: u64) -> String {
     if b >= 1 << 30 {
-        format!("{:.1} ГБ", b as f64 / (1u64 << 30) as f64).replace('.', ",")
+        format!("{:.1} GB", b as f64 / (1u64 << 30) as f64)
     } else {
-        format!("{} МБ", b >> 20)
+        format!("{} MB", b >> 20)
     }
 }
 
 fn pct(v: f32) -> String {
     if v < 10.0 {
-        format!("{v:.1} %").replace('.', ",")
+        format!("{v:.1}%")
     } else {
-        format!("{v:.0} %")
+        format!("{v:.0}%")
     }
 }
 
@@ -124,7 +124,7 @@ impl Watch {
         &self.issues
     }
 
-    /// События новее `after` (по порядковому номеру), от старых к новым.
+    /// Events newer than `after` (by sequence number), oldest first.
     pub fn events_after(&self, after: u64) -> Vec<Event> {
         self.events.iter().filter(|e| e.seq > after).cloned().collect()
     }
@@ -136,7 +136,7 @@ impl Watch {
         let mut alive = std::collections::HashSet::with_capacity(frame.procs.len());
 
         for p in &frame.procs {
-            // псевдопроцессы (прерывания, DPC) — не программы: «зависший цикл» к ним не относится
+            // pseudo-processes (interrupts, DPC) are not programs: “runaway loop” does not apply to them
             if p.pid <= 4 || crate::sampler::is_pseudo(p.pid) {
                 continue;
             }
@@ -144,7 +144,7 @@ impl Watch {
             alive.insert(key);
             let w = self.procs.entry(key).or_default();
 
-            // ровно одно ядро: так выглядит поток, застрявший в бесконечном цикле
+            // exactly one core: that is what a thread stuck in an infinite loop looks like
             let one_core = ncpu >= 2.0 && p.cpu >= core * 0.8 && p.cpu <= core * 1.2;
             w.core_since = if one_core { w.core_since.or(Some(t)) } else { None };
             if let Some(s) = w.core_since {
@@ -156,7 +156,7 @@ impl Watch {
                         level: "red".into(),
                         kind: "runaway".into(),
                         text: format!(
-                            "Ровно одно ядро ({} ЦП) без перерыва уже {}. Так выглядит зависший цикл — процесс, скорее всего, ничего полезного не делает.",
+                            "Exactly one core ({} CPU) without a break for {}. This looks like a runaway loop — the process is most likely doing nothing useful.",
                             pct(core),
                             dur(t - s)
                         ),
@@ -180,13 +180,13 @@ impl Watch {
                         name: p.name.clone(),
                         level: "yel".into(),
                         kind: "hot".into(),
-                        text: format!("Нагрузка {} ЦП уже {} (пик {}).", pct(p.cpu), dur(t - s), pct(w.hot_peak)),
+                        text: format!("Load {} CPU for {} (peak {}).", pct(p.cpu), dur(t - s), pct(w.hot_peak)),
                         since_ms: s,
                     });
                 }
             }
 
-            // память: замер раз в минуту, окно 20 минут
+            // memory: sampled once a minute, 20-minute window
             if t.saturating_sub(w.mem_at) >= 60_000 {
                 w.mem_at = t;
                 w.mem.push_back(p.mem);
@@ -207,7 +207,7 @@ impl Watch {
                         level: "red".into(),
                         kind: "leak".into(),
                         text: format!(
-                            "Память только растёт: ~{} МБ/мин последние 20 мин, сейчас {}. Похоже на утечку — перезапуск освободит память.",
+                            "Memory only grows: ~{} MB/min over the last 20 min, now {}. Looks like a leak — a restart will free the memory.",
                             (rate / (1 << 20) as f64).round(),
                             mb(last)
                         ),
@@ -218,13 +218,13 @@ impl Watch {
         }
         self.procs.retain(|k, _| alive.contains(k));
 
-        // начало и конец проблем — в журнал
+        // start and end of problems — into the log
         for i in &issues {
             if !self.issues.iter().any(|o| o.pid == i.pid && o.create_time == i.create_time && o.kind == i.kind) {
                 let what = match i.kind.as_str() {
-                    "runaway" => "похоже, завис в цикле",
-                    "leak" => "память растёт без остановки",
-                    _ => "высокая нагрузка на ЦП",
+                    "runaway" => "looks stuck in a loop",
+                    "leak" => "memory keeps growing",
+                    _ => "high CPU load",
                 };
                 self.log(t, &i.level, format!("{}: {what}", i.name), Some((i.pid, i.create_time)));
             }
@@ -232,7 +232,7 @@ impl Watch {
         for o in &self.issues {
             if o.kind != "hot" && !issues.iter().any(|i| i.pid == o.pid && i.create_time == o.create_time && i.kind == o.kind) {
                 let gone = !alive.contains(&(o.pid, o.create_time));
-                let text = if gone { format!("{}: процесс завершился", o.name) } else { format!("{}: проблема прошла", o.name) };
+                let text = if gone { format!("{}: process exited", o.name) } else { format!("{}: problem is gone", o.name) };
                 self.events.push_back(Event {
                     seq: self.seq + 1,
                     at_ms: t,
@@ -246,7 +246,7 @@ impl Watch {
         }
         self.issues = issues;
 
-        // эпизоды перегрузки всей системы
+        // whole-system overload episodes
         let top_app = |by: fn(&AppStat) -> f64| apps.iter().max_by(|a, b| by(a).total_cmp(&by(b))).map(|a| (a.title.clone(), by(a)));
         let cpu = frame.system.cpu;
         let cpu_top = top_app(|a| a.cpu as f64);
@@ -255,17 +255,17 @@ impl Watch {
         let mem_top = top_app(|a| a.mem as f64);
         episode(&mut self.mem_ep, memp >= SYS_MEM_HIGH, memp as f32, t, mem_top.as_ref());
         let mut out = Vec::new();
-        for (ep, what, unit) in [(&mut self.cpu_ep, "Процессор загружен", "ЦП"), (&mut self.mem_ep, "Память занята", "памяти")] {
+        for (ep, what, unit) in [(&mut self.cpu_ep, "CPU at", "CPU"), (&mut self.mem_ep, "Memory at", "Memory")] {
             if let Some(s) = ep.since {
                 if !ep.logged && t - s >= SYS_EPISODE_MS {
                     ep.logged = true;
-                    let who = culprit(ep).map(|c| format!(" — больше всех {c}")).unwrap_or_default();
-                    out.push(("yel", format!("{what} на {}{who}", pct(ep.peak))));
+                    let who = culprit(ep).map(|c| format!(" — top consumer {c}")).unwrap_or_default();
+                    out.push(("yel", format!("{what} {}{who}", pct(ep.peak))));
                 }
             } else if ep.logged {
                 ep.logged = false;
-                let who = culprit(ep).map(|c| format!(", главный виновник — {c}")).unwrap_or_default();
-                out.push(("info", format!("Перегрузка {unit} закончилась (пик {}{who})", pct(ep.peak))));
+                let who = culprit(ep).map(|c| format!(", main culprit — {c}")).unwrap_or_default();
+                out.push(("info", format!("{unit} overload ended (peak {}{who})", pct(ep.peak))));
                 ep.culprit.clear();
                 ep.peak = 0.0;
             }

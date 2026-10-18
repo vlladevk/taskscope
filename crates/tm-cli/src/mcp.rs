@@ -1,12 +1,12 @@
-//! `tm mcp` — MCP-сервер (Model Context Protocol) поверх stdio для ИИ-агентов.
+//! `tm mcp` — an MCP (Model Context Protocol) server over stdio for AI agents.
 //!
-//! Каждый инструмент — это та же команда CLI с `--json`: агент получает ровно то,
-//! что видит человек в терминале, с теми же проверками (защищённые процессы, `--all`,
-//! `--dry-run`). Если движок запущен, ответы мгновенные — через канал.
+//! Every tool is the same CLI command with `--json`: the agent gets exactly
+//! what a human sees in the terminal, with the same checks (protected processes, `--all`,
+//! `--dry-run`). If the engine is running, the answers are instant — through the pipe.
 //!
-//! Действия (завершить, приостановить, контейнеры Docker) доступны, только если сервер
-//! запущен с `--allow-actions`: иначе инструмент act не объявляется и вызовы отклоняются.
-//! Одно действие затрагивает не больше `MAX_TARGETS` процессов.
+//! Actions (end, suspend, Docker containers) are available only if the server
+//! was started with `--allow-actions`: otherwise the act tool is not declared and calls are rejected.
+//! One action affects no more than `MAX_TARGETS` processes.
 
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
@@ -14,28 +14,28 @@ use std::process::{Command, Stdio};
 use serde_json::{json, Value};
 
 const PROTOCOL: &str = "2025-06-18";
-/// Предел процессов на одно действие агента: `tm kill chrome --app` — да, «полсистемы» — нет.
+/// The process limit per agent action: `tm kill chrome --app` — yes, “half the system” — no.
 const MAX_TARGETS: usize = 20;
 
 fn tools(allow_actions: bool) -> Value {
-    let target = json!({ "type": "string", "description": "PID, имя процесса (chrome или chrome.exe) или PID:create_time из JSON-ответов — защита от переиспользования PID" });
+    let target = json!({ "type": "string", "description": "PID, process name (chrome or chrome.exe) or PID:create_time from JSON answers — protects against PID reuse" });
     let mut all = json!([
         {
             "name": "sys",
-            "description": "Сводка системы: загрузка ЦП, память (занято/доступно/выделено), видеокарты (загрузка, видеопамять), сетевые адаптеры, число процессов, время работы.",
+            "description": "System summary: CPU load, memory (used/available/committed), GPUs (load, video memory), network adapters, process count, uptime.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "top",
-            "description": "Кто нагружает систему прямо сейчас: самые тяжёлые приложения и процессы по ЦП, памяти или вводу-выводу. Начинайте с этого, когда «всё тормозит».",
+            "description": "Who is loading the system right now: the heaviest apps and processes by CPU, memory or I/O. Start here when “everything is slow”.",
             "inputSchema": { "type": "object", "properties": {
-                "by": { "type": "string", "enum": ["cpu", "mem", "io", "gpu", "net"], "default": "cpu", "description": "net — сетевой трафик процессов (есть, только если приложение запущено от администратора)" },
+                "by": { "type": "string", "enum": ["cpu", "mem", "io", "gpu", "net"], "default": "cpu", "description": "net — per-process network traffic (only available if the app runs as administrator)" },
                 "n": { "type": "integer", "default": 10 }
             } }
         },
         {
             "name": "apps",
-            "description": "Приложения — процессы, сгруппированные по приложению (все процессы Chrome, IDEA, Docker и т.п. вместе) с суммарной нагрузкой.",
+            "description": "Apps — processes grouped by application (all Chrome, IDEA, Docker processes and so on together) with their total load.",
             "inputSchema": { "type": "object", "properties": {
                 "sort": { "type": "string", "enum": ["cpu", "mem", "io", "gpu", "count", "name"], "default": "cpu" },
                 "n": { "type": "integer", "default": 20 }
@@ -43,17 +43,17 @@ fn tools(allow_actions: bool) -> Value {
         },
         {
             "name": "ps",
-            "description": "Список процессов с ЦП, памятью, вводом-выводом, потоками и дескрипторами. filter — часть имени.",
+            "description": "Process list with CPU, memory, I/O, threads and handles. filter — part of the name.",
             "inputSchema": { "type": "object", "properties": {
                 "filter": { "type": "string" },
                 "sort": { "type": "string", "enum": ["cpu", "mem", "io", "gpu", "name", "pid", "threads", "handles"], "default": "cpu" },
-                "n": { "type": "integer", "default": 30, "description": "0 — все" },
-                "long": { "type": "boolean", "description": "добавить описание и путь к файлу" }
+                "n": { "type": "integer", "default": 30, "description": "0 — all" },
+                "long": { "type": "boolean", "description": "add the description and file path" }
             } }
         },
         {
             "name": "tree",
-            "description": "Дерево процессов с суммами по поддереву: кто кого запустил и сколько всё это потребляет вместе.",
+            "description": "Process tree with subtree totals: who started whom and how much it all uses together.",
             "inputSchema": { "type": "object", "properties": {
                 "target": target,
                 "depth": { "type": "integer" }
@@ -61,12 +61,12 @@ fn tools(allow_actions: bool) -> Value {
         },
         {
             "name": "show",
-            "description": "Всё о процессе: путь, командная строка, издатель, родители, дочерние процессы, приоритет, нагрузка.",
+            "description": "Everything about a process: path, command line, publisher, parents, child processes, priority, load.",
             "inputSchema": { "type": "object", "properties": { "target": target }, "required": ["target"] }
         },
         {
             "name": "history",
-            "description": "Кто нагружал систему раньше (до 24 ч): ряды по приложениям, процессам, системе или сетевым адаптерам. Нужен работающий движок (приложение «Диспетчер» или tm daemon).",
+            "description": "Who was loading the system earlier (up to 24 h): series by app, process, system or network adapter. Needs a running engine (the tray app or tm daemon).",
             "inputSchema": { "type": "object", "properties": {
                 "range": { "type": "string", "enum": ["2m", "15m", "1h", "3h", "12h", "24h"], "default": "15m" },
                 "scope": { "type": "string", "enum": ["apps", "procs", "system", "net", "gpu"], "default": "apps" },
@@ -76,52 +76,52 @@ fn tools(allow_actions: bool) -> Value {
         },
         {
             "name": "events",
-            "description": "Журнал движка: зависшие процессы (≈1 ядро долго), утечки памяти, перегрузки системы с виновником, выполненные действия.",
+            "description": "Engine log: hung processes (≈1 core for a long time), memory leaks, system overloads with the culprit, performed actions.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
             "name": "docker",
-            "description": "Контейнеры Docker: состояние, ЦП, память, сеть, диск (процессы контейнеров в Windows видны одним vmmem). С action — действие над контейнером.",
+            "description": "Docker containers: state, CPU, memory, network, disk (container processes show up in Windows as a single vmmem). With action — an action on a container.",
             "inputSchema": { "type": "object", "properties": {
                 "action": { "type": "string", "enum": ["ls", "start", "stop", "restart", "pause", "unpause", "kill"], "default": "ls" },
-                "target": { "type": "string", "description": "имя или начало id контейнера (для действий)" },
-                "all": { "type": "boolean", "description": "разрешить несколько совпадений / весь compose-проект" },
+                "target": { "type": "string", "description": "container name or id prefix (for actions)" },
+                "all": { "type": "boolean", "description": "allow several matches / the whole compose project" },
                 "dry_run": { "type": "boolean" }
             } }
         },
         {
             "name": "pool",
-            "description": "Пул ядра по меткам — память драйверов и объектов ядра, которая не видна ни у одного процесса: размер, число объектов, рост в час (движок снимает раз в минуту), тревоги (утечка в драйвере, накопление токенов, зомби-процессы и потоки). owners=true ищет драйверы меток по файлам (10–30 с).",
+            "description": "Kernel pool by tag — memory of drivers and kernel objects that is not visible in any process: size, object count, growth per hour (the engine samples once a minute), alarms (driver leak, token build-up, zombie processes and threads). owners=true finds the drivers of the tags by scanning files (10–30 s).",
             "inputSchema": { "type": "object", "properties": {
                 "by": { "type": "string", "enum": ["size", "growth"], "default": "size" },
                 "n": { "type": "integer", "default": 25 },
-                "owners": { "type": "boolean", "description": "найти, в каких драйверах встречаются метки" }
+                "owners": { "type": "boolean", "description": "find which drivers contain the tags" }
             } }
         },
         {
             "name": "services",
-            "description": "Службы Windows: состояние, тип запуска, PID процесса (у svchost.exe — какие службы внутри), описание. Без filter — только работающие; с filter — все подходящие.",
+            "description": "Windows services: state, start type, process PID (for svchost.exe — which services are inside), description. Without filter — running ones only; with filter — all matching.",
             "inputSchema": { "type": "object", "properties": {
-                "filter": { "type": "string", "description": "часть имени или названия службы" },
-                "all": { "type": "boolean", "description": "и остановленные" }
+                "filter": { "type": "string", "description": "part of the service name or display name" },
+                "all": { "type": "boolean", "description": "include stopped ones" }
             } }
         },
         {
             "name": "connections",
-            "description": "Сетевые подключения и открытые порты (TCP/UDP, IPv4/IPv6) с процессом-владельцем. target — только этого процесса.",
+            "description": "Network connections and open ports (TCP/UDP, IPv4/IPv6) with the owning process. target — only this process.",
             "inputSchema": { "type": "object", "properties": {
                 "target": target,
-                "listen": { "type": "boolean", "description": "только ожидающие подключений (открытые порты)" }
+                "listen": { "type": "boolean", "description": "only those waiting for connections (open ports)" }
             } }
         },
         {
             "name": "who",
-            "description": "Кто держит файл или файлы в папке открытыми (Restart Manager): почему файл не удаляется или не заменяется.",
+            "description": "Who keeps a file or the files in a folder open (Restart Manager): why a file cannot be deleted or replaced.",
             "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }
         },
         {
             "name": "inspect",
-            "description": "Процесс изнутри: modules — загруженные DLL, threads — потоки (время ЦП, состояние, точка входа «модуль+смещение»), handles — открытые дескрипторы (файлы, ключи реестра…). Цель — PID или PID:create_time, если имя неоднозначно. Окружение процесса агенту не отдаётся: там бывают пароли и токены.",
+            "description": "A process from the inside: modules — loaded DLLs, threads — threads (CPU time, state, start address “module+offset”), handles — open handles (files, registry keys…). The target is a PID, or PID:create_time if the name is ambiguous. The process environment is not given to the agent: it may contain passwords and tokens.",
             "inputSchema": { "type": "object", "properties": {
                 "target": { "type": "string" },
                 "what": { "type": "string", "enum": ["modules", "threads", "handles"] }
@@ -129,40 +129,40 @@ fn tools(allow_actions: bool) -> Value {
         },
         {
             "name": "signature",
-            "description": "Подпись исполняемого файла процесса или файла по пути (WinVerifyTrust, включая каталоги Windows) и SHA-256 для проверки на VirusTotal.",
-            "inputSchema": { "type": "object", "properties": { "target": { "type": "string", "description": "путь к файлу, PID или имя процесса" } }, "required": ["target"] }
+            "description": "The signature of a process executable or of a file by path (WinVerifyTrust, including Windows catalogs) and SHA-256 for a VirusTotal check.",
+            "inputSchema": { "type": "object", "properties": { "target": { "type": "string", "description": "file path, PID or process name" } }, "required": ["target"] }
         },
         {
             "name": "service_act",
-            "description": "Запустить, остановить или перезапустить службу Windows (обычно нужны права администратора). Системные службы (RPC, DCOM, питание и т.п.) агенту не остановить.",
+            "description": "Start, stop or restart a Windows service (usually needs administrator rights). System services (RPC, DCOM, power and so on) cannot be stopped by an agent.",
             "inputSchema": { "type": "object", "properties": {
                 "action": { "type": "string", "enum": ["start", "stop", "restart"] },
-                "name": { "type": "string", "description": "короткое имя службы (из services)" },
+                "name": { "type": "string", "description": "short service name (from services)" },
                 "dry_run": { "type": "boolean" }
             }, "required": ["action", "name"] },
             "annotations": { "destructiveHint": true }
         },
         {
             "name": "act",
-            "description": "Действие над процессом: kill (завершить; программе с окном сначала посылается «закрыть окно»), suspend (заморозить), resume, restart (перезапустить с тем же файлом, командной строкой, папкой и правами), prio (сменить приоритет). Защищены: ядро и критические процессы Windows, сам tm, процессы из списка защищённых пользователя; группы «Службы Windows» и «Windows» нельзя затронуть через app/all. Не больше 20 процессов за раз. Принудительного режима у агента нет: если программа не закрыла окно (например, спрашивает о сохранении) или действие рискованное (dwm, explorer), попросите человека сделать это в окне диспетчера или командой tm с --force. Если имя совпадает с несколькими процессами, нужен all=true. Сначала проверьте с dry_run=true.",
+            "description": "An action on a process: kill (end; a program with a window is first asked to close it), suspend (freeze), resume, restart (start again with the same file, command line, folder and rights), prio (change priority). Protected: the kernel and critical Windows processes, tm itself, processes from the user’s protected list; the “Windows services” and “Windows” groups cannot be affected via app/all. No more than 20 processes at a time. The agent has no force mode: if a program did not close its window (for example, it asks about saving) or the action is risky (dwm, explorer), ask the human to do it in the app window or with a tm command with --force. If the name matches several processes, all=true is required. Check with dry_run=true first.",
             "inputSchema": { "type": "object", "properties": {
                 "action": { "type": "string", "enum": ["kill", "suspend", "resume", "restart", "prio"] },
                 "target": target,
-                "level": { "type": "string", "enum": ["idle", "below", "normal", "above", "high"], "description": "для prio" },
-                "tree": { "type": "boolean", "description": "вместе со всеми потомками" },
-                "app": { "type": "boolean", "description": "всё приложение, к которому относится процесс" },
-                "all": { "type": "boolean", "description": "разрешить, если имя совпало с несколькими процессами" },
-                "dry_run": { "type": "boolean", "description": "показать, что будет сделано, ничего не меняя" }
+                "level": { "type": "string", "enum": ["idle", "below", "normal", "above", "high"], "description": "for prio" },
+                "tree": { "type": "boolean", "description": "together with all descendants" },
+                "app": { "type": "boolean", "description": "the whole app the process belongs to" },
+                "all": { "type": "boolean", "description": "allow it if the name matched several processes" },
+                "dry_run": { "type": "boolean", "description": "show what would be done without changing anything" }
             }, "required": ["action", "target"] },
             "annotations": { "destructiveHint": true }
         }
     ]);
     if !allow_actions {
-        // только чтение: без act и без действий над контейнерами
+        // read-only: without act and without container actions
         if let Some(list) = all.as_array_mut() {
             list.retain(|t| t["name"] != "act" && t["name"] != "service_act");
             for t in list.iter_mut().filter(|t| t["name"] == "docker") {
-                t["description"] = json!("Контейнеры Docker: состояние, ЦП, память, сеть, диск (процессы контейнеров в Windows видны одним vmmem).");
+                t["description"] = json!("Docker containers: state, CPU, memory, network, disk (container processes show up in Windows as a single vmmem).");
                 t["inputSchema"] = json!({ "type": "object", "properties": {} });
             }
         }
@@ -170,7 +170,7 @@ fn tools(allow_actions: bool) -> Value {
     all
 }
 
-/// Аргументы инструмента → аргументы командной строки tm.
+/// Tool arguments → tm command-line arguments.
 fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, String> {
     let s = |k: &str| a.get(k).and_then(|v| match v {
         Value::String(s) if !s.is_empty() => Some(s.clone()),
@@ -213,7 +213,7 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
         }
         "show" => {
             v.push("show".into());
-            v.push(s("target").ok_or("нужен target")?);
+            v.push(s("target").ok_or("target required")?);
         }
         "history" => {
             v.push("history".into());
@@ -223,7 +223,7 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
             match s("scope").as_deref() {
                 None | Some("apps") => {}
                 Some(sc @ ("procs" | "system" | "net" | "gpu")) => v.push(format!("--{sc}")),
-                Some(o) => return Err(format!("неизвестный scope «{o}»")),
+                Some(o) => return Err(format!("unknown scope “{o}”")),
             }
         }
         "pool" => {
@@ -250,33 +250,33 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
         }
         "who" => {
             v.push("who".into());
-            v.push(s("path").ok_or("нужен path")?);
+            v.push(s("path").ok_or("path required")?);
         }
         "inspect" => {
-            let what = s("what").ok_or("нужен what")?;
-            // окружение — только для человека в окне и CLI: в нём бывают секреты
+            let what = s("what").ok_or("what required")?;
+            // the environment is only for a human in the window and the CLI: it may contain secrets
             if !matches!(what.as_str(), "modules" | "threads" | "handles") {
-                return Err(format!("раздел «{what}» агенту недоступен: modules, threads, handles"));
+                return Err(format!("section “{what}” is not available to the agent: modules, threads, handles"));
             }
             v.push("inspect".into());
-            v.push(s("target").ok_or("нужен target")?);
+            v.push(s("target").ok_or("target required")?);
             v.push(what);
         }
         "signature" => {
             v.push("sig".into());
-            v.push(s("target").ok_or("нужен target")?);
+            v.push(s("target").ok_or("target required")?);
         }
         "service_act" => {
             if !allow_actions {
                 return Err(NO_ACTIONS.into());
             }
-            let action = s("action").ok_or("нужен action")?;
+            let action = s("action").ok_or("action required")?;
             if !matches!(action.as_str(), "start" | "stop" | "restart") {
-                return Err(format!("неизвестное действие «{action}»"));
+                return Err(format!("unknown action “{action}”"));
             }
             v.push("svc".into());
             v.push(action);
-            v.push(s("name").ok_or("нужен name")?);
+            v.push(s("name").ok_or("name required")?);
             if b("dry_run") {
                 v.push("--dry-run".into());
             }
@@ -289,7 +289,7 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
             }
             if action != "ls" {
                 v.push(action);
-                v.push(s("target").ok_or("нужен target")?);
+                v.push(s("target").ok_or("target required")?);
             }
             if b("all") {
                 v.push("--all".into());
@@ -302,14 +302,14 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
             if !allow_actions {
                 return Err(NO_ACTIONS.into());
             }
-            let action = s("action").ok_or("нужен action")?;
+            let action = s("action").ok_or("action required")?;
             if !matches!(action.as_str(), "kill" | "suspend" | "resume" | "restart" | "prio") {
-                return Err(format!("неизвестное действие «{action}»"));
+                return Err(format!("unknown action “{action}”"));
             }
             v.push(action.clone());
-            v.push(s("target").ok_or("нужен target")?);
+            v.push(s("target").ok_or("target required")?);
             if action == "prio" {
-                v.push(s("level").ok_or("для prio нужен level")?);
+                v.push(s("level").ok_or("prio requires level")?);
             }
             for f in ["tree", "app", "all"] {
                 if b(f) {
@@ -322,23 +322,23 @@ fn to_argv(name: &str, a: &Value, allow_actions: bool) -> Result<Vec<String>, St
             v.push("--max-targets".into());
             v.push(MAX_TARGETS.to_string());
         }
-        _ => return Err(format!("неизвестный инструмент «{name}»")),
+        _ => return Err(format!("unknown tool “{name}”")),
     }
     v.push("--json".into());
     Ok(v)
 }
 
-const NO_ACTIONS: &str = "действия выключены: MCP-сервер запущен только для чтения (включается: tm mcp --allow-actions)";
+const NO_ACTIONS: &str = "actions are off: the MCP server runs read-only (enable with: tm mcp --allow-actions)";
 
-/// Сколько ждём одну команду: агент не должен висеть вечно, если запрос к системе завис.
+/// How long we wait for one command: the agent must not hang forever if a system query hangs.
 const TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Как `Command::output()`, но не дольше TOOL_TIMEOUT: зависшую команду завершаем.
+/// Like `Command::output()`, but no longer than TOOL_TIMEOUT: a hung command is ended.
 fn run_limited(cmd: &mut Command) -> std::io::Result<std::process::Output> {
     use std::io::Read;
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
-    // читаем оба потока в фоне, иначе заполненный буфер трубы остановил бы команду
+    // read both streams in the background, otherwise a full pipe buffer would stall the command
     let t_out = std::thread::spawn(move || {
         let mut b = Vec::new();
         let _ = out.read_to_end(&mut b);
@@ -357,7 +357,7 @@ fn run_limited(cmd: &mut Command) -> std::io::Result<std::process::Output> {
         if std::time::Instant::now() > until {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "команда не ответила за 60 с и остановлена"));
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the command did not answer within 60 s and was stopped"));
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
@@ -375,13 +375,13 @@ fn call_tool(name: &str, args: &Value, allow_actions: bool) -> Value {
                     if t.is_empty() {
                         t = String::from_utf8_lossy(&o.stderr).trim().to_string();
                     }
-                    // агенту — компактный JSON: вдвое меньше токенов, чем с отступами
+                    // compact JSON for the agent: half the tokens compared to indented output
                     if let Ok(v) = serde_json::from_str::<Value>(&t) {
                         t = v.to_string();
                     }
                     (t, !o.status.success())
                 }
-                Err(e) => (format!("не удалось запустить tm: {e}"), true),
+                Err(e) => (format!("could not start tm: {e}"), true),
             }
         }
     };
@@ -401,7 +401,7 @@ pub fn run(allow_actions: bool) -> std::io::Result<()> {
             out.flush()?;
             continue;
         };
-        let Some(id) = req.get("id").cloned() else { continue }; // уведомления — без ответа
+        let Some(id) = req.get("id").cloned() else { continue }; // notifications get no answer
         let method = req["method"].as_str().unwrap_or("");
         let params = &req["params"];
         let result = match method {
@@ -409,14 +409,14 @@ pub fn run(allow_actions: bool) -> std::io::Result<()> {
                 "protocolVersion": params["protocolVersion"].as_str().unwrap_or(PROTOCOL),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "tm", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Диспетчер задач Windows. Начинайте с top (что грузит сейчас) или history (что грузило раньше); \
-                                 events — замеченные проблемы. Перед kill/suspend уточните цель через show или tree; \
-                                 для точности используйте PID:create_time из JSON."
+                "instructions": "Windows task manager. Start with top (what is loading the system now) or history (what was loading it earlier); \
+                                 events — detected problems. Before kill/suspend confirm the target with show or tree; \
+                                 for precision use PID:create_time from JSON."
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools(allow_actions) })),
             "tools/call" => Ok(call_tool(params["name"].as_str().unwrap_or(""), &params["arguments"], allow_actions)),
-            _ => Err(json!({ "code": -32601, "message": format!("метод не поддерживается: {method}") })),
+            _ => Err(json!({ "code": -32601, "message": format!("method not supported: {method}") })),
         };
         let resp = match result {
             Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),

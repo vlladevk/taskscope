@@ -1,9 +1,9 @@
-//! Группировка процессов в «приложения».
+//! Grouping processes into “apps”.
 //!
-//! Идём по цепочке предков от корня: пропускаем системные хосты (explorer, services, …),
-//! затем оболочки (терминал, pwsh, bash, …). Первый процесс после них — корень приложения.
-//! Так `vitest` под `bash` под `claude` под `pwsh` под `WindowsTerminal` попадает в приложение
-//! Claude Code, а не в «Терминал» и не в «node».
+//! We walk the ancestor chain from the root: skip system hosts (explorer, services, …),
+//! then shells (terminal, pwsh, bash, …). The first process after them is the app root.
+//! So `vitest` under `bash` under `claude` under `pwsh` under `WindowsTerminal` lands in the
+//! Claude Code app, not in “Terminal” and not in “node”.
 
 use std::collections::HashMap;
 
@@ -16,7 +16,7 @@ use crate::tree::Tree;
 const HOSTS: &[&str] = &[
     "system", "registry", "smss.exe", "csrss.exe", "wininit.exe", "services.exe", "winlogon.exe",
     "explorer.exe", "userinit.exe", "svchost.exe", "sihost.exe", "system idle process",
-    // лаунчеры: запущенная ими IDE или игра — отдельное приложение, а не часть лаунчера
+    // launchers: an IDE or a game they started is a separate app, not part of the launcher
     "jetbrains-toolbox.exe", "steam.exe", "steamwebhelper.exe", "upc.exe", "ubisoftconnect.exe",
     "epicgameslauncher.exe", "battle.net.exe", "galaxyclient.exe", "eadesktop.exe",
 ];
@@ -24,11 +24,11 @@ const SHELLS: &[&str] = &[
     "windowsterminal.exe", "openconsole.exe", "conhost.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
     "bash.exe", "sh.exe", "zsh.exe", "wsl.exe", "wslhost.exe", "git-bash.exe", "mintty.exe",
 ];
-/// Ядро Windows — одна группа вместо десятка мелких.
+/// The Windows kernel — one group instead of a dozen small ones.
 const CORE: &[&str] = &[
     "system", "registry", "secure system", "memory compression", "smss.exe", "csrss.exe", "wininit.exe",
     "services.exe", "lsass.exe", "lsaiso.exe", "winlogon.exe", "fontdrvhost.exe", "dwm.exe",
-    // псевдопроцессы сборщика: обработка прерываний и DPC
+    // sampler pseudo-processes: interrupt and DPC handling
     "interrupts", "dpcs",
 ];
 
@@ -36,17 +36,17 @@ fn lower(s: &str) -> String {
     s.to_ascii_lowercase()
 }
 
-/// Индекс процесса — корня приложения для процесса `i`.
+/// The index of the process that is the app root for process `i`.
 pub fn app_root(procs: &[ProcStat], tree: &Tree, i: usize) -> usize {
     let mut chain = tree.ancestors(i);
     chain.push(i);
     let is = |list: &[&str], j: usize| list.contains(&lower(&procs[j].name).as_str());
-    let Some(start) = chain.iter().position(|&j| !is(HOSTS, j)) else { return i }; // сам процесс — системный хост
+    let Some(start) = chain.iter().position(|&j| !is(HOSTS, j)) else { return i }; // the process itself is a system host
     let rest = &chain[start..];
     rest.iter().copied().find(|&j| !is(SHELLS, j)).unwrap_or(rest[0])
 }
 
-/// Ключ группы приложения: имя исполняемого файла корня в нижнем регистре.
+/// The app group key: the lower-case executable name of the root.
 pub fn app_key(procs: &[ProcStat], root: usize) -> String {
     let n = lower(&procs[root].name);
     if CORE.contains(&n.as_str()) {
@@ -56,20 +56,20 @@ pub fn app_key(procs: &[ProcStat], root: usize) -> String {
     }
 }
 
-/// Человеческое имя группы, если описание файла недоступно или бесполезно.
+/// A human name for the group, if the file description is unavailable or useless.
 fn builtin_title(key: &str) -> Option<&'static str> {
     Some(match key {
-        "windows" => "Windows (ядро и системные процессы)",
-        "svchost.exe" => "Службы Windows",
-        "explorer.exe" => "Проводник",
-        "vmmemwsl" | "vmmem" => "Виртуальная машина WSL / Docker",
+        "windows" => "Windows (kernel and system processes)",
+        "svchost.exe" => "Windows services",
+        "explorer.exe" => "File Explorer",
+        "vmmemwsl" | "vmmem" => "WSL / Docker virtual machine",
         _ => return None,
     })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AppStat {
-    /// Стабильный ключ группы (имя exe корня, либо "windows").
+    /// A stable group key (the root exe name, or "windows").
     pub key: String,
     pub title: String,
     pub root_pid: u32,
@@ -88,45 +88,45 @@ pub struct AppStat {
     #[serde(default)]
     pub net_tx_bps: f64,
     pub pids: Vec<u32>,
-    /// ЦП коротких процессов, запущенных приложением и не попавших в замеры (уже входит в `cpu`).
+    /// CPU of short-lived processes started by the app and missed by the samples (already included in `cpu`).
     #[serde(default)]
     pub short_cpu: f32,
-    /// Сколько процессов в секунду приложение запускает (сглажено).
+    /// How many processes per second the app starts (smoothed).
     #[serde(default)]
     pub spawn_rate: f32,
-    /// Кого чаще всего запускает: «git», «grep», …
+    /// What it starts most often: “git”, “grep”, …
     #[serde(default)]
     pub spawn_names: Vec<String>,
-    /// Индексы процессов во фрейме (для внутренних нужд, не сериализуются).
+    /// Process indices in the frame (internal, not serialised).
     #[serde(skip)]
     pub members: Vec<usize>,
 }
 
-/// Ключ приложения для каждого процесса фрейма.
+/// The app key for every process of the frame.
 pub fn keys(procs: &[ProcStat], tree: &Tree) -> Vec<String> {
     (0..procs.len()).map(|i| app_key(procs, app_root(procs, tree, i))).collect()
 }
 
-/// Сводка по приложениям. Idle-процесс (PID 0) не входит ни в одну группу.
+/// Per-app summary. The Idle process (PID 0) is in no group.
 pub fn group(procs: &[ProcStat], tree: &Tree, info: &mut InfoCache) -> Vec<AppStat> {
     group_with(procs, tree, info, None)
 }
 
-/// Утилиты, которые скрипты запускают сотнями: осиротев (родитель уже завершился), они
-/// остаются в приложении родителя, а не становятся отдельными «git» и «xargs».
+/// Utilities that scripts start by the hundred: when orphaned (the parent already exited) they
+/// stay in the parent’s app instead of becoming separate “git” and “xargs”.
 const TOOLS: &[&str] = &[
     "git.exe", "grep.exe", "xargs.exe", "find.exe", "sed.exe", "awk.exe", "gawk.exe", "cat.exe", "head.exe",
     "tail.exe", "sort.exe", "uniq.exe", "wc.exe", "cut.exe", "tr.exe", "ls.exe", "rg.exe", "findstr.exe",
     "where.exe", "timeout.exe", "sleep.exe", "env.exe", "cygpath.exe", "uname.exe", "dirname.exe", "basename.exe",
 ];
 
-/// Память о недавно виденных процессах: PID → приложение. Нужна сиротам, чей родитель
-/// уже завершился: `xargs` из команды Claude Code остаётся в Claude Code, когда bash уже вышел.
+/// Memory of recently seen processes: PID → app. Needed for orphans whose parent
+/// has already exited: `xargs` from a Claude Code command stays in Claude Code after bash exits.
 #[derive(Default)]
 pub struct Lineage {
-    /// PID → (приложение, время создания, когда видели последний раз, мс)
+    /// PID → (app, creation time, last seen, ms)
     seen: HashMap<u32, (String, i64, u64)>,
-    /// Унаследованное приложение закреплено за процессом на всю его жизнь
+    /// An inherited app is pinned to the process for its whole life
     sticky: HashMap<(u32, i64), String>,
 }
 
@@ -139,13 +139,13 @@ impl Lineage {
         if p.ppid == 0 || !(SHELLS.contains(&n.as_str()) || TOOLS.contains(&n.as_str())) {
             return None;
         }
-        // родитель создан раньше ребёнка — иначе PID уже занял кто-то другой
+        // the parent was created before the child — otherwise someone else already took the PID
         let k = self.seen.get(&p.ppid).filter(|(_, ct, _)| *ct <= p.create_time)?.0.clone();
         self.sticky.insert(p.key(), k.clone());
         Some(k)
     }
 
-    /// Запомнить приложения живых процессов; забыть тех, кого нет дольше 2 минут.
+    /// Remember the apps of live processes; forget those gone for longer than 2 minutes.
     pub fn update(&mut self, procs: &[ProcStat], groups: &[AppStat], now_ms: u64) {
         for g in groups {
             for &i in &g.members {
@@ -159,7 +159,7 @@ impl Lineage {
     }
 }
 
-/// Как `group`, но сироты-утилиты наследуют приложение завершившегося родителя.
+/// Like `group`, but orphaned utilities inherit the app of their exited parent.
 pub fn group_with(procs: &[ProcStat], tree: &Tree, info: &mut InfoCache, mut lineage: Option<&mut Lineage>) -> Vec<AppStat> {
     let mut by_key: HashMap<String, usize> = HashMap::new();
     let mut out: Vec<AppStat> = Vec::new();
@@ -170,7 +170,7 @@ pub fn group_with(procs: &[ProcStat], tree: &Tree, info: &mut InfoCache, mut lin
             continue;
         }
         let root = app_root(procs, tree, i);
-        // сирота: вершина цепочки без живого родителя — ищем, чьим был родитель
+        // an orphan: the top of the chain without a live parent — find whose the parent was
         let top = tree.ancestors(i).first().copied().unwrap_or(i);
         let inherited = lineage.as_deref_mut().and_then(|l| l.inherit(&procs[top]));
         let key = inherited.clone().unwrap_or_else(|| app_key(procs, root));
@@ -199,14 +199,14 @@ pub fn group_with(procs: &[ProcStat], tree: &Tree, info: &mut InfoCache, mut lin
             out.len() - 1
         });
         let g = &mut out[gi];
-        // корнем группы считаем самый «старший» процесс (меньше предков)
-        // унаследованные сироты корнем группы не становятся, пока в ней есть свои процессы
+        // the group root is the “eldest” process (fewest ancestors)
+        // inherited orphans do not become the group root while it has processes of its own
         let depth = if inherited.is_some() { usize::MAX - 1 } else { tree.ancestors(root).len() };
         if depth < root_depth[gi] {
             root_depth[gi] = depth;
             g.root_pid = procs[root].pid;
         }
-        // прерывания и DPC — строки нагрузки, не процессы: в «N процессов» не входят
+        // interrupts and DPC are load rows, not processes: they do not count in “N processes”
         if !crate::sampler::is_pseudo(p.pid) {
             g.count += 1;
         }
@@ -234,19 +234,19 @@ pub fn group_with(procs: &[ProcStat], tree: &Tree, info: &mut InfoCache, mut lin
     out
 }
 
-/// Короткие процессы: кто их запускает и сколько ЦП они съедают невидимо для замеров.
+/// Short-lived processes: who starts them and how much CPU they eat unseen by the samples.
 #[derive(Default)]
 pub struct Spawns {
-    /// приложение → запусков в секунду (сглажено, τ ≈ 8 с)
+    /// app → starts per second (smoothed, τ ≈ 8 s)
     rate: HashMap<String, f32>,
-    /// приложение → имя запускаемого → частота
+    /// app → name of what it starts → rate
     names: HashMap<String, HashMap<String, f32>>,
 }
 
 impl Spawns {
-    /// Учитывает родившихся за интервал и раздаёт невидимый ЦП (занятость машины минус сумма
-    /// по процессам) приложениям-запускальщикам. Остаток — в `SystemStat::unseen_cpu`.
-    /// `exited_cpu` — ЦП процессов, завершившихся за интервал (он известен точно и уже роздан их приложениям).
+    /// Accounts for processes born during the interval and hands out the unseen CPU (machine load minus the sum
+    /// over processes) to the apps that start them. The remainder goes to `SystemStat::unseen_cpu`.
+    /// `exited_cpu` — CPU of processes that exited during the interval (known exactly and already given to their apps).
     pub fn apply(&mut self, procs: &[ProcStat], groups: &mut [AppStat], sys: &mut crate::SystemStat, dt: f64, exited_cpu: f32) {
         if dt <= 0.0 {
             return;
@@ -281,12 +281,12 @@ impl Spawns {
         self.names.retain(|k, _| self.rate.contains_key(k));
 
         let total: f32 = self.rate.values().sum();
-        // прерывания и DPC — строками-псевдопроцессами в procs, завершившиеся — в exited_cpu:
-        // и то и другое больше не принимается за короткие процессы
+        // interrupts and DPC — as pseudo-process rows in procs, exited ones — in exited_cpu:
+        // neither is taken for short-lived processes any more
         let seen: f32 = procs.iter().filter(|p| p.pid != 0).map(|p| p.cpu).sum::<f32>() + exited_cpu;
         let unseen = (sys.cpu - seen).max(0.0);
-        // замер застаёт живыми лишь малую часть коротких процессов, так что частота занижена в разы:
-        // от 0,5 замеченного запуска в секунду невидимое — их. Первый 1 % — погрешность замера
+        // a sample catches only a small part of short-lived processes alive, so the rate is several times too low:
+        // from 0.5 noticed starts per second the unseen CPU is theirs. The first 1 % is sampling error
         let share = (unseen - 1.0).max(0.0) * (total / 0.5).min(1.0);
         let mut given = 0.0;
         for g in groups.iter_mut() {

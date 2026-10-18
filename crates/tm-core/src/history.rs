@@ -1,11 +1,11 @@
-//! История нагрузки за 24 часа в кольцевых буферах фиксированной ёмкости.
+//! 24 hours of load history in fixed-capacity ring buffers.
 //!
-//! Три уровня детализации: 1 с за 15 мин, 10 с за 3 ч, 1 мин за 24 ч.
-//! Память ограничена сверху: буферы не растут больше ёмкости, а следы исчезнувших
-//! процессов и приложений удаляются, как только выходят за окно хранения.
+//! Three levels of detail: 1 s for 15 min, 10 s for 3 h, 1 min for 24 h.
+//! Memory is bounded: the buffers never grow beyond capacity, and traces of vanished
+//! processes and apps are removed as soon as they leave the retention window.
 //!
-//! Процессов за сутки набегают тысячи, поэтому подробно (посекундно) храним только
-//! последние 5 минут, а в крупных ячейках — лишь лидеров по ЦП, памяти и диску.
+//! Thousands of processes come and go in a day, so in detail (per second) we keep only
+//! the last 5 minutes, and in the coarse slots — only the leaders by CPU, memory and disk.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -24,19 +24,19 @@ pub const TIERS: [Tier; 3] = [
     Tier { step_ms: 10_000, cap: 1_080 },
     Tier { step_ms: 60_000, cap: 1_440 },
 ];
-/// Ключи видеокарт в наборе устройств (там же, где сетевые адаптеры).
+/// GPU keys in the device set (the same one as network adapters).
 pub const GPU_PREFIX: &str = "gpu:";
-/// Посекундная история процессов: 5 минут.
+/// Per-second process history: 5 minutes.
 pub const PROC_T0_CAP: usize = 300;
-/// Сколько лидеров по каждой метрике сохраняется в крупной ячейке.
+/// How many leaders per metric are kept in a coarse slot.
 pub const PROC_TOP_K: usize = 12;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Pt {
     pub cpu: f32,
-    /// Пик ЦП внутри ячейки (в крупных ячейках среднее прячет всплески).
+    /// CPU peak within the slot (in coarse slots the average hides spikes).
     pub cpu_max: f32,
-    /// Загрузка видеокарты, % (самый занятый движок).
+    /// GPU load, % (the busiest engine).
     pub gpu: f32,
     pub mem: u64,
     pub rd: f32,
@@ -62,9 +62,9 @@ pub enum Scope {
     System,
     Apps,
     Procs,
-    /// Сетевые адаптеры: rd — приём, wr — отправка (байт/с).
+    /// Network adapters: rd — receive, wr — send (bytes/s).
     Net,
-    /// Видеокарты: gpu — загрузка, mem — занятая видеопамять.
+    /// GPUs: gpu — load, mem — used video memory.
     Gpu,
 }
 
@@ -73,20 +73,20 @@ pub enum Scope {
 pub enum Metric {
     Cpu,
     Mem,
-    /// Чтение + запись (для сети — приём + отправка).
+    /// Read + write (for network — receive + send).
     Io,
-    /// Только чтение (для сети — приём).
+    /// Read only (for network — receive).
     Read,
-    /// Только запись (для сети — отправка).
+    /// Write only (for network — send).
     Write,
-    /// Загрузка видеокарты, %.
+    /// GPU load, %.
     Gpu,
 }
 
-// ───────────────────────────── кирпичики ─────────────────────────────
+// ───────────────────────────── building blocks ─────────────────────────────
 
-/// Сумма замеров внутри крупной ячейки. Делится на число замеров ячейки в целом,
-/// поэтому отсутствие приложения в части замеров честно считается нулём.
+/// The sum of samples within a coarse slot. Divided by the number of samples of the whole slot,
+/// so an app missing from part of the samples is honestly counted as zero.
 #[derive(Clone, Copy, Default)]
 struct Acc {
     cpu: f64,
@@ -121,8 +121,8 @@ impl Acc {
     }
 }
 
-/// Кольцо значений, привязанных к номерам ячеек (slot = время / шаг).
-/// Пропущенные ячейки — нули; ёмкость не превышается никогда.
+/// A ring of values bound to slot numbers (slot = time / step).
+/// Missed slots are zeros; the capacity is never exceeded.
 struct Ring {
     vals: VecDeque<Pt>,
     last: u64,
@@ -170,7 +170,7 @@ struct Track {
     title: String,
     pid: Option<u32>,
     rings: [Ring; 3],
-    accs: [Acc; 3], // [0] не используется: первый уровень пишется напрямую
+    accs: [Acc; 3], // [0] is unused: the first level is written directly
     last_seen: u64,
 }
 
@@ -193,7 +193,7 @@ struct TopEntry {
     pt: Pt,
 }
 
-// ───────────────────────────── входные данные ─────────────────────────────
+// ───────────────────────────── input data ─────────────────────────────
 
 pub struct AppSample<'a> {
     pub key: &'a str,
@@ -208,20 +208,20 @@ pub struct ProcSample<'a> {
     pub pt: Pt,
 }
 
-// ───────────────────────────── история ─────────────────────────────
+// ───────────────────────────── history ─────────────────────────────
 
 pub struct History {
     sys: Track,
     apps: HashMap<String, Track>,
     nets: HashMap<String, Track>,
-    /// У процессов используются только rings[0] и accs[1..]: крупные уровни — в `proc_top`.
+    /// Processes use only rings[0] and accs[1..]: the coarse levels are in `proc_top`.
     procs: HashMap<ProcKey, Track>,
     proc_top: [VecDeque<(u64, Vec<TopEntry>)>; 3],
-    /// Номер текущей (ещё не закрытой) крупной ячейки и число замеров в ней.
+    /// The number of the current (not yet closed) coarse slot and the number of samples in it.
     bucket: [Option<u64>; 3],
     n: [u32; 3],
     now: u64,
-    /// Время первого замера: до него данных нет, и средние по диапазону считаются без этой части.
+    /// The time of the first sample: there is no data before it, and range averages are computed without that part.
     first: Option<u64>,
 }
 
@@ -249,7 +249,7 @@ pub struct Stats {
 }
 
 impl History {
-    /// Добавляет один замер. `t_ms` — монотонно растущее время (мс Unix).
+    /// Adds one sample. `t_ms` — monotonically growing time (Unix ms).
     pub fn push(&mut self, t_ms: u64, sys: Pt, apps: &[AppSample], nets: &[AppSample], procs: &[ProcSample]) {
         for k in 1..3 {
             let slot = t_ms / TIERS[k].step_ms;
@@ -299,7 +299,7 @@ impl History {
             put(tr, p.pt);
         }
 
-        // уборка: приложения живут в истории сутки, процессы — пока видны в посекундном окне
+        // clean-up: apps live in the history for a day, processes — while visible in the per-second window
         let day = TIERS[2].step_ms * TIERS[2].cap as u64;
         self.apps.retain(|_, t| t_ms.saturating_sub(t.last_seen) <= day);
         self.nets.retain(|_, t| t_ms.saturating_sub(t.last_seen) <= day);
@@ -342,13 +342,13 @@ impl History {
         self.n[k] = 0;
     }
 
-    /// Время первого замера в истории (с учётом восстановленной с диска), мс Unix.
+    /// The time of the first sample in the history (including the part restored from disk), Unix ms.
     pub fn first_ms(&self) -> Option<u64> {
         self.first
     }
 
-    /// Посекундный ряд (до 5 мин) суммы нескольких процессов — процесс вместе с дочерними.
-    /// Последний элемент — самый свежий замер.
+    /// A per-second series (up to 5 min) of the sum of several processes — a process together with its children.
+    /// The last element is the latest sample.
     pub fn procs_t0(&self, keys: &[ProcKey], m: Metric, points: usize) -> Vec<f64> {
         let points = points.clamp(1, PROC_T0_CAP);
         let end = self.now / TIERS[0].step_ms;
@@ -376,9 +376,9 @@ impl History {
         }
     }
 
-    // ───────────────────────────── запросы ─────────────────────────────
+    // ───────────────────────────── queries ─────────────────────────────
 
-    /// Значение трека в ячейке: закрытые ячейки из кольца, текущая — из накопителя.
+    /// The track value in a slot: closed slots from the ring, the current one from the accumulator.
     fn value(&self, tr: &Track, k: usize, slot: u64) -> Pt {
         if k > 0 && Some(slot) == self.bucket[k] {
             return if tr.accs[k].touched { tr.accs[k].avg(self.n[k]) } else { Pt::default() };
@@ -402,7 +402,7 @@ impl History {
         let start = end + 1 - points as u64;
         let slots = start..=end;
         let m = q.by;
-        // ячейки до первого замера — «нет данных», а не нули: в среднее не входят
+        // slots before the first sample are “no data”, not zeros: they do not go into the average
         let skip = (self.first.unwrap_or(self.now) / tier.step_ms).saturating_sub(start).min(points as u64 - 1) as usize;
 
         let series_of = |key: String, title: String, pid: Option<u32>, vals: Vec<f64>, peaks: Option<Vec<f64>>| {
@@ -420,7 +420,7 @@ impl History {
         let mut total = track_series("total".into(), &self.sys);
         let mut list: Vec<Series> = match q.scope {
             Scope::System => Vec::new(),
-            // видеокарты хранятся в том же наборе устройств, что и сеть, с ключами «gpu:…»
+            // GPUs are stored in the same device set as the network, with “gpu:…” keys
             Scope::Net | Scope::Gpu => {
                 let gpu = q.scope == Scope::Gpu;
                 let list: Vec<Series> = self
@@ -432,7 +432,7 @@ impl History {
                 let vals: Vec<f64> = (0..points)
                     .map(|i| if gpu { list.iter().map(|s| s.values[i]).fold(0.0, f64::max) } else { list.iter().map(|s| s.values[i]).sum() })
                     .collect();
-                total = series_of("total".into(), if gpu { "Все видеокарты" } else { "Все адаптеры" }.into(), None, vals, None);
+                total = series_of("total".into(), if gpu { "All GPUs" } else { "All adapters" }.into(), None, vals, None);
                 list
             }
             Scope::Apps => self.apps.iter().map(|(key, tr)| track_series(key.clone(), tr)).collect(),
@@ -446,7 +446,7 @@ impl History {
                 })
                 .collect(),
             Scope::Procs => {
-                // крупные уровни: только лидеры каждой ячейки, остальное неизвестно (0)
+                // coarse levels: only the leaders of each slot, the rest is unknown (0)
                 let mut by: HashMap<ProcKey, (String, Vec<f64>)> = HashMap::new();
                 let n = points;
                 for (slot, entries) in &self.proc_top[k] {
@@ -479,7 +479,7 @@ impl History {
         let rest = if list.len() > q.top { list.split_off(q.top) } else { Vec::new() };
         let other = (!rest.is_empty() && !(q.scope == Scope::Procs && k > 0)).then(|| {
             let vals: Vec<f64> = (0..points).map(|i| rest.iter().map(|s| s.values[i]).sum()).collect();
-            series_of("other".into(), format!("Остальные ({})", rest.len()), None, vals, None)
+            series_of("other".into(), format!("Others ({})", rest.len()), None, vals, None)
         });
 
         HistoryResult {
@@ -502,7 +502,7 @@ pub struct Query {
     pub range_ms: u64,
     pub by: Metric,
     pub top: usize,
-    /// Если не пусто — только эти ключи (приложения, адаптеры или «pid:время» процессов).
+    /// If not empty — only these keys (apps, adapters or “pid:time” of processes).
     #[serde(default)]
     pub keys: Vec<String>,
 }
@@ -523,10 +523,10 @@ pub struct HistoryResult {
     pub scope: Scope,
     pub by: Metric,
     pub step_ms: u64,
-    /// Время начала первой ячейки, мс Unix.
+    /// The start time of the first slot, Unix ms.
     pub start_ms: u64,
     pub points: usize,
-    /// Сколько первых ячеек диапазона приходится на время до запуска движка (данных нет).
+    /// How many leading slots of the range fall before the engine started (no data).
     #[serde(default)]
     pub missing: usize,
     pub total: Series,
@@ -535,14 +535,14 @@ pub struct HistoryResult {
     pub other: Option<Series>,
 }
 
-// ───────────────────────────── сохранение на диск ─────────────────────────────
+// ───────────────────────────── saving to disk ─────────────────────────────
 //
-// Сохраняются только крупные уровни (10 с и 1 мин): посекундные 15 минут не стоят записи на диск.
-// Точка занимает 18 байт: ЦП, пик ЦП и видеокарта в сотых долях процента (u16), память в КБ (u32), диск f32.
-// Формат версионирован; незнакомую или повреждённую версию просто пропускаем.
+// Only the coarse levels (10 s and 1 min) are saved: the per-second 15 minutes are not worth a disk write.
+// A point takes 18 bytes: CPU, CPU peak and GPU in hundredths of a percent (u16), memory in KB (u32), disk f32.
+// The format is versioned; an unknown or damaged version is simply skipped.
 
 const MAGIC: &[u8; 4] = b"TMH3";
-/// Предыдущая версия (без видеокарты) — читается, чтобы не потерять собранную историю.
+/// The previous version (without GPU) — read so the collected history is not lost.
 const MAGIC_V2: &[u8; 4] = b"TMH2";
 
 struct W<'a>(&'a mut Vec<u8>);
@@ -578,7 +578,7 @@ impl W<'_> {
     }
 }
 
-/// Второе поле — есть ли в точках видеокарта (формат TMH3).
+/// The second field — whether the points have a GPU value (the TMH3 format).
 struct R<'a>(&'a [u8], bool);
 impl R<'_> {
     fn take(&mut self, n: usize) -> Option<&[u8]> {
@@ -631,7 +631,7 @@ impl R<'_> {
 }
 
 impl History {
-    /// Двоичный снимок истории для записи на диск (несколько МБ максимум, обычно меньше).
+    /// A binary snapshot of the history for writing to disk (a few MB at most, usually less).
     pub fn save(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256 * 1024);
         let mut w = W(&mut buf);
@@ -669,7 +669,7 @@ impl History {
         buf
     }
 
-    /// Восстанавливает историю из снимка. `None` — файл чужой версии или повреждён.
+    /// Restores the history from a snapshot. `None` — a file of another version or damaged.
     pub fn load(data: &[u8]) -> Option<Self> {
         let mut r = R(data, true);
         match r.take(4)? {
@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(r.get(12).cpu, 3.0);
         r.put(14, pt(5.0));
         assert_eq!(r.vals.len(), 3);
-        assert_eq!(r.get(10).cpu, 0.0); // вытеснено
+        assert_eq!(r.get(10).cpu, 0.0); // evicted
         r.put(100, pt(9.0));
         assert_eq!(r.vals.len(), 1);
     }
@@ -743,12 +743,12 @@ mod tests {
     fn absent_samples_count_as_zero() {
         let mut h = History::default();
         let app = |c| [AppSample { key: "a", title: "A", pid: 1, pt: pt(c) }];
-        // 10 замеров в одной 10-секундной ячейке, приложение есть только в одном
+        // 10 samples in one 10-second slot, the app is present in only one
         for i in 0..10u64 {
             let apps: &[AppSample] = if i == 0 { &app(50.0) } else { &[] };
             h.push(1_000_000 + i * 1000, pt(10.0), apps, &[], &[]);
         }
-        h.push(1_010_000, pt(10.0), &[], &[], &[]); // закрывает ячейку
+        h.push(1_010_000, pt(10.0), &[], &[], &[]); // closes the slot
         let tr = &h.apps["a"];
         assert!((tr.rings[1].get(100).cpu - 5.0).abs() < 1e-3);
         assert_eq!(tr.rings[1].get(100).cpu_max, 50.0);
@@ -759,14 +759,14 @@ mod tests {
         let mut h = History::default();
         for i in 0..200u64 {
             let procs = [ProcSample { key: (7, 42), name: "x.exe", pt: pt(12.5) }];
-            h.push(1_700_000_000_000 + i * 1000, pt(30.0), &[AppSample { key: "a", title: "Приложение", pid: 5, pt: pt(20.0) }], &[AppSample { key: "eth", title: "Ethernet", pid: 0, pt: Pt { rd: 1000.0, ..pt(0.0) } }], &procs);
+            h.push(1_700_000_000_000 + i * 1000, pt(30.0), &[AppSample { key: "a", title: "App", pid: 5, pt: pt(20.0) }], &[AppSample { key: "eth", title: "Ethernet", pid: 0, pt: Pt { rd: 1000.0, ..pt(0.0) } }], &procs);
         }
         let bytes = h.save();
         let g = History::load(&bytes).expect("load");
         let q = Query { scope: Scope::Apps, range_ms: 3_600_000, by: Metric::Cpu, top: 5, keys: vec![] };
         let (a, b) = (h.query(&q), g.query(&q));
-        assert_eq!(b.series[0].title, "Приложение");
-        // закрытые 10-секундные ячейки совпадают (текущая, незакрытая, не сохраняется)
+        assert_eq!(b.series[0].title, "App");
+        // closed 10-second slots match (the current, unclosed one is not saved)
         let n = a.points - 2;
         assert!((a.series[0].values[n] - b.series[0].values[n]).abs() < 0.01);
         let qp = Query { scope: Scope::Procs, range_ms: 3_600_000, by: Metric::Cpu, top: 5, keys: vec![] };
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn memory_is_bounded() {
         let mut h = History::default();
-        // двое суток по секунде, каждый раз новый процесс — старые должны уходить
+        // two days at one second, a new process every time — the old ones must go
         for i in 0..(2 * 86_400u64) {
             let name = "p";
             let procs = [ProcSample { key: (i as u32, i as i64), name, pt: pt(1.0) }];

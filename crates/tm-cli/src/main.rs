@@ -1,5 +1,5 @@
-//! tm — диспетчер задач для терминала и ИИ-агентов.
-//! Любая команда поддерживает `--json`; человекочитаемый вывод и JSON строятся из одних данных.
+//! tm — a task manager for the terminal and AI agents.
+//! Every command supports `--json`; the human-readable output and the JSON are built from the same data.
 
 mod mcp;
 mod serve;
@@ -16,87 +16,87 @@ use tm_core::history::{HistoryResult, Metric, Query, Scope};
 use tm_core::{apps, pipe, Engine, Frame, InfoCache, ProcStat, Sampler, Tree};
 
 const HELP: &str = "\
-tm — диспетчер задач для терминала и ИИ-агентов
+tm — a task manager for the terminal and AI agents
 
-ИСПОЛЬЗОВАНИЕ: tm <команда> [параметры] [--json]
+USAGE: tm <command> [options] [--json]
 
-КОМАНДЫ
-  sys                        Загрузка ЦП, память, число процессов
-  top                        Кто нагружает прямо сейчас: приложения и процессы
-                               --by cpu|mem|io|gpu|net   -n N (по умолчанию 10)
-                               net — трафик процессов, только если движок запущен от администратора
-  apps                       Приложения: процессы, сгруппированные по тому, кто их запустил
+COMMANDS
+  sys                        CPU load, memory, process count
+  top                        Who is loading the system right now: apps and processes
+                               --by cpu|mem|io|gpu|net   -n N (default 10)
+                               net — per-process traffic, only if the engine runs as administrator
+  apps                       Apps: processes grouped by who started them
                                --sort cpu|mem|io|gpu|count|name   -n N
-  ps [фильтр]                Процессы. Фильтр — часть имени
-                               --sort cpu|mem|io|gpu|name|pid|threads|handles   -n N (0 — все)
-                               --long — описание и путь к файлу
-  tree [цель]                Дерево процессов с суммами по поддереву   --depth N
-  show <цель>                Всё о процессе: путь, командная строка, родители, дети
-  kill <цель>                Завершить процесс. Программе с окном сначала посылается «закрыть окно»
-                               (как «Снять задачу»); не закрылась за --wait С (5) — повторите с --force
-  suspend <цель>             Приостановить (заморозить) процесс
-  resume <цель>              Возобновить процесс
-  prio <цель> [уровень]      Показать или задать приоритет: idle|below|normal|above|high
-  restart <цель>             Перезапустить как было: тот же файл, командная строка, папка, окружение
-                               и права; новый процесс создаётся до завершения старого.
-                               Не для служб, приложений из Store и процессов других пользователей
-  events                     Журнал: проблемы и перегрузки, замеченные движком
-  history                    Кто нагружал систему раньше (нужен движок: tm daemon start)
-                               --range 2m|15m|1h|3h|24h (по умолчанию 15m)
-                               --apps (по умолчанию) | --procs | --system | --net | --gpu
+  ps [filter]                Processes. The filter is part of the name
+                               --sort cpu|mem|io|gpu|name|pid|threads|handles   -n N (0 — all)
+                               --long — description and file path
+  tree [target]              Process tree with subtree totals   --depth N
+  show <target>              Everything about a process: path, command line, parents, children
+  kill <target>              End a process. A program with a window is first asked to close it
+                               (like “End task”); if it does not close within --wait S (5) — retry with --force
+  suspend <target>           Suspend (freeze) a process
+  resume <target>            Resume a process
+  prio <target> [level]      Show or set the priority: idle|below|normal|above|high
+  restart <target>           Restart as it was: the same file, command line, folder, environment
+                               and rights; the new process is created before the old one is ended.
+                               Not for services, Store apps and processes of other users
+  events                     Log: problems and overloads noticed by the engine
+  history                    Who was loading the system earlier (needs the engine: tm daemon start)
+                               --range 2m|15m|1h|3h|24h (default 15m)
+                               --apps (default) | --procs | --system | --net | --gpu
                                --by cpu|mem|io|read|write|gpu   -n N
-  daemon start|stop|status   Фоновый движок: замер раз в секунду, история за 24 ч,
-                               канал \\\\.\\pipe\\tm-<SID>-<сеанс>. `daemon run` — то же, но в этом окне
-  svc [фильтр]               Службы Windows: состояние, тип запуска, процесс. Без фильтра — только
-                               работающие (--all — все); с фильтром — все подходящие
-  svc start|stop|restart <имя>  Запустить, остановить, перезапустить службу (нужны права администратора;
-                               системные — только с --force; --dry-run — проверить, выйдет ли)
-  conns [цель]               Сетевые подключения и открытые порты (--listen — только ожидающие)
-  who <путь>                 Кто держит файл или файлы в папке открытыми
-  inspect <цель> modules|threads|handles|env
-                             Процесс изнутри: модули, потоки с точками входа, дескрипторы
-                               (--type File|Key|… — только этого типа), окружение и папка
-  sig <путь|цель>            Подпись файла (в том числе через каталог Windows), SHA-256
-                               и ссылка на VirusTotal; код возврата 0 — подписан
-  docker [действие имя]      Контейнеры Docker: ЦП, память, сеть, диск.
-                               Действия: start|stop|restart|pause|unpause|kill <имя|id>
-  pool                       Пул ядра по меткам: память драйверов и объектов ядра, рост в час,
-                               утечки в драйверах, накопление токенов, зомби-процессы
-                               --by size|growth   -n N (0 — все)   --owners — найти драйверы меток
-                               рост виден, когда запущен движок (снимок раз в минуту)
-  mcp                        MCP-сервер (stdio) для ИИ-агентов: те же команды как инструменты.
-                               По умолчанию только чтение; --allow-actions разрешает действия
-                               (не больше 20 процессов за раз, защита та же, что у tm kill)
+  daemon start|stop|status   Background engine: a sample every second, 24 h of history,
+                               pipe \\\\.\\pipe\\tm-<SID>-<session>. `daemon run` — the same, but in this window
+  svc [filter]               Windows services: state, start type, process. Without a filter — only
+                               running ones (--all — all); with a filter — all matching
+  svc start|stop|restart <name>  Start, stop, restart a service (needs administrator rights;
+                               system ones — only with --force; --dry-run — check whether it would work)
+  conns [target]             Network connections and open ports (--listen — listening only)
+  who <path>                 Who keeps a file or the files in a folder open
+  inspect <target> modules|threads|handles|env
+                             A process from the inside: modules, threads with start addresses, handles
+                               (--type File|Key|… — only this type), environment and folder
+  sig <path|target>          File signature (including via a Windows catalog), SHA-256
+                               and a VirusTotal link; exit code 0 — signed
+  docker [action name]       Docker containers: CPU, memory, network, disk.
+                               Actions: start|stop|restart|pause|unpause|kill <name|id>
+  pool                       Kernel pool by tag: driver and kernel object memory, growth per hour,
+                               driver leaks, token build-up, zombie processes
+                               --by size|growth   -n N (0 — all)   --owners — find the drivers of the tags
+                               growth is visible while the engine runs (a sample once a minute)
+  mcp                        MCP server (stdio) for AI agents: the same commands as tools.
+                               Read-only by default; --allow-actions enables actions
+                               (no more than 20 processes at a time, the same protection as tm kill)
 
-ЦЕЛЬ
+TARGET
   1234                       PID
-  chrome | chrome.exe        имя процесса (без учёта регистра)
-  1234:133721...             PID:create_time — защита от переиспользования PID (create_time из --json)
+  chrome | chrome.exe        process name (case-insensitive)
+  1234:133721...             PID:create_time — protects against PID reuse (create_time from --json)
 
-ПАРАМЕТРЫ ДЕЙСТВИЙ (kill, suspend, resume, prio)
-  --tree                     вместе со всеми потомками (сначала потомки, потом родитель)
-  --app                      всё приложение, к которому относится процесс
-  --all                      разрешить действие, если имя совпало с несколькими процессами
-  --dry-run                  показать, что будет сделано, ничего не меняя
-  --force                    принудительно: не ждать закрытия окон и не спрашивать о рискованном
-                               (приостановка dwm, explorer и т.п.)
-  --wait С                   сколько секунд ждать, пока программа закроет окно (по умолчанию 5)
+ACTION OPTIONS (kill, suspend, resume, prio)
+  --tree                     together with all descendants (descendants first, then the parent)
+  --app                      the whole app the process belongs to
+  --all                      allow the action if the name matched several processes
+  --dry-run                  show what would be done without changing anything
+  --force                    force: do not wait for windows to close and do not ask about risky actions
+                               (suspending dwm, explorer and so on)
+  --wait S                   how many seconds to wait for the program to close its window (default 5)
 
-ОБЩИЕ ПАРАМЕТРЫ
-  --json                     машиночитаемый вывод (для скриптов и ИИ-агентов)
-  --local                    не обращаться к движку, замерить самостоятельно
-  --interval MS              своё окно замера скоростей, мс (по умолчанию 500; включает --local)
+GENERAL OPTIONS
+  --json                     machine-readable output (for scripts and AI agents)
+  --local                    do not ask the engine, sample by ourselves
+  --interval MS              own rate sampling window, ms (default 500; implies --local)
 
-Если движок запущен, команды отвечают мгновенно его свежими данными (скорости за 1 с).
+If the engine is running, commands answer instantly with its fresh data (rates over 1 s).
 
-Защищены от действий: ядро и критические процессы Windows (csrss, lsass, … из System32,
-а также помеченные Windows как критические), сам tm и его окно, процессы из списка
-«protected» в %LOCALAPPDATA%\\tm\\settings.json. Защищённый процесс закрывает всё своё дерево;
-группы «Службы Windows» и «Windows» не затрагиваются через --app и --all.
-Коды выхода: 0 — успех, 1 — ошибка или частичный сбой, 2 — неверные аргументы.
+Protected from actions: the kernel and critical Windows processes (csrss, lsass, … from System32,
+and those Windows marks as critical), tm itself and its window, processes from the
+“protected” list in %LOCALAPPDATA%\\tm\\settings.json. A protected process covers its whole tree;
+the “Windows services” and “Windows” groups are not affected by --app and --all.
+Exit codes: 0 — success, 1 — error or partial failure, 2 — invalid arguments.
 ";
 
-// ───────────────────────────── аргументы ─────────────────────────────
+// ───────────────────────────── arguments ─────────────────────────────
 
 struct Args {
     pos: Vec<String>,
@@ -129,7 +129,7 @@ impl Args {
                 _ => name,
             };
             let val = if VALUED.contains(&name.as_str()) {
-                inline.or_else(|| it.next()).ok_or_else(|| format!("параметру --{name} нужно значение"))?
+                inline.or_else(|| it.next()).ok_or_else(|| format!("option --{name} needs a value"))?
             } else {
                 String::new()
             };
@@ -146,7 +146,7 @@ impl Args {
     fn num(&self, f: &str, default: usize) -> Result<usize, String> {
         match self.get(f) {
             None => Ok(default),
-            Some(v) => v.parse().map_err(|_| format!("--{f}: ожидается число, получено «{v}»")),
+            Some(v) => v.parse().map_err(|_| format!("--{f}: a number expected, got “{v}”")),
         }
     }
 }
@@ -170,15 +170,15 @@ impl From<String> for Fail {
     }
 }
 
-// ───────────────────────────── снимок ─────────────────────────────
+// ───────────────────────────── snapshot ─────────────────────────────
 
 struct Snap {
     frame: Frame,
     tree: Tree,
     info: InfoCache,
-    /// Готовая группировка от движка (с названиями) — чтобы не искать описания заново.
+    /// The ready grouping from the engine (with names) — so the descriptions are not looked up again.
     apps: Option<Vec<tm_core::AppStat>>,
-    /// Видеокарты и сеть — только от движка (свой замер их не собирает).
+    /// GPUs and network — only from the engine (our own sample does not collect them).
     gpus: Vec<tm_core::gpu::GpuStat>,
     nets: Vec<tm_core::net::NetStat>,
     mem_detail: Option<tm_core::sysmem::MemDetail>,
@@ -196,17 +196,17 @@ struct EngineSnapshot {
     mem_detail: Option<tm_core::sysmem::MemDetail>,
 }
 
-/// Готовый замер от работающего движка (приложения или `tm daemon`), если он есть.
+/// A ready sample from a running engine (the app or `tm daemon`), if there is one.
 fn snapshot_from_engine() -> Option<EngineSnapshot> {
     let v = pipe::call("snapshot", Value::Null, Duration::from_secs(3)).ok()?;
     serde_json::from_value(v).ok()
 }
 
 impl Snap {
-    /// `rates` — нужны ли скорости (ЦП %, диск). Если движок запущен, берём его свежий замер
-    /// (скорости за целую секунду, без ожидания); иначе — два своих замера с паузой.
-    /// Для действий скорости не нужны, и берётся собственный мгновенный снимок:
-    /// так виден даже процесс, появившийся долю секунды назад.
+    /// `rates` — whether rates are needed (CPU %, disk). If the engine is running, its fresh sample is used
+    /// (rates over a whole second, without waiting); otherwise — two own samples with a pause.
+    /// Actions do not need rates, and an own instant snapshot is taken:
+    /// that way even a process that appeared a fraction of a second ago is visible.
     fn take(args: &Args, rates: bool) -> Res<Self> {
         let engine = (rates && !args.has("local") && !args.has("interval")).then(snapshot_from_engine).flatten();
         let (frame, apps, gpus, nets, mem_detail) = match engine {
@@ -236,17 +236,17 @@ impl Snap {
         &self.frame.procs
     }
 
-    /// Находит процессы по цели: PID, PID:create_time или имени.
+    /// Finds processes by target: PID, PID:create_time or name.
     fn resolve(&self, target: &str) -> Res<Vec<usize>> {
         let procs = self.procs();
         let found: Vec<usize> = if let Some((pid, ct)) = target.split_once(':') {
             let (Ok(pid), Ok(ct)) = (pid.parse::<u32>(), ct.parse::<i64>()) else {
-                return usage(format!("не понимаю цель «{target}»: ожидается PID:create_time"));
+                return usage(format!("cannot understand the target “{target}”: PID:create_time expected"));
             };
             let ct = tm_core::nt::js_safe(ct);
             let v: Vec<usize> = (0..procs.len()).filter(|&i| procs[i].pid == pid).collect();
             if !v.is_empty() && v.iter().all(|&i| procs[i].create_time != ct) {
-                return Err(Fail::Error(format!("процесс {pid} уже завершился: PID занят другим процессом")));
+                return Err(Fail::Error(format!("process {pid} has already exited: the PID is taken by another process")));
             }
             v.into_iter().filter(|&i| procs[i].create_time == ct).collect()
         } else if let Ok(pid) = target.parse::<u32>() {
@@ -262,13 +262,13 @@ impl Snap {
                 .collect()
         };
         if found.is_empty() {
-            return Err(Fail::Error(format!("процесс «{target}» не найден")));
+            return Err(Fail::Error(format!("process “{target}” not found")));
         }
         Ok(found)
     }
 }
 
-// ───────────────────────────── форматирование ─────────────────────────────
+// ───────────────────────────── formatting ─────────────────────────────
 
 fn bytes(b: u64) -> String {
     let b = b as f64;
@@ -298,17 +298,17 @@ fn dur(ms: u64) -> String {
     let s = ms / 1000;
     let (d, h, m, s) = (s / 86400, s / 3600 % 24, s / 60 % 60, s % 60);
     if d > 0 {
-        format!("{d} д {h} ч")
+        format!("{d} d {h} h")
     } else if h > 0 {
-        format!("{h} ч {m} мин")
+        format!("{h} h {m} min")
     } else if m > 0 {
-        format!("{m} мин {s} с")
+        format!("{m} min {s} s")
     } else {
-        format!("{s} с")
+        format!("{s} s")
     }
 }
 
-/// FILETIME (100 нс с 1601 г.) → мс Unix.
+/// FILETIME (100 ns since 1601) → Unix ms.
 fn unix_ms(ft: i64) -> u64 {
     ((ft - 116_444_736_000_000_000).max(0) / 10_000) as u64
 }
@@ -329,7 +329,7 @@ fn sort_procs(procs: &[ProcStat], idx: &mut [usize], by: &str) -> Res<()> {
         "pid" => idx.sort_by_key(|&i| procs[i].pid),
         "threads" => idx.sort_by(|&a, &b| procs[b].threads.cmp(&procs[a].threads)),
         "handles" => idx.sort_by(|&a, &b| procs[b].handles.cmp(&procs[a].handles)),
-        _ => return usage(format!("--sort: неизвестное поле «{by}»")),
+        _ => return usage(format!("--sort: unknown field “{by}”")),
     }
     Ok(())
 }
@@ -343,12 +343,12 @@ fn sort_apps(list: &mut [tm_core::AppStat], by: &str) -> Res<()> {
         "gpu" => list.sort_by(|a, b| b.gpu.total_cmp(&a.gpu).then(b.gpu_mem.cmp(&a.gpu_mem))),
         "count" => list.sort_by(|a, b| b.count.cmp(&a.count)),
         "name" => list.sort_by_cached_key(|a| a.title.to_lowercase()),
-        _ => return usage(format!("--sort: неизвестное поле «{by}»")),
+        _ => return usage(format!("--sort: unknown field “{by}”")),
     }
     Ok(())
 }
 
-// ───────────────────────────── команды ─────────────────────────────
+// ───────────────────────────── commands ─────────────────────────────
 
 fn cmd_sys(args: &Args) -> Res<()> {
     let snap = Snap::take(args, true)?;
@@ -358,35 +358,35 @@ fn cmd_sys(args: &Args) -> Res<()> {
         return Ok(());
     }
     let m = &s.memory;
-    println!("ЦП        {:.1} %  ({} логических процессоров)", s.cpu, s.logical_cpus);
+    println!("CPU       {:.1}%  ({} logical processors)", s.cpu, s.logical_cpus);
     println!(
-        "Память    {} из {} ({} %) · выделено {} из {}",
+        "Memory    {} of {} ({}%) · committed {} of {}",
         bytes(m.used), bytes(m.total), m.load_pct, bytes(m.commit_used), bytes(m.commit_limit)
     );
     let private: u64 = snap.frame.procs.iter().map(|p| p.mem).sum();
-    println!("          из них частная память процессов {} · остальное {}", bytes(private), bytes(m.used.saturating_sub(private)));
+    println!("          of which private process memory {} · the rest {}", bytes(private), bytes(m.used.saturating_sub(private)));
     if let Some(d) = &snap.mem_detail {
         let known = d.pool_nonpaged + d.pool_paged + d.cache + d.kernel_code + d.modified;
-        let big = if d.pool_nonpaged > 1 << 30 { "  ← больше обычного (0,2–0,6 GB): возможна утечка в драйвере, подробности — tm pool" } else { "" };
-        println!("          · невыгружаемый пул ядра (драйверы) {}{big}", bytes(d.pool_nonpaged));
-        println!("          · выгружаемый пул ядра {}", bytes(d.pool_paged));
-        println!("          · файловый кэш {} · код ядра и драйверов {} · ждёт записи на диск {}", bytes(d.cache), bytes(d.kernel_code), bytes(d.modified));
+        let big = if d.pool_nonpaged > 1 << 30 { "  ← above normal (0.2–0.6 GB): a driver leak is possible, details — tm pool" } else { "" };
+        println!("          · non-paged kernel pool (drivers) {}{big}", bytes(d.pool_nonpaged));
+        println!("          · paged kernel pool {}", bytes(d.pool_paged));
+        println!("          · file cache {} · kernel and driver code {} · waiting to be written to disk {}", bytes(d.cache), bytes(d.kernel_code), bytes(d.modified));
         println!(
-            "          · общая память программ и прочее {} (DLL, общие буферы браузеров и Electron-приложений, таблицы страниц)",
+            "          · shared program memory and other {} (DLLs, shared buffers of browsers and Electron apps, page tables)",
             bytes(m.used.saturating_sub(private).saturating_sub(known))
         );
     }
-    println!("Процессы  {} · потоков {} · дескрипторов {}", s.processes, s.threads, s.handles);
+    println!("Processes {} · threads {} · handles {}", s.processes, s.threads, s.handles);
     for g in &snap.gpus {
-        println!("Видео     {:.0} % ({}) · видеопамять {} из {} — {}", g.util, g.engine, bytes(g.mem_used), bytes(g.mem_total), g.name);
+        println!("GPU       {:.0}% ({}) · video memory {} of {} — {}", g.util, g.engine, bytes(g.mem_used), bytes(g.mem_total), g.name);
     }
     for n in &snap.nets {
-        println!("Сеть      приём {} · отправка {} — {}", rate(n.rx_bps), rate(n.tx_bps), n.name);
+        println!("Network   receive {} · send {} — {}", rate(n.rx_bps), rate(n.tx_bps), n.name);
     }
     if snap.gpus.is_empty() && snap.nets.is_empty() {
-        println!("(видеокарта и сеть — когда запущен движок: приложение или tm daemon start)");
+        println!("(GPU and network — when the engine is running: the app or tm daemon start)");
     }
-    println!("Работает  {}", dur(s.uptime_ms));
+    println!("Uptime    {}", dur(s.uptime_ms));
     Ok(())
 }
 
@@ -408,26 +408,26 @@ fn cmd_top(args: &Args) -> Res<()> {
     }
     let s = &snap.frame.system;
     println!(
-        "ЦП {:.1} % · память {} из {} ({} %) · процессов {}\n",
+        "CPU {:.1}% · memory {} of {} ({}%) · processes {}\n",
         s.cpu, bytes(s.memory.used), bytes(s.memory.total), s.memory.load_pct, s.processes
     );
-    // короткие процессы в список процессов не попадают — объясняем, куда делся процессор
+    // short-lived processes do not get into the process list — explain where the CPU went
     let short: f32 = list.iter().map(|a| a.short_cpu).sum();
     if short >= 5.0 {
-        println!("Внимание: {short:.0} % ЦП — короткие процессы (живут меньше секунды, в списке ниже их нет); кто их запускает — «↳» у приложения.\n");
+        println!("Note: {short:.0}% CPU — short-lived processes (they live less than a second and are not in the list below); who starts them — “↳” under the app.\n");
     }
     if s.unseen_cpu >= 5.0 {
-        println!("{:.0} % ЦП не отнесено ни к одному процессу: прерывания, драйверы или процессы, завершившиеся до замера.\n", s.unseen_cpu);
+        println!("{:.0}% CPU is not attributed to any process: interrupts, drivers or processes that exited before the sample.\n", s.unseen_cpu);
     }
-    println!("ПРИЛОЖЕНИЯ");
+    println!("APPS");
     print_apps(&list);
-    println!("\nПРОЦЕССЫ");
+    println!("\nPROCESSES");
     print_procs(procs, &idx, &snap.tree, None);
     Ok(())
 }
 
 fn print_apps(list: &[tm_core::AppStat]) {
-    // сеть по процессам есть, только если движок работает от администратора
+    // per-process network is available only if the engine runs as administrator
     let net = list.iter().any(|a| a.net_rx_bps + a.net_tx_bps > 0.0);
     let net_col = |rx: f64, tx: f64| if net { format!(" {:>21}", format!("{}/{}", rate(rx), rate(tx))) } else { String::new() };
     println!("{:>6} {:>9} {:>10} {:>5}{} {:>4}  {}", "CPU%", "MEM", "IO", "GPU%", if net { format!(" {:>21}", "NET ↓/↑") } else { String::new() }, "N", "APP");
@@ -437,7 +437,7 @@ fn print_apps(list: &[tm_core::AppStat]) {
             a.cpu, bytes(a.mem), rate(a.io_read_bps + a.io_write_bps), a.gpu, net_col(a.net_rx_bps, a.net_tx_bps), a.count, a.title, a.key, a.root_pid
         );
         if a.short_cpu >= 1.0 {
-            println!("{:>6}   ↳ из них {:.1} % — короткие процессы, которые оно запускает: {}", "", a.short_cpu, a.spawn_names.join(", "));
+            println!("{:>6}   ↳ of which {:.1}% — short-lived processes it starts: {}", "", a.short_cpu, a.spawn_names.join(", "));
         }
     }
 }
@@ -518,7 +518,7 @@ fn cmd_ps(args: &Args) -> Res<()> {
     }
     print_procs(procs, &idx, &snap.tree, long.then_some(&mut snap.info));
     if total > idx.len() {
-        println!("… ещё {} (-n 0 — показать все)", total - idx.len());
+        println!("… {} more (-n 0 — show all)", total - idx.len());
     }
     Ok(())
 }
@@ -527,8 +527,8 @@ fn cmd_tree(args: &Args) -> Res<()> {
     let snap = Snap::take(args, true)?;
     let procs = snap.procs();
     let tree = &snap.tree;
-    // Σ — по приложению: программы, запущенные из процесса (из Проводника — почти всё),
-    // считаются отдельно; полная сумма поддерева — в mem_subtree / «со всем запущенным»
+    // Σ — per app: programs started from the process (from Explorer — almost everything)
+    // are counted separately; the full subtree total is in mem_subtree / “with everything launched”
     let keys = apps::keys(procs, tree);
     let same = |p: usize, c: usize| keys[p] == keys[c];
     let cpu_sum = tree.inclusive_if(procs.len(), |i| procs[i].cpu as f64, same);
@@ -564,24 +564,24 @@ fn cmd_tree(args: &Args) -> Res<()> {
         }
         let sums = Sums { cs: &cpu_sum, ms: &mem_sum, all: &mem_all, keys: &keys };
         let v: Vec<Value> = roots.iter().map(|&r| node(r, 0, depth, procs, &sums, &children)).collect();
-        print_json(&json!({ "at_ms": snap.frame.at_ms, "note": "cpu_total/mem_total — сумма по своему приложению; mem_subtree — вместе со всем, что запущено из процесса", "tree": v }));
+        print_json(&json!({ "at_ms": snap.frame.at_ms, "note": "cpu_total/mem_total — the total within its own app; mem_subtree — together with everything started from the process", "tree": v }));
         return Ok(());
     }
 
-    println!("{:>6} {:>9} {:>7} {:>9}  {}", "CPU%", "MEM", "ΣCPU%", "ΣMEM", "PROCESS   (Σ — вместе с дочерними процессами своего приложения)");
-    // стек: (индекс, префикс для детей, «ветка» самого узла, глубина)
+    println!("{:>6} {:>9} {:>7} {:>9}  {}", "CPU%", "MEM", "ΣCPU%", "ΣMEM", "PROCESS   (Σ — together with the child processes of its app)");
+    // stack: (index, prefix for children, the node’s own “branch”, depth)
     let mut stack: Vec<(usize, String, String, usize)> =
         roots.iter().rev().map(|&r| (r, String::new(), String::new(), 0)).collect();
     while let Some((i, prefix, branch, d)) = stack.pop() {
         let p = &procs[i];
         let has_kids = !tree.children[i].is_empty();
         let (sc, sm) = if has_kids { (format!("{:.1}", cpu_sum[i]), bytes(mem_sum[i] as u64)) } else { (String::new(), String::new()) };
-        // заметная разница — из процесса запущены другие программы (как из Проводника)
-        let launched = if has_kids && mem_all[i] - mem_sum[i] > 50.0 * 1048576.0 { format!("  · со всем запущенным {}", bytes(mem_all[i] as u64)) } else { String::new() };
+        // a noticeable difference — other programs were started from the process (as from Explorer)
+        let launched = if has_kids && mem_all[i] - mem_sum[i] > 50.0 * 1048576.0 { format!("  · with everything launched {}", bytes(mem_all[i] as u64)) } else { String::new() };
         println!("{:>6.1} {:>9} {:>7} {:>9}  {branch}{} {}{launched}", p.cpu, bytes(p.mem), sc, sm, p.name, p.pid);
         if d + 1 > depth {
             if has_kids {
-                println!("{:>35}{prefix}└─ … ещё {} потомков", "", tree.descendants(i).len());
+                println!("{:>35}{prefix}└─ … {} more descendants", "", tree.descendants(i).len());
             }
             continue;
         }
@@ -597,7 +597,7 @@ fn cmd_tree(args: &Args) -> Res<()> {
 }
 
 fn cmd_show(args: &Args) -> Res<()> {
-    let Some(target) = args.pos.first() else { return usage("укажите цель: tm show <PID|имя>") };
+    let Some(target) = args.pos.first() else { return usage("specify a target: tm show <PID|name>") };
     let mut snap = Snap::take(args, true)?;
     let found = snap.resolve(target)?;
     let keys = apps::keys(snap.procs(), &snap.tree);
@@ -645,41 +645,41 @@ fn cmd_show(args: &Args) -> Res<()> {
         println!("{}  PID {}", p.name, p.pid);
         if let Some(d) = s(&info["description"]) {
             let c = s(&info["company"]).map(|c| format!(" — {c}")).unwrap_or_default();
-            println!("Описание    {d}{c}");
+            println!("Description {d}{c}");
         }
         match s(&info["path"]) {
-            Some(path) => println!("Файл        {path}"),
-            None => println!("Файл        нет доступа (нужны права администратора или это системный процесс)"),
+            Some(path) => println!("File        {path}"),
+            None => println!("File        no access (needs administrator rights, or it is a system process)"),
         }
         if let Some(c) = s(&info["cmdline"]) {
-            println!("Команда     {c}");
+            println!("Command     {c}");
         }
         if let Some(a) = v["app"].as_object() {
-            println!("Приложение  {} ({}), процессов: {}, ЦП {:.1} %, память {}",
+            println!("App         {} ({}), processes: {}, CPU {:.1}%, memory {}",
                 a["title"].as_str().unwrap_or(""), a["key"].as_str().unwrap_or(""), a["count"],
                 a["cpu"].as_f64().unwrap_or(0.0), bytes(a["mem"].as_u64().unwrap_or(0)));
         }
-        println!("Запущен     {} назад", dur(now_ms.saturating_sub(unix_ms(p.create_time))));
-        println!("ЦП          {:.1} % · всего потрачено {}", p.cpu, dur(p.cpu_time_ms));
-        println!("Память      {} частная · {} рабочий набор · {} выделено", bytes(p.mem), bytes(p.working_set), bytes(p.private_bytes));
-        println!("Ввод-вывод  чтение {} · запись {}", rate(p.io_read_bps), rate(p.io_write_bps));
+        println!("Started     {} ago", dur(now_ms.saturating_sub(unix_ms(p.create_time))));
+        println!("CPU         {:.1}% · total spent {}", p.cpu, dur(p.cpu_time_ms));
+        println!("Memory      {} private · {} working set · {} committed", bytes(p.mem), bytes(p.working_set), bytes(p.private_bytes));
+        println!("I/O         read {} · write {}", rate(p.io_read_bps), rate(p.io_write_bps));
         let prio = v["priority"].as_str().unwrap_or("?");
-        println!("Прочее      потоков {} · дескрипторов {} · сеанс {} · приоритет {prio}", p.threads, p.handles, p.session);
+        println!("Other       threads {} · handles {} · session {} · priority {prio}", p.threads, p.handles, p.session);
         let chain: Vec<String> = v["ancestors"].as_array().into_iter().flatten()
             .map(|a| format!("{} {}", a["name"].as_str().unwrap_or(""), a["pid"]))
             .chain(std::iter::once(format!("[{} {}]", p.name, p.pid)))
             .collect();
-        println!("Цепочка     {}", chain.join(" → "));
+        println!("Chain       {}", chain.join(" → "));
         let sub = &v["subtree"];
         let kids = v["children"].as_array().cloned().unwrap_or_default();
         if !kids.is_empty() {
-            println!("Потомки     процессов: {}, вместе с этим: ЦП {:.1} %, память {}",
+            println!("Descendants processes: {}, together with this one: CPU {:.1}%, memory {}",
                 sub["count"].as_u64().unwrap_or(1) - 1, sub["cpu"].as_f64().unwrap_or(0.0), bytes(sub["mem"].as_u64().unwrap_or(0)));
             for k in kids.iter().take(15) {
                 println!("  {:>7} {:>6.1} {:>9}  {}", k["pid"], k["cpu"].as_f64().unwrap_or(0.0), bytes(k["mem"].as_u64().unwrap_or(0)), k["name"].as_str().unwrap_or(""));
             }
             if kids.len() > 15 {
-                println!("  … ещё {} (tm tree {})", kids.len() - 15, p.pid);
+                println!("  … {} more (tm tree {})", kids.len() - 15, p.pid);
             }
         }
     }
@@ -694,9 +694,9 @@ fn cmd_action(args: &Args, action: Action) -> Res<bool> {
         Action::Priority => "prio",
         Action::Restart => "restart",
     };
-    let Some(target) = args.pos.first() else { return usage(format!("укажите цель: tm {verb} <PID|имя>")) };
+    let Some(target) = args.pos.first() else { return usage(format!("specify a target: tm {verb} <PID|name>")) };
     let prio = match (action, args.pos.get(1)) {
-        (Action::Priority, Some(l)) => Some(Priority::parse(l).ok_or_else(|| format!("неизвестный приоритет «{l}»: idle|below|normal|above|high"))?),
+        (Action::Priority, Some(l)) => Some(Priority::parse(l).ok_or_else(|| format!("unknown priority “{l}”: idle|below|normal|above|high"))?),
         (Action::Priority, None) => return cmd_prio_show(args, target).map(|_| true),
         _ => None,
     };
@@ -706,7 +706,7 @@ fn cmd_action(args: &Args, action: Action) -> Res<bool> {
     if found.len() > 1 && !args.has("all") {
         let list: Vec<String> = found.iter().map(|&i| procs[i].pid.to_string()).collect();
         return usage(format!(
-            "«{target}» совпадает с {} процессами (PID {}). Укажите PID или добавьте --all",
+            "“{target}” matches {} processes (PID {}). Specify a PID or add --all",
             found.len(), list.join(", ")
         ));
     }
@@ -719,11 +719,11 @@ fn cmd_action(args: &Args, action: Action) -> Res<bool> {
     };
     let guard = actions::Guard::new(procs, &snap.tree);
     let plan = actions::plan(procs, &snap.tree, &found, scope, action, &guard);
-    // предел числа целей (его ставит MCP-сервер, чтобы агент не завершил полсистемы одной командой)
+    // limit on the number of targets (the MCP server sets it so an agent cannot end half the system with one command)
     let limit = args.num("max-targets", 0)?;
     if limit > 0 && plan.order.len() > limit as usize {
         return Err(Fail::Error(format!(
-            "действие затронет {} процессов — больше предела {limit}; сузьте цель (PID вместо имени, без --app/--tree)",
+            "the action would affect {} processes — more than the limit of {limit}; narrow the target (a PID instead of a name, without --app/--tree)",
             plan.order.len()
         )));
     }
@@ -740,25 +740,25 @@ fn cmd_action(args: &Args, action: Action) -> Res<bool> {
         print_json(&json!({ "action": action, "priority": prio, "dry_run": dry, "ok": ok, "results": results }));
     } else {
         let what = match action {
-            Action::Kill => "завершить",
-            Action::Suspend => "приостановить",
-            Action::Resume => "возобновить",
-            Action::Priority => "сменить приоритет",
-            Action::Restart => "перезапустить",
+            Action::Kill => "end",
+            Action::Suspend => "suspend",
+            Action::Resume => "resume",
+            Action::Priority => "change priority of",
+            Action::Restart => "restart",
         };
         if dry {
-            println!("Будет {what} — процессов: {}, в этом порядке:", plan.order.len());
+            println!("Would {what} {} processes, in this order:", plan.order.len());
         }
         for r in &results {
             let note = r.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
-            let new = r.new_pid.map(|p| format!(" → новый PID {p}")).unwrap_or_default();
+            let new = r.new_pid.map(|p| format!(" → new PID {p}")).unwrap_or_default();
             match &r.error {
                 None => println!("{} {:>7}  {}{new}{note}", if dry { "·" } else { "✓" }, r.pid, r.name),
                 Some(e) => println!("✗ {:>7}  {} — {e}", r.pid, r.name),
             }
         }
         if results.iter().any(|r| r.can_force) {
-            println!("Повторите с --force, чтобы выполнить принудительно.");
+            println!("Retry with --force to do it anyway.");
         }
     }
     Ok(ok)
@@ -776,31 +776,31 @@ fn cmd_prio_show(args: &Args, target: &str) -> Res<()> {
         print_json(&json!({ "results": rows }));
     } else {
         for r in rows {
-            println!("{:>7}  {}  {}", r["pid"], r["name"].as_str().unwrap_or(""), r["priority"].as_str().unwrap_or("нет доступа"));
+            println!("{:>7}  {}  {}", r["pid"], r["name"].as_str().unwrap_or(""), r["priority"].as_str().unwrap_or("no access"));
         }
     }
     Ok(())
 }
 
-// ───────────────────────────── история и движок ─────────────────────────────
+// ───────────────────────────── history and engine ─────────────────────────────
 
 fn parse_range(s: &str) -> Res<u64> {
     let s = s.trim().to_lowercase();
     let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
     let (num, unit) = s.split_at(split);
-    let bad = || Fail::Usage(format!("--range: не понимаю «{s}» (примеры: 90s, 15m, 3h, 24h)"));
+    let bad = || Fail::Usage(format!("--range: cannot understand “{s}” (examples: 90s, 15m, 3h, 24h)"));
     let n: u64 = num.parse().map_err(|_| bad())?;
     let mult = match unit {
-        "" | "s" | "с" => 1_000,
-        "m" | "min" | "м" | "мин" => 60_000,
-        "h" | "ч" => 3_600_000,
-        "d" | "д" => 86_400_000,
+        "" | "s" => 1_000,
+        "m" | "min" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
         _ => return Err(bad()),
     };
     Ok(n * mult)
 }
 
-/// Мини-график из блоков: каждый столбец — максимум своей доли значений.
+/// A mini chart of blocks: every column is the maximum of its share of the values.
 fn spark(values: &[f64], width: usize) -> String {
     const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     if values.is_empty() {
@@ -825,7 +825,7 @@ fn spark(values: &[f64], width: usize) -> String {
 fn engine_call(method: &str, params: Value, timeout: Duration) -> Res<Value> {
     pipe::call(method, params, timeout).map_err(|e| {
         if pipe::is_not_running(&e) {
-            Fail::Error("движок tm не запущен. Запустите: tm daemon start".into())
+            Fail::Error("the tm engine is not running. Start it: tm daemon start".into())
         } else {
             io_err(e)
         }
@@ -851,7 +851,7 @@ fn cmd_history(args: &Args) -> Res<()> {
         "read" | "rx" => Metric::Read,
         "write" | "tx" => Metric::Write,
         "gpu" => Metric::Gpu,
-        o => return usage(format!("--by: неизвестная метрика «{o}» (cpu|mem|io|read|write|gpu)")),
+        o => return usage(format!("--by: unknown metric “{o}” (cpu|mem|io|read|write|gpu)")),
     };
     let q = Query { scope, range_ms: parse_range(args.get("range").unwrap_or("15m"))?, by, top: args.num("n", 6)?, keys: vec![] };
     let v = engine_call("history", serde_json::to_value(&q).unwrap_or_default(), Duration::from_secs(5))?;
@@ -867,38 +867,38 @@ fn cmd_history(args: &Args) -> Res<()> {
     };
     let span = r.points as u64 * r.step_ms;
     let what = match by {
-        Metric::Cpu => "Загрузка ЦП",
-        Metric::Gpu => "Загрузка видеокарты",
-        Metric::Mem => "Память",
-        Metric::Io if scope == Scope::Net => "Сеть (приём + отправка)",
-        Metric::Read if scope == Scope::Net => "Сеть, приём",
-        Metric::Write if scope == Scope::Net => "Сеть, отправка",
-        Metric::Io => "Ввод-вывод",
-        Metric::Read => "Чтение",
-        Metric::Write => "Запись",
+        Metric::Cpu => "CPU load",
+        Metric::Gpu => "GPU load",
+        Metric::Mem => "Memory",
+        Metric::Io if scope == Scope::Net => "Network (receive + send)",
+        Metric::Read if scope == Scope::Net => "Network, receive",
+        Metric::Write if scope == Scope::Net => "Network, send",
+        Metric::Io => "I/O",
+        Metric::Read => "Read",
+        Metric::Write => "Write",
     };
-    println!("{what} за {} (шаг {})", dur(span), dur(r.step_ms));
+    println!("{what} over {} (step {})", dur(span), dur(r.step_ms));
     if let Ok(st) = pipe::call("status", Value::Null, Duration::from_secs(2)) {
         let since = st["history_since_ms"].as_u64().unwrap_or(r.start_ms);
         let up = r.start_ms + span - since.min(r.start_ms + span);
         if up < span {
-            println!("история собирается {} — более ранних данных нет", dur(up));
+            println!("history has been collected for {} — there is no earlier data", dur(up));
         }
     }
     const W: usize = 48;
-    println!("\n{:>9} {:>9}  {:<W$}  {}", "СРЕДНЕЕ", "ПИК", "ГРАФИК", "ИСТОЧНИК");
+    println!("\n{:>9} {:>9}  {:<W$}  {}", "AVERAGE", "PEAK", "CHART", "SOURCE");
     let row = |s: &tm_core::history::Series| {
         println!("{:>9} {:>9}  {:<W$}  {}", fmt(s.avg), fmt(s.peak), spark(&s.values, W), s.title);
     };
     let mut total = r.total.clone();
-    total.title = "Всего".into();
+    total.title = "Total".into();
     row(&total);
     r.series.iter().for_each(row);
     if let Some(o) = &r.other {
         row(o);
     }
     let left = format!("−{}", dur(span));
-    println!("{:>19}  {left:<w$}сейчас", "", w = W - "сейчас".chars().count());
+    println!("{:>19}  {left:<w$}now", "", w = W - "now".chars().count());
     Ok(())
 }
 
@@ -910,7 +910,7 @@ fn cmd_events(args: &Args) -> Res<()> {
     }
     let list = v.as_array().cloned().unwrap_or_default();
     if list.is_empty() {
-        println!("журнал пуст: движок пока ничего не заметил");
+        println!("the log is empty: the engine has not noticed anything yet");
     }
     let now = tm_core::engine::wall_ms();
     let n = args.num("n", 30)?;
@@ -923,7 +923,7 @@ fn cmd_events(args: &Args) -> Res<()> {
             _ => "·",
         };
         let pid = e["pid"].as_u64().map(|p| format!("  [PID {p}]")).unwrap_or_default();
-        println!("{:>12} назад  {mark} {}{pid}", dur(now.saturating_sub(at)), e["text"].as_str().unwrap_or(""));
+        println!("{:>12} ago  {mark} {}{pid}", dur(now.saturating_sub(at)), e["text"].as_str().unwrap_or(""));
     }
     Ok(())
 }
@@ -934,7 +934,7 @@ fn cmd_daemon(args: &Args) -> Res<bool> {
         "start" => daemon_start(args).map(|_| true),
         "stop" => daemon_stop(args).map(|_| true),
         "status" => daemon_status(args).map(|_| true),
-        o => usage(format!("tm daemon: неизвестное действие «{o}» (start|stop|status|run)")),
+        o => usage(format!("tm daemon: unknown action “{o}” (start|stop|status|run)")),
     }
 }
 
@@ -944,12 +944,12 @@ fn engine_running() -> bool {
 
 fn daemon_run(args: &Args) -> Res<bool> {
     if engine_running() {
-        return Err(Fail::Error("движок уже запущен (tm daemon status)".into()));
+        return Err(Fail::Error("the engine is already running (tm daemon status)".into()));
     }
     let service = tm_core::Service::new(Engine::start(Duration::from_secs(1), tm_core::engine::default_store()));
     let handler: pipe::Handler = Arc::new(move |m: &str, p: &Value| {
         if tm_core::service::is_local_only(m) {
-            return Err("действия и просмотр процессов изнутри через канал не выполняются — tm делает их сам".into());
+            return Err("actions and looking inside processes are not performed through the pipe — tm does them itself".into());
         }
         if m == "shutdown" {
             let _ = service.engine.save();
@@ -964,7 +964,7 @@ fn daemon_run(args: &Args) -> Res<bool> {
         service.call(m, p)
     });
     if !args.has("quiet") {
-        eprintln!("tm: движок работает (PID {}), канал {}. Ctrl+C — остановить.", std::process::id(), pipe::pipe_name());
+        eprintln!("tm: the engine is running (PID {}), pipe {}. Ctrl+C — stop.", std::process::id(), pipe::pipe_name());
     }
     pipe::serve(handler).map_err(io_err)?;
     Ok(true)
@@ -977,12 +977,12 @@ fn daemon_start(args: &Args) -> Res<()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !engine_running() {
             if std::time::Instant::now() > deadline {
-                return Err(Fail::Error("движок не ответил после запуска".into()));
+                return Err(Fail::Error("the engine did not answer after starting".into()));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
     } else if !args.has("json") {
-        println!("движок уже работал");
+        println!("the engine was already running");
     }
     daemon_status(args)
 }
@@ -998,7 +998,7 @@ fn daemon_stop(args: &Args) -> Res<()> {
     if args.has("json") {
         print_json(&json!({ "stopped": was }));
     } else {
-        println!("{}", if was { "движок остановлен" } else { "движок не был запущен" });
+        println!("{}", if was { "the engine stopped" } else { "the engine was not running" });
     }
     Ok(())
 }
@@ -1010,7 +1010,7 @@ fn daemon_status(args: &Args) -> Res<()> {
             if args.has("json") {
                 print_json(&json!({ "running": false }));
             } else {
-                println!("движок не запущен (tm daemon start)");
+                println!("the engine is not running (tm daemon start)");
             }
             return Ok(());
         }
@@ -1023,18 +1023,18 @@ fn daemon_status(args: &Args) -> Res<()> {
         return Ok(());
     }
     let f = |k: &str| st[k].as_f64().unwrap_or(0.0);
-    println!("Движок     работает {}, PID {}, замеров {}", dur(st["uptime_ms"].as_u64().unwrap_or(0)), st["pid"], st["samples"]);
-    println!("Замер      в среднем {:.1} мс, худший {:.1} мс (интервал {} мс)", f("sample_cost_avg_ms"), f("sample_cost_max_ms"), st["interval_ms"]);
-    println!("Сам        ЦП {:.2} % · память {}", f("own_cpu"), bytes(st["own_mem"].as_u64().unwrap_or(0)));
+    println!("Engine     running for {}, PID {}, samples {}", dur(st["uptime_ms"].as_u64().unwrap_or(0)), st["pid"], st["samples"]);
+    println!("Sample     average {:.1} ms, worst {:.1} ms (interval {} ms)", f("sample_cost_avg_ms"), f("sample_cost_max_ms"), st["interval_ms"]);
+    println!("Self       CPU {:.2}% · memory {}", f("own_cpu"), bytes(st["own_mem"].as_u64().unwrap_or(0)));
     let h = &st["history"];
-    println!("История    приложений {} · процессов {} · точек {}", h["apps"], h["procs"], h["points"]);
+    println!("History    apps {} · processes {} · points {}", h["apps"], h["procs"], h["points"]);
     if let Some(e) = st["error"].as_str() {
-        println!("Ошибка     {e}");
+        println!("Error      {e}");
     }
     Ok(())
 }
 
-/// Скрытая команда: сколько стоит один замер и построение дерева (цель — единицы мс).
+/// A hidden command: what one sample and building the tree cost (the goal is a few ms).
 fn cmd_bench(args: &Args) -> Res<()> {
     let n = args.num("n", 200)?.max(1);
     let mut s = Sampler::new();
@@ -1063,8 +1063,8 @@ fn cmd_bench(args: &Args) -> Res<()> {
             "sample_ms": parts[0] / n as f64, "tree_ms": parts[1] / n as f64, "apps_ms": parts[2] / n as f64 }));
     } else {
         let k = n as f64;
-        println!("замеров {n}, процессов {procs}: в среднем {avg:.2} мс, худший {worst:.2} мс");
-        println!("  снимок {:.2} мс · дерево {:.2} мс · приложения {:.2} мс", parts[0] / k, parts[1] / k, parts[2] / k);
+        println!("samples {n}, processes {procs}: average {avg:.2} ms, worst {worst:.2} ms");
+        println!("  snapshot {:.2} ms · tree {:.2} ms · apps {:.2} ms", parts[0] / k, parts[1] / k, parts[2] / k);
         let time = |f: &mut dyn FnMut()| {
             let t = std::time::Instant::now();
             for _ in 0..n {
@@ -1074,9 +1074,9 @@ fn cmd_bench(args: &Args) -> Res<()> {
         };
         let mut q = tm_core::nt::ProcessQuery::default();
         let mut raw = Vec::new();
-        println!("    NtQuerySystemInformation {:.2} мс", time(&mut || { let _ = q.snapshot(&mut raw); }));
-        println!("    GlobalMemoryStatusEx     {:.2} мс", time(&mut || { let _ = tm_core::system::memory(); }));
-        println!("    GetSystemTimes           {:.3} мс", time(&mut || { let _ = tm_core::system::cpu_times(); }));
+        println!("    NtQuerySystemInformation {:.2} ms", time(&mut || { let _ = q.snapshot(&mut raw); }));
+        println!("    GlobalMemoryStatusEx     {:.2} ms", time(&mut || { let _ = tm_core::system::memory(); }));
+        println!("    GetSystemTimes           {:.3} ms", time(&mut || { let _ = tm_core::system::cpu_times(); }));
     }
     Ok(())
 }
@@ -1125,7 +1125,7 @@ fn run() -> Res<bool> {
             println!("tm {}", env!("CARGO_PKG_VERSION"));
             Ok(true)
         }
-        other => usage(format!("неизвестная команда «{other}». tm help — список команд")),
+        other => usage(format!("unknown command “{other}”. tm help — list of commands")),
     }
 }
 
@@ -1160,9 +1160,9 @@ fn cmd_docker(args: &Args) -> Res<bool> {
     };
     let action = args.pos.first().map(String::as_str).unwrap_or("ls");
     if action != "ls" {
-        let Some(target) = args.pos.get(1) else { return usage(format!("укажите контейнер: tm docker {action} <имя|id>")) };
+        let Some(target) = args.pos.get(1) else { return usage(format!("specify a container: tm docker {action} <name|id>")) };
         if !state.available {
-            return Err(Fail::Error(state.error.unwrap_or_else(|| "Docker не запущен".into())));
+            return Err(Fail::Error(state.error.unwrap_or_else(|| "Docker is not running".into())));
         }
         let t = target.to_lowercase();
         let found: Vec<&docker::Container> = state
@@ -1171,10 +1171,10 @@ fn cmd_docker(args: &Args) -> Res<bool> {
             .filter(|c| c.name.to_lowercase() == t || c.id.starts_with(&t) || (args.has("all") && c.project.as_deref().is_some_and(|p| p.to_lowercase() == t)))
             .collect();
         if found.is_empty() {
-            return usage(format!("контейнер «{target}» не найден (tm docker — список)"));
+            return usage(format!("container “{target}” not found (tm docker — list)"));
         }
         if found.len() > 1 && !args.has("all") {
-            return usage(format!("«{target}» совпадает с несколькими контейнерами — добавьте --all"));
+            return usage(format!("“{target}” matches several containers — add --all"));
         }
         let mut ok = true;
         let mut results = Vec::new();
@@ -1199,10 +1199,10 @@ fn cmd_docker(args: &Args) -> Res<bool> {
         return Ok(state.available);
     }
     if !state.available {
-        println!("Docker: {}", state.error.as_deref().unwrap_or("не запущен"));
+        println!("Docker: {}", state.error.as_deref().unwrap_or("not running"));
         return Ok(false);
     }
-    println!("Docker {} · контейнеров {} (работает {})\n", state.version.as_deref().unwrap_or(""), state.containers.len(), state.containers.iter().filter(|c| c.state == "running").count());
+    println!("Docker {} · containers {} (running {})\n", state.version.as_deref().unwrap_or(""), state.containers.len(), state.containers.iter().filter(|c| c.state == "running").count());
     println!("{:>6} {:>9} {:>12} {:>12} {:>5}  {:<13} {}", "CPU%", "MEM", "NET ↓/↑", "DISK R/W", "PIDS", "ID", "NAME");
     for c in &state.containers {
         if c.state != "running" {
@@ -1218,13 +1218,13 @@ fn cmd_docker(args: &Args) -> Res<bool> {
             c.pids,
             c.id,
             c.name,
-            if c.state == "paused" { "  [приостановлен]" } else { "" }
+            if c.state == "paused" { "  [paused]" } else { "" }
         );
     }
     Ok(true)
 }
 
-// ───────────────────────────── пул ядра ─────────────────────────────
+// ───────────────────────────── kernel pool ─────────────────────────────
 
 fn cmd_pool(args: &Args) -> Res<()> {
     use tm_core::pool::{self, PoolReport};
@@ -1234,14 +1234,14 @@ fn cmd_pool(args: &Args) -> Res<()> {
     };
     let by = args.get("by").unwrap_or("size");
     if !matches!(by, "size" | "growth") {
-        return usage(format!("--by: неизвестный порядок «{by}» (size|growth)"));
+        return usage(format!("--by: unknown order “{by}” (size|growth)"));
     }
     let params = json!({ "n": n, "by": by });
     let fetch = || -> Option<PoolReport> {
         let v = pipe::call("pool", params.clone(), Duration::from_secs(5)).ok()?;
         serde_json::from_value(v).ok()
     };
-    // движок следит за пулом раз в минуту и знает скорость роста; без него — один снимок
+    // the engine watches the pool once a minute and knows the growth rate; without it — a single snapshot
     let mut report = if args.has("local") { None } else { fetch() };
     let mut watch = pool::PoolWatch::default();
     if report.is_none() {
@@ -1263,7 +1263,7 @@ fn cmd_pool(args: &Args) -> Res<()> {
             report = fetch();
         } else {
             if !args.has("json") {
-                eprintln!("ищу метки в файлах загруженных драйверов…");
+                eprintln!("searching for tags in the files of loaded drivers…");
             }
             pool::scan_owners(&watch.tracked(), |_, _| {});
         }
@@ -1274,38 +1274,38 @@ fn cmd_pool(args: &Args) -> Res<()> {
         return Ok(());
     }
     if let Some(e) = &r.error {
-        return Err(Fail::Error(format!("пул ядра недоступен: {e}")));
+        return Err(Fail::Error(format!("the kernel pool is unavailable: {e}")));
     }
     let watching = if r.watching_ms >= 10 * 60_000 {
-        format!(" · наблюдение {}", dur(r.watching_ms))
+        format!(" · observed for {}", dur(r.watching_ms))
     } else {
         String::new()
     };
-    println!("Пул ядра: невыгружаемый {} · выгружаемый {}{watching}", bytes(r.nonpaged), bytes(r.paged));
+    println!("Kernel pool: non-paged {} · paged {}{watching}", bytes(r.nonpaged), bytes(r.paged));
     if r.watching_ms < 10 * 60_000 {
-        println!("(рост в час появится после 10 минут наблюдения — движок снимает пул раз в минуту, пока запущено приложение или tm daemon)");
+        println!("(growth per hour appears after 10 minutes of observation — the engine samples the pool once a minute while the app or tm daemon is running)");
     }
     for a in &r.alerts {
         println!("{} {}", if a.level == "red" { "✗" } else { "!" }, a.text);
     }
     if r.zombie_procs > 0 || r.zombie_threads > 0 {
-        println!("Завершённые, но не освобождённые: процессов {} · потоков {}", r.zombie_procs, r.zombie_threads);
+        println!("Exited but not freed: processes {} · threads {}", r.zombie_procs, r.zombie_threads);
     }
-    println!("\n{:<5} {:>9} {:>9} {:>9} {:>10}  {:<16}  {}", "МЕТКА", "НЕВЫГР.", "ВЫГР.", "ОБЪЕКТОВ", "РОСТ/Ч", "ГРАФИК", "ЧТО ЭТО");
+    println!("\n{:<5} {:>9} {:>9} {:>9} {:>10}  {:<16}  {}", "TAG", "NONPAGED", "PAGED", "OBJECTS", "GROWTH/H", "CHART", "WHAT IT IS");
     for t in &r.tags {
         let growth = match t.rate {
             Some(v) if v.abs() >= 64.0 * 1024.0 => format!("{}{}", if v > 0.0 { "+" } else { "−" }, bytes(v.abs() as u64)),
             Some(_) => "0".into(),
             None => "—".into(),
         };
-        // график формы: от минимума до максимума, иначе рост 190 → 192 МБ не виден
+        // shape chart: from minimum to maximum, otherwise growth 190 → 192 MB is not visible
         let lo = t.spark.iter().copied().min().unwrap_or(0) as f64;
         let hi = t.spark.iter().copied().max().unwrap_or(0) as f64;
         let vals: Vec<f64> = t.spark.iter().map(|&v| v as f64 - lo + (hi - lo).max(1.0) * 0.08).collect();
         let owners = match t.owners.len() {
             0 => String::new(),
             1..=3 => format!(" [{}]", t.owners.join(", ")),
-            k => format!(" [{}, … ещё {}]", t.owners[..2].join(", "), k - 2),
+            k => format!(" [{}, … {} more]", t.owners[..2].join(", "), k - 2),
         };
         let mut what = format!("{}{owners}", t.about.as_deref().unwrap_or(""));
         if what.chars().count() > 90 {
@@ -1324,45 +1324,45 @@ fn cmd_pool(args: &Args) -> Res<()> {
         );
     }
     if r.owners.state != "done" && !args.has("owners") {
-        println!("\nЧей драйвер у метки — tm pool --owners (поиск по файлам загруженных драйверов, 10–30 с)");
+        println!("\nWhich driver owns a tag — tm pool --owners (searches the files of loaded drivers, 10–30 s)");
     }
     Ok(())
 }
 
-// ───────────────────────────── службы, подключения, файлы ─────────────────────────────
+// ───────────────────────────── services, connections, files ─────────────────────────────
 
-/// Имена процессов по PID из собственного мгновенного снимка.
+/// Process names by PID from our own instant snapshot.
 fn proc_names() -> HashMap<u32, String> {
     Sampler::new().sample().map(|f| f.procs.into_iter().map(|p| (p.pid, p.name)).collect()).unwrap_or_default()
 }
 
-fn svc_state_ru(s: &str) -> &'static str {
+fn svc_state_text(s: &str) -> &'static str {
     match s {
-        "running" => "работает",
-        "stopped" => "остановлена",
-        "start_pending" => "запускается",
-        "stop_pending" => "останавливается",
-        "paused" => "приостановлена",
+        "running" => "running",
+        "stopped" => "stopped",
+        "start_pending" => "starting",
+        "stop_pending" => "stopping",
+        "paused" => "paused",
         _ => "?",
     }
 }
 
-fn svc_start_ru(s: &str) -> &'static str {
+fn svc_start_text(s: &str) -> &'static str {
     match s {
-        "auto" => "авто",
-        "auto_delayed" => "авто (отлож.)",
-        "manual" => "вручную",
-        "disabled" => "отключена",
-        "boot" | "system" => "при загрузке",
+        "auto" => "auto",
+        "auto_delayed" => "auto (delayed)",
+        "manual" => "manual",
+        "disabled" => "disabled",
+        "boot" | "system" => "at boot",
         _ => "",
     }
 }
 
-/// `tm svc [фильтр]` — список; `tm svc start|stop|restart <имя>` — действие.
+/// `tm svc [filter]` — the list; `tm svc start|stop|restart <name>` — an action.
 fn cmd_svc(args: &Args) -> Res<bool> {
     use tm_core::services::{self, Control};
     let first = args.pos.first().map(String::as_str);
-    // «tm svc stop» без имени — это поиск по слову, а не действие
+    // “tm svc stop” without a name is a search for the word, not an action
     let action = if args.pos.len() >= 2 { first } else { None };
     if let Some(what) = action.and_then(|a| match a {
         "start" => Some(Control::Start),
@@ -1373,15 +1373,15 @@ fn cmd_svc(args: &Args) -> Res<bool> {
         let name = &args.pos[1];
         let list = services::list(true).map_err(io_err)?;
         let Some(s) = list.iter().find(|s| s.name.eq_ignore_ascii_case(name)) else {
-            return Err(Fail::Error(format!("служба «{name}» не найдена (tm svc — список)")));
+            return Err(Fail::Error(format!("service “{name}” not found (tm svc — list)")));
         };
         if args.has("dry-run") {
             let check = services::precheck(s, what, args.has("force"));
             if args.has("json") {
                 print_json(&json!({ "name": s.name, "display": s.display, "state": s.state, "ok": check.is_ok(), "reason": check.as_ref().err() }));
             } else {
-                let note = check.as_ref().err().map(|e| format!(" — не выйдет: {e}")).unwrap_or_else(|| " — можно".into());
-                println!("· {} ({}) — сейчас {}{note}", s.name, s.display, svc_state_ru(s.state));
+                let note = check.as_ref().err().map(|e| format!(" — would fail: {e}")).unwrap_or_else(|| " — possible".into());
+                println!("· {} ({}) — now {}{note}", s.name, s.display, svc_state_text(s.state));
             }
             return Ok(check.is_ok());
         }
@@ -1390,7 +1390,7 @@ fn cmd_svc(args: &Args) -> Res<bool> {
             print_json(&json!({ "name": s.name, "ok": r.is_ok(), "state": r.as_ref().ok(), "error": r.as_ref().err().map(|e| e.to_string()) }));
         } else {
             match &r {
-                Ok(st) => println!("✓ {} ({}) — {}", s.name, s.display, svc_state_ru(st)),
+                Ok(st) => println!("✓ {} ({}) — {}", s.name, s.display, svc_state_text(st)),
                 Err(e) => println!("✗ {} — {e}", s.name),
             }
         }
@@ -1408,27 +1408,27 @@ fn cmd_svc(args: &Args) -> Res<bool> {
         print_json(&shown);
         return Ok(true);
     }
-    println!("{:<28} {:<12} {:<14} {:>7}  {:<14} {}", "СЛУЖБА", "СОСТОЯНИЕ", "ЗАПУСК", "PID", "ПРОЦЕСС", "НАЗВАНИЕ");
+    println!("{:<28} {:<12} {:<14} {:>7}  {:<14} {}", "SERVICE", "STATE", "START", "PID", "PROCESS", "DISPLAY NAME");
     for s in &shown {
         let proc = if s.pid != 0 { names.get(&s.pid).map(String::as_str).unwrap_or("") } else { "" };
         println!(
             "{:<28} {:<12} {:<14} {:>7}  {:<14} {}{}",
             s.name,
-            svc_state_ru(s.state),
-            svc_start_ru(s.start),
+            svc_state_text(s.state),
+            svc_start_text(s.start),
             if s.pid != 0 { s.pid.to_string() } else { "-".into() },
             proc,
             s.display,
-            if s.critical { "  [системная]" } else { "" }
+            if s.critical { "  [system]" } else { "" }
         );
     }
     if !args.has("all") && f.is_none() {
-        println!("\nПоказаны работающие ({}). Все — tm svc --all; действия — tm svc start|stop|restart <имя>.", shown.len());
+        println!("\nShowing running services ({}). All — tm svc --all; actions — tm svc start|stop|restart <name>.", shown.len());
     }
     Ok(true)
 }
 
-/// `tm conns [цель] [--listen]` — подключения и открытые порты.
+/// `tm conns [target] [--listen]` — connections and open ports.
 fn cmd_conns(args: &Args) -> Res<bool> {
     let names = proc_names();
     let pids: Option<std::collections::HashSet<u32>> = match args.pos.first() {
@@ -1448,19 +1448,19 @@ fn cmd_conns(args: &Args) -> Res<bool> {
         print_json(&list);
         return Ok(true);
     }
-    println!("{:<5} {:<30} {:<30} {:<13} {:>7}  {}", "PROTO", "ЛОКАЛЬНЫЙ", "УДАЛЁННЫЙ", "СОСТОЯНИЕ", "PID", "ПРОЦЕСС");
+    println!("{:<5} {:<30} {:<30} {:<13} {:>7}  {}", "PROTO", "LOCAL", "REMOTE", "STATE", "PID", "PROCESS");
     let addr = |a: &str, p: u16| if a.contains(':') { format!("[{a}]:{p}") } else { format!("{a}:{p}") };
     for c in &list {
         let remote = if c.remote.is_empty() { String::new() } else { addr(&c.remote, c.remote_port) };
         println!("{:<5} {:<30} {:<30} {:<13} {:>7}  {}", c.proto, addr(&c.local, c.local_port), remote, c.state, c.pid, names.get(&c.pid).map(String::as_str).unwrap_or(""));
     }
-    println!("\nВсего: {}", list.len());
+    println!("\nTotal: {}", list.len());
     Ok(true)
 }
 
-/// `tm who <путь>` — кто держит файл (или файлы в папке).
+/// `tm who <path>` — who holds a file (or the files in a folder).
 fn cmd_who(args: &Args) -> Res<bool> {
-    let Some(path) = args.pos.first() else { return usage("укажите файл или папку: tm who <путь>") };
+    let Some(path) = args.pos.first() else { return usage("specify a file or folder: tm who <path>") };
     let r = tm_core::locks::holders(path).map_err(|e| Fail::Error(e.to_string()))?;
     if args.has("json") {
         let mut v = json!(r);
@@ -1470,62 +1470,62 @@ fn cmd_who(args: &Args) -> Res<bool> {
     }
     let partial = match (r.truncated, r.scanned) {
         (true, true) => format!(
-            " (ваши программы проверены по всей папке; {} процессов без доступа — только по {} файлам и папкам верхних уровней)",
+            " (your programs were checked across the whole folder; {} processes without access — only across {} top-level files and folders)",
             r.unscanned, r.files
         ),
-        (true, false) => format!(" (проверено только {} файлов и папок верхних уровней — остальные не смотрели)", r.files),
+        (true, false) => format!(" (only {} top-level files and folders were checked — the rest were not looked at)", r.files),
         _ => String::new(),
     };
     if r.holders.is_empty() {
-        println!("Никто не держит «{path}» открытым{partial}.");
+        println!("Nobody keeps “{path}” open{partial}.");
     } else {
-        println!("«{path}» держат открытым{partial}:");
+        println!("“{path}” is kept open{partial} by:");
         for h in &r.holders {
-            let svc = h.service.as_deref().map(|s| format!(" · служба {s}")).unwrap_or_default();
+            let svc = h.service.as_deref().map(|s| format!(" · service {s}")).unwrap_or_default();
             println!("  {:>7}  {}{svc}   (tm kill {}:{})", h.pid, h.app, h.pid, h.create_time);
             for f in h.files.iter().take(3) {
                 println!("           {f}");
             }
             if h.open > h.files.len().min(3) {
-                println!("           … всего открыто в папке: {}", h.open);
+                println!("           … open in the folder in total: {}", h.open);
             }
         }
     }
     if r.truncated && r.scanned && !tm_core::system::is_elevated() {
-        println!("Службы и программы от администратора полностью проверяются только из tm от администратора.");
+        println!("Services and programs running as administrator are fully checked only from tm running as administrator.");
     }
     if r.skipped > 0 {
-        println!("Пропущено файлов без доступа: {} (проверить их — от администратора).", r.skipped);
+        println!("Files skipped for lack of access: {} (check them as administrator).", r.skipped);
     }
     Ok(true)
 }
 
-// ───────────────────────────── процесс изнутри, подпись ─────────────────────────────
+// ───────────────────────────── process from the inside, signature ─────────────────────────────
 
-/// Ровно один процесс по цели: для просмотра «изнутри» несколько совпадений — ошибка.
+/// Exactly one process by target: for looking “inside”, several matches are an error.
 fn one_proc(args: &Args, target: &str, any: bool) -> Res<ProcStat> {
     let snap = Snap::take(args, false)?;
     let found = snap.resolve(target)?;
     if found.len() > 1 && !any {
         let pids: Vec<String> = found.iter().take(8).map(|&i| snap.procs()[i].pid.to_string()).collect();
-        return Err(Fail::Error(format!("«{target}» — {} процессов (PID {}…): укажите PID", found.len(), pids.join(", "))));
+        return Err(Fail::Error(format!("“{target}” — {} processes (PID {}…): specify a PID", found.len(), pids.join(", "))));
     }
     Ok(snap.procs()[found[0]].clone())
 }
 
 fn access_err(e: std::io::Error) -> Fail {
     if e.raw_os_error() == Some(5) {
-        Fail::Error("нет доступа к процессу — нужны права администратора".into())
+        Fail::Error("no access to the process — administrator rights required".into())
     } else {
         io_err(e)
     }
 }
 
-/// `tm inspect <цель> modules|threads|handles|env` — процесс изнутри, как окно свойств System Informer.
+/// `tm inspect <target> modules|threads|handles|env` — a process from the inside, like the System Informer properties window.
 fn cmd_inspect(args: &Args) -> Res<bool> {
     use tm_core::inspect;
     let (Some(target), Some(what)) = (args.pos.first(), args.pos.get(1)) else {
-        return usage("tm inspect <цель> modules|threads|handles|env");
+        return usage("tm inspect <target> modules|threads|handles|env");
     };
     let p = one_proc(args, target, false)?;
     let (pid, ct) = (p.pid, p.create_time);
@@ -1537,11 +1537,11 @@ fn cmd_inspect(args: &Args) -> Res<bool> {
                 print_json(&list);
                 return Ok(true);
             }
-            println!("{:<18} {:>10}  {:<28} ПУТЬ", "АДРЕС", "РАЗМЕР", "МОДУЛЬ");
+            println!("{:<18} {:>10}  {:<28} PATH", "ADDRESS", "SIZE", "MODULE");
             for m in &list {
                 println!("0x{:<16x} {:>10}  {:<28} {}", m.base, bytes(m.size as u64), m.name, m.path);
             }
-            println!("\n{} ({}): модулей {}", p.name, pid, list.len());
+            println!("\n{} ({}): {} modules", p.name, pid, list.len());
         }
         "threads" | "thr" => {
             let list = inspect::threads(pid, ct).map_err(access_err)?;
@@ -1549,14 +1549,14 @@ fn cmd_inspect(args: &Args) -> Res<bool> {
                 print_json(&list);
                 return Ok(true);
             }
-            println!("{:>7} {:>10} {:>9} {:>4} {:<10} ТОЧКА ВХОДА", "TID", "ЦП", "ПЕРЕКЛ.", "ПРИО", "СОСТОЯНИЕ");
+            println!("{:>7} {:>10} {:>9} {:>4} {:<10} START ADDRESS", "TID", "CPU", "SWITCHES", "PRIO", "STATE");
             let mut list = list;
             list.sort_by_key(|t| std::cmp::Reverse(t.kernel + t.user));
             for t in &list {
                 let cpu = Duration::from_nanos(((t.kernel + t.user).max(0) as u64) * 100);
-                println!("{:>7} {:>9.2}с {:>9} {:>4} {:<10} {}", t.tid, cpu.as_secs_f64(), t.switches, t.priority, t.state, t.start.as_deref().unwrap_or(""));
+                println!("{:>7} {:>9.2}s {:>9} {:>4} {:<10} {}", t.tid, cpu.as_secs_f64(), t.switches, t.priority, t.state, t.start.as_deref().unwrap_or(""));
             }
-            println!("\n{} ({}): потоков {}", p.name, pid, list.len());
+            println!("\n{} ({}): {} threads", p.name, pid, list.len());
         }
         "handles" | "h" => {
             let h = inspect::handles(pid, ct).map_err(access_err)?;
@@ -1569,9 +1569,9 @@ fn cmd_inspect(args: &Args) -> Res<bool> {
                 println!("0x{:<6x} {:<14} 0x{:08x}  {}", x.handle, x.kind, x.access, x.name);
             }
             let sum: Vec<String> = h.by_type.iter().take(10).map(|(k, n)| format!("{k} {n}")).collect();
-            println!("\n{} ({}): дескрипторов {} — {}", p.name, pid, h.total, sum.join(", "));
+            println!("\n{} ({}): {} handles — {}", p.name, pid, h.total, sum.join(", "));
             if !h.names {
-                println!("Имена объектов недоступны: нет права копировать дескрипторы (нужны права администратора).");
+                println!("Object names are unavailable: no right to duplicate handles (needs administrator rights).");
             }
         }
         "env" | "environment" => {
@@ -1580,57 +1580,57 @@ fn cmd_inspect(args: &Args) -> Res<bool> {
                 print_json(&e);
                 return Ok(true);
             }
-            println!("Папка: {}", e.cwd);
+            println!("Folder: {}", e.cwd);
             for (k, v) in &e.vars {
                 println!("{k}={v}");
             }
         }
-        w => return usage(format!("неизвестный раздел «{w}»: modules, threads, handles, env")),
+        w => return usage(format!("unknown section “{w}”: modules, threads, handles, env")),
     }
     Ok(true)
 }
 
-/// `tm sig <путь|цель>` — подпись файла и ссылка на VirusTotal.
+/// `tm sig <path|target>` — the file signature and a VirusTotal link.
 fn cmd_sig(args: &Args) -> Res<bool> {
-    let Some(t) = args.pos.first() else { return usage("tm sig <путь к файлу | цель>") };
-    // до is_file: уже сама проверка «\\сервер\…» идёт на сервер и отдаёт ему NTLM-учётку
+    let Some(t) = args.pos.first() else { return usage("tm sig <file path | target>") };
+    // before is_file: the very check of “\\server\…” goes to the server and hands it an NTLM credential
     if tm_core::locks::is_remote(std::path::Path::new(t)) {
-        return Err(Fail::Error("сетевые пути не проверяются — только локальные файлы".into()));
+        return Err(Fail::Error("network paths are not checked — only local files".into()));
     }
     let path = if std::path::Path::new(t).is_file() {
         t.clone()
     } else {
-        // у одноимённых процессов (36 × brave.exe) файл один — хватит любого
+        // processes with the same name (36 × brave.exe) share one file — any will do
         let p = one_proc(args, t, true)?;
         tm_core::info::InfoCache::default()
             .get(p.key())
             .path
             .clone()
-            .ok_or_else(|| Fail::Error(format!("путь к файлу {} недоступен — нужны права администратора", p.name)))?
+            .ok_or_else(|| Fail::Error(format!("the file path of {} is unavailable — administrator rights required", p.name)))?
     };
     let s = tm_core::signature::check(&path).map_err(io_err)?;
     if args.has("json") {
-        // для JSON (и MCP) «без подписи» — ответ, а не ошибка
+        // for JSON (and MCP) “unsigned” is an answer, not an error
         print_json(&json!({ "path": path, "signature": s }));
         return Ok(true);
     }
     let what = match s.status {
-        "signed" => "подписан",
-        "unsigned" => "без подписи",
-        "untrusted" => "подпись недоверенная",
-        "expired" => "сертификат подписи истёк",
-        "revoked" => "сертификат отозван",
-        "bad_digest" => "подпись НЕ совпадает с файлом (файл изменён после подписи)",
-        "distrusted" => "подписавший в списке недоверенных",
-        "not_applicable" => "не программа — у файлов такого формата подписи не бывает",
-        _ => "подпись не проверить",
+        "signed" => "signed",
+        "unsigned" => "unsigned",
+        "untrusted" => "untrusted signature",
+        "expired" => "the signing certificate has expired",
+        "revoked" => "the certificate has been revoked",
+        "bad_digest" => "the signature does NOT match the file (the file was changed after signing)",
+        "distrusted" => "the signer is in the distrusted list",
+        "not_applicable" => "not a program — files of this format are never signed",
+        _ => "the signature cannot be checked",
     };
     println!("{path}");
-    println!("  {what}{}{}", s.signer.as_deref().map(|n| format!(": {n}")).unwrap_or_default(), if s.catalog { " (каталог Windows)" } else { "" });
+    println!("  {what}{}{}", s.signer.as_deref().map(|n| format!(": {n}")).unwrap_or_default(), if s.catalog { " (Windows catalog)" } else { "" });
     if let Some(h) = &s.sha256 {
         println!("  SHA-256 {h}");
         println!("  https://www.virustotal.com/gui/file/{h}");
     }
-    // код 1 — «с подписью что-то не так»; у не-программ подписи и не должно быть
+    // code 1 — “something is wrong with the signature”; non-programs should not have a signature anyway
     Ok(matches!(s.status, "signed" | "not_applicable"))
 }

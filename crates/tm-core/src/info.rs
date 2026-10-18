@@ -1,5 +1,5 @@
-//! Редко меняющиеся сведения о процессе: путь, командная строка, описание и издатель из .exe.
-//! Всё кэшируется по ключу (PID, время создания), описание файла — по пути.
+//! Rarely changing process details: path, command line, description and publisher from the .exe.
+//! Everything is cached by the key (PID, creation time), the file description by path.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -15,18 +15,18 @@ use crate::sampler::ProcKey;
 pub struct ProcInfo {
     pub path: Option<String>,
     pub cmdline: Option<String>,
-    /// FileDescription из ресурсов .exe, например «Google Chrome».
+    /// FileDescription from the .exe resources, e.g. “Google Chrome”.
     pub description: Option<String>,
     pub company: Option<String>,
-    /// false — нет доступа (обычно системные процессы без прав администратора).
+    /// false — no access (usually system processes without administrator rights).
     pub accessible: bool,
-    /// Роль внутри приложения по командной строке: «GPU-процесс», «Служба: Dnscache» и т.п.
+    /// The role inside the app from the command line: “GPU process”, “Service: Dnscache” and so on.
     #[serde(default)]
     pub role: Option<String>,
 }
 
-/// Служебный Node.js в Electron (Claude, VS Code, Cursor) по командной строке не отличить; хост
-/// терминалов узнаётся по загруженному node-pty.
+/// A helper Node.js in Electron (Claude, VS Code, Cursor) cannot be told apart by the command line; the
+/// terminal host is recognised by the loaded node-pty.
 fn node_host(pid: u32, create_time: i64, role: String) -> String {
     if role != "Node.js" {
         return role;
@@ -37,39 +37,39 @@ fn node_host(pid: u32, create_time: i64, role: String) -> String {
             p.ends_with("conpty.node") || p.ends_with("pty.node")
         })
     });
-    if pty { "Терминалы (node-pty)".into() } else { role }
+    if pty { "Terminals (node-pty)".into() } else { role }
 }
 
-/// Понятное имя роли процесса по командной строке (Chromium/Electron, svchost).
+/// A readable name for the process role from the command line (Chromium/Electron, svchost).
 pub fn role_of(cmd: &str) -> Option<String> {
     let toks: Vec<&str> = cmd.split_whitespace().collect();
     let arg = |k: &str| toks.iter().find_map(|t| t.trim_matches('"').strip_prefix(k)).map(|v| v.trim_matches('"').to_string());
     if let Some(t) = arg("--type=") {
         return Some(match t.as_str() {
-            "gpu-process" => "GPU-процесс".into(),
-            "renderer" if cmd.contains("--extension-process") => "Расширение".into(),
-            "renderer" if cmd.contains("--top-chrome-webui") => "Интерфейс браузера".into(),
-            "renderer" => "Рендерер (вкладка или окно)".into(),
+            "gpu-process" => "GPU process".into(),
+            "renderer" if cmd.contains("--extension-process") => "Extension".into(),
+            "renderer" if cmd.contains("--top-chrome-webui") => "Browser UI".into(),
+            "renderer" => "Renderer (tab or window)".into(),
             "utility" => match arg("--utility-sub-type=") {
-                Some(s) if s.starts_with("network.") => "Сетевая служба".into(),
-                Some(s) if s.starts_with("storage.") => "Хранилище".into(),
-                Some(s) if s.starts_with("audio.") => "Аудио".into(),
-                Some(s) if s.contains("video_capture") => "Камера".into(),
+                Some(s) if s.starts_with("network.") => "Network service".into(),
+                Some(s) if s.starts_with("storage.") => "Storage".into(),
+                Some(s) if s.starts_with("audio.") => "Audio".into(),
+                Some(s) if s.contains("video_capture") => "Camera".into(),
                 Some(s) if s.starts_with("node.") => "Node.js".into(),
-                Some(s) => format!("Служебный процесс ({})", s.split('.').next().unwrap_or(&s)),
-                None => "Служебный процесс".into(),
+                Some(s) => format!("Utility process ({})", s.split('.').next().unwrap_or(&s)),
+                None => "Utility process".into(),
             },
-            "crashpad-handler" => "Отчёты о сбоях".into(),
+            "crashpad-handler" => "Crash reports".into(),
             other => other.to_string(),
         });
     }
     if cmd.to_ascii_lowercase().contains("svchost") {
         let next = |k: &str| toks.iter().position(|t| t.eq_ignore_ascii_case(k)).and_then(|i| toks.get(i + 1)).map(|s| s.to_string());
         if let Some(s) = next("-s") {
-            return Some(format!("Служба: {s}"));
+            return Some(format!("Service: {s}"));
         }
         if let Some(g) = next("-k") {
-            return Some(format!("Группа служб: {g}"));
+            return Some(format!("Service group: {g}"));
         }
     }
     None
@@ -96,7 +96,7 @@ impl InfoCache {
         &self.procs[&key]
     }
 
-    /// Убирает записи о завершившихся процессах, чтобы кэш не рос бесконечно.
+    /// Removes entries of exited processes so the cache does not grow forever.
     pub fn retain_alive<'a>(&mut self, alive: impl Iterator<Item = &'a ProcKey>) {
         let alive: std::collections::HashSet<ProcKey> = alive.copied().collect();
         self.procs.retain(|k, _| alive.contains(k));
@@ -108,10 +108,10 @@ impl InfoCache {
         }
         let h = match ProcHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION, Some(create_time)) {
             Ok(h) => h,
-            // процесс завершился или PID занят другим — путь по PID был бы чужой
+            // the process exited or the PID was taken by another one — the path by PID would be someone else’s
             Err(e) if e.raw_os_error() != Some(5) => return ProcInfo::default(),
-            // нет прав (защищённый, чужой без прав администратора) — путь и описание
-            // всё равно узнаём: путь по PID не требует доступа к процессу
+            // no rights (protected, another user’s without administrator rights) — we still get the path and
+            // description: the path by PID needs no access to the process
             Err(_) => {
                 let path = path_by_pid(pid);
                 let meta = match &path {
@@ -127,7 +127,7 @@ impl InfoCache {
             Some(p) => self.files.entry(p.clone()).or_insert_with(|| file_meta(p)).clone(),
             None => FileMeta::default(),
         };
-        // роль у Chromium и svchost; иначе — что запущено: сессия Claude Code, скрипт, jar, команда
+        // the role for Chromium and svchost; otherwise — what was started: a Claude Code session, a script, a jar, a command
         let exe = path.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p)).unwrap_or("");
         let role = cmdline.as_deref().and_then(|cmd| {
             role_of(cmd).map(|r| node_host(pid, create_time, r)).or_else(|| {
@@ -142,18 +142,18 @@ impl InfoCache {
     }
 }
 
-/// Путь к файлу процесса по PID без его открытия (класс 88) — в обычном виде «C:\…».
-/// PID может оказаться переиспользован: вызывающий сверяет время создания сам, если это важно.
+/// The process file path by PID without opening it (class 88) — in the usual “C:\…” form.
+/// The PID may have been reused: the caller checks the creation time itself if it matters.
 pub fn path_by_pid(pid: u32) -> Option<String> {
     crate::nt::image_path_by_pid(pid).and_then(|nt| dos_path(&nt))
 }
 
-/// «\Device\HarddiskVolume3\Windows\…» → «C:\Windows\…» по таблице устройств дисков.
+/// “\Device\HarddiskVolume3\Windows\…” → “C:\Windows\…” using the disk device table.
 pub fn dos_path(nt: &str) -> Option<String> {
     use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
     use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
-    // таблица меняется только при подключении дисков — обновляем раз в минуту
+    // the table changes only when drives are attached — refresh once a minute
     static MAP: OnceLock<Mutex<(Option<Instant>, Vec<(String, String)>)>> = OnceLock::new();
     let mut m = MAP.get_or_init(|| Mutex::new((None, Vec::new()))).lock().unwrap_or_else(|e| e.into_inner());
     if m.0.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
@@ -177,7 +177,7 @@ pub fn dos_path(nt: &str) -> Option<String> {
             return Some(format!("{drive}{}", &nt[dev.len()..]));
         }
     }
-    // «\??\C:\…» и «\SystemRoot\…» встречаются у ранних системных процессов
+    // “\??\C:\…” and “\SystemRoot\…” appear in early system processes
     if let Some(rest) = nt.strip_prefix(r"\??\") {
         return Some(rest.to_string());
     }
@@ -210,7 +210,7 @@ fn file_meta(path: &str) -> FileMeta {
     if unsafe { GetFileVersionInfoW(wpath.as_ptr(), 0, size, data.as_mut_ptr().cast()) } == 0 {
         return FileMeta::default();
     }
-    // первая пара «язык + кодовая страница» из таблицы переводов, иначе английский Unicode
+    // the first “language + code page” pair from the translation table, otherwise English Unicode
     let mut tr: *mut c_void = std::ptr::null_mut();
     let mut tr_len = 0u32;
     let lang = if unsafe { VerQueryValueW(data.as_ptr().cast(), wide("\\VarFileInfo\\Translation").as_ptr(), &mut tr, &mut tr_len) } != 0 && tr_len >= 4 {

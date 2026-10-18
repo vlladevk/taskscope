@@ -1,8 +1,8 @@
-//! Docker: контейнеры и их нагрузка через Docker Engine API (`\\.\pipe\docker_engine`).
+//! Docker: containers and their load through the Docker Engine API (`\\.\pipe\docker_engine`).
 //!
-//! Процессы контейнеров живут внутри виртуальной машины WSL и в списке процессов Windows
-//! видны одним `vmmem`; здесь — разбивка по контейнерам. Подробная статистика собирается,
-//! только пока её кто-то смотрит (окно, CLI, агент): простаивающий Docker не нагружается.
+//! Container processes live inside the WSL virtual machine and show up in the Windows process list
+//! as a single `vmmem`; here is the breakdown by container. Detailed statistics are collected
+//! only while someone is watching (the window, the CLI, an agent): an idle Docker is not loaded.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const PIPE: &str = r"\\.\pipe\docker_engine";
-/// Пока кто-то смотрит — статистика раз в 2 с; без зрителей — только список раз в 15 с.
+/// While someone watches — statistics every 2 s; without viewers — only the list every 15 s.
 const ACTIVE_EVERY: Duration = Duration::from_secs(2);
 const IDLE_EVERY: Duration = Duration::from_secs(15);
 const INTEREST_FOR: Duration = Duration::from_secs(60);
@@ -29,9 +29,9 @@ pub struct Container {
     pub state: String,
     /// «Up 3 hours», «Exited (0) 2 days ago»
     pub status: String,
-    /// Проект docker compose, если контейнер из него.
+    /// The docker compose project, if the container belongs to one.
     pub project: Option<String>,
-    /// Загрузка ЦП в процентах от всего компьютера (как у процессов).
+    /// CPU load in percent of the whole computer (as for processes).
     pub cpu: f32,
     pub mem: u64,
     pub mem_limit: u64,
@@ -44,17 +44,17 @@ pub struct Container {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DockerState {
-    /// Отвечает ли Docker Engine.
+    /// Whether Docker Engine answers.
     pub available: bool,
     pub error: Option<String>,
     pub version: Option<String>,
     pub containers: Vec<Container>,
-    /// Когда собрана статистика (0 — ещё не собиралась), мс Unix.
+    /// When the statistics were collected (0 — not yet), Unix ms.
     pub stats_ms: u64,
     pub at_ms: u64,
 }
 
-/* ------------------------------------------------------------------ HTTP через канал */
+/* ------------------------------------------------------------------ HTTP over the pipe */
 
 fn request(method: &str, path: &str) -> io::Result<(u16, Vec<u8>)> {
     let mut f = OpenOptions::new().read(true).write(true).open(PIPE)?;
@@ -66,7 +66,7 @@ fn request(method: &str, path: &str) -> io::Result<(u16, Vec<u8>)> {
         match f.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => raw.extend_from_slice(&buf[..n]),
-            // сервер закрыл канал после ответа — это конец данных
+            // the server closed the pipe after the response — that is the end of the data
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe || e.raw_os_error() == Some(109) => break,
             Err(e) => return Err(e),
         }
@@ -74,10 +74,10 @@ fn request(method: &str, path: &str) -> io::Result<(u16, Vec<u8>)> {
             return Ok(body);
         }
     }
-    complete_body(&raw).ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "Docker оборвал ответ"))
+    complete_body(&raw).ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "Docker cut the response short"))
 }
 
-/// Разбирает ответ, если он пришёл целиком: (код, тело).
+/// Parses the response if it arrived in full: (code, body).
 fn complete_body(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
     let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let head = std::str::from_utf8(&raw[..head_end]).ok()?;
@@ -110,7 +110,7 @@ fn complete_body(raw: &[u8]) -> Option<(u16, Vec<u8>)> {
         Some(n) if body.len() >= n => Some((code, body[..n].to_vec())),
         Some(_) => None,
         None if code == 204 || code == 304 => Some((code, Vec::new())),
-        None => None, // до конца соединения
+        None => None, // until the connection ends
     }
 }
 
@@ -124,29 +124,29 @@ fn get_json(path: &str) -> io::Result<Value> {
 
 fn api_error(code: u16, body: &[u8]) -> String {
     let msg = serde_json::from_slice::<Value>(body).ok().and_then(|v| v["message"].as_str().map(str::to_string));
-    format!("Docker ответил {code}: {}", msg.unwrap_or_else(|| String::from_utf8_lossy(body).trim().to_string()))
+    format!("Docker answered {code}: {}", msg.unwrap_or_else(|| String::from_utf8_lossy(body).trim().to_string()))
 }
 
-/// Как действие называется в журнале.
+/// What the action is called in the log.
 pub fn action_title(action: &str) -> &'static str {
     match action {
-        "start" => "запущен",
-        "stop" => "остановлен",
-        "restart" => "перезапущен",
-        "pause" => "приостановлен",
-        "unpause" => "возобновлён",
-        "kill" => "принудительно остановлен",
-        _ => "действие выполнено",
+        "start" => "started",
+        "stop" => "stopped",
+        "restart" => "restarted",
+        "pause" => "paused",
+        "unpause" => "resumed",
+        "kill" => "force-stopped",
+        _ => "action done",
     }
 }
 
-/// Действие над контейнером: start | stop | restart | pause | unpause | kill.
+/// An action on a container: start | stop | restart | pause | unpause | kill.
 pub fn act(id: &str, action: &str) -> Result<(), String> {
     if !matches!(action, "start" | "stop" | "restart" | "pause" | "unpause" | "kill") {
-        return Err(format!("неизвестное действие «{action}»"));
+        return Err(format!("unknown action “{action}”"));
     }
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
-        return Err("неверный идентификатор контейнера".into());
+        return Err("invalid container id".into());
     }
     let path = match action {
         "stop" | "restart" => format!("/containers/{id}/{action}?t=10"),
@@ -155,12 +155,12 @@ pub fn act(id: &str, action: &str) -> Result<(), String> {
     match request("POST", &path) {
         Ok((code, _)) if code < 300 || code == 304 => Ok(()),
         Ok((code, body)) => Err(api_error(code, &body)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Err("Docker не запущен".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err("Docker is not running".into()),
         Err(e) => Err(e.to_string()),
     }
 }
 
-/* ------------------------------------------------------------------ сбор */
+/* ------------------------------------------------------------------ collection */
 
 #[derive(Clone, Copy)]
 struct Prev {
@@ -196,13 +196,13 @@ fn u(v: &Value) -> u64 {
     v.as_u64().unwrap_or(0)
 }
 
-/// Статистика одного контейнера; скорости — относительно предыдущего замера.
+/// Statistics of one container; rates are relative to the previous sample.
 fn stats(c: &mut Container, prev: &mut HashMap<String, Prev>) {
     let Ok(s) = get_json(&format!("/containers/{}/stats?stream=false&one-shot=true", c.id)) else { return };
     let cpu = u(&s["cpu_stats"]["cpu_usage"]["total_usage"]);
     let sys = u(&s["cpu_stats"]["system_cpu_usage"]);
     let ms = &s["memory_stats"];
-    // как `docker stats`: без неактивного файлового кэша
+    // like `docker stats`: without the inactive file cache
     let cache = ms["stats"]["inactive_file"].as_u64().or_else(|| ms["stats"]["total_inactive_file"].as_u64()).unwrap_or(0);
     c.mem = u(&ms["usage"]).saturating_sub(cache);
     c.mem_limit = u(&ms["limit"]);
@@ -228,8 +228,8 @@ fn stats(c: &mut Container, prev: &mut HashMap<String, Prev>) {
     if let Some(p) = prev.get(&c.id) {
         let dt = now.duration_since(p.at).as_secs_f64().max(0.001);
         if sys > p.sys {
-            // доля машины Docker × её процессоры = занятые ядра; делим на процессоры Windows —
-            // получаем долю всего компьютера, как у процессов в таблице
+            // Docker machine share × its CPUs = busy cores; divided by the Windows CPUs —
+            // gives the share of the whole computer, as for processes in the table
             let online = s["cpu_stats"]["online_cpus"].as_u64().unwrap_or(1).max(1) as f64;
             let host = crate::system::logical_cpus().max(1) as f64;
             c.cpu = ((cpu.saturating_sub(p.cpu)) as f64 / (sys - p.sys) as f64 * online / host * 100.0).clamp(0.0, 100.0) as f32;
@@ -242,7 +242,7 @@ fn stats(c: &mut Container, prev: &mut HashMap<String, Prev>) {
     prev.insert(c.id.clone(), Prev { cpu, sys, rx, tx, rd, wr, at: now });
 }
 
-/// Один полный опрос: список, версия и (если `with_stats`) нагрузка работающих контейнеров.
+/// One full poll: the list, the version and (if `with_stats`) the load of running containers.
 fn poll(with_stats: bool, prev: &mut HashMap<String, Prev>) -> DockerState {
     let at_ms = crate::engine::wall_ms();
     match list() {
@@ -257,12 +257,12 @@ fn poll(with_stats: bool, prev: &mut HashMap<String, Prev>) -> DockerState {
             containers.sort_by(|a, b| (b.state == "running").cmp(&(a.state == "running")).then(b.cpu.total_cmp(&a.cpu)).then(a.name.cmp(&b.name)));
             DockerState { available: true, error: None, version, containers, stats_ms: if with_stats { at_ms } else { 0 }, at_ms }
         }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => DockerState { error: Some("Docker не запущен".into()), at_ms, ..Default::default() },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => DockerState { error: Some("Docker is not running".into()), at_ms, ..Default::default() },
         Err(e) => DockerState { error: Some(e.to_string()), at_ms, ..Default::default() },
     }
 }
 
-/// Разовый опрос без движка (CLI с --local): два замера с паузой, чтобы посчитать скорости.
+/// A one-off poll without the engine (CLI with --local): two samples with a pause, to compute rates.
 pub fn snapshot_now() -> DockerState {
     let mut prev = HashMap::new();
     let first = poll(true, &mut prev);
@@ -273,7 +273,7 @@ pub fn snapshot_now() -> DockerState {
     poll(true, &mut prev)
 }
 
-/* ------------------------------------------------------------------ фоновый наблюдатель */
+/* ------------------------------------------------------------------ background watcher */
 
 struct Shared {
     state: Mutex<DockerState>,
@@ -300,7 +300,7 @@ impl DockerWatch {
                 let every = if active && s.available { ACTIVE_EVERY } else { IDLE_EVERY };
                 *w.state.lock().unwrap() = s;
                 w.fresh.notify_all();
-                // спим, но просыпаемся сразу, если кто-то начал смотреть
+                // sleep, but wake up immediately if someone starts watching
                 let until = Instant::now() + every;
                 while Instant::now() < until && !w.wake.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(100));
@@ -310,7 +310,7 @@ impl DockerWatch {
         Self { inner }
     }
 
-    /// Внеочередной опрос (после действия над контейнером): ждёт его не дольше 3 с.
+    /// An extra poll (after an action on a container): waits for it no longer than 3 s.
     pub fn refresh(&self) {
         let s = self.inner.state.lock().unwrap();
         let before = s.at_ms;
@@ -318,9 +318,9 @@ impl DockerWatch {
         let _ = self.inner.fresh.wait_timeout_while(s, Duration::from_secs(3), |s| s.at_ms == before);
     }
 
-    /// Текущее состояние. Отмечает интерес: следующие 60 с статистика собирается раз в 2 с.
-    /// Если до этого никто не смотрел — дожидается двух опросов со статистикой (до ~3,5 с):
-    /// по одному нельзя посчитать скорости.
+    /// The current state. Marks interest: for the next 60 s statistics are collected every 2 s.
+    /// If nobody was watching before — waits for two polls with statistics (up to ~3.5 s):
+    /// one is not enough to compute rates.
     pub fn get(&self) -> DockerState {
         let now = crate::engine::wall_ms();
         let was = self.inner.interest_ms.swap(now, Ordering::Relaxed);

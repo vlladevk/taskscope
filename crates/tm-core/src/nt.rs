@@ -1,6 +1,6 @@
-//! Низкоуровневый доступ к ntdll: один вызов `NtQuerySystemInformation`
-//! возвращает сразу все процессы с временем ЦП, памятью, потоками и вводом-выводом.
-//! Так же делают Process Hacker и System Informer — это самый дешёвый способ.
+//! Low-level access to ntdll: one `NtQuerySystemInformation` call
+//! returns all processes at once with CPU time, memory, threads and I/O.
+//! Process Hacker and System Informer do the same — it is the cheapest way.
 
 use std::ffi::c_void;
 use std::io;
@@ -30,7 +30,7 @@ struct UnicodeString {
     buffer: *const u16,
 }
 
-/// Раскладка `SYSTEM_PROCESS_INFORMATION` для x64 (по заголовкам phnt).
+/// The `SYSTEM_PROCESS_INFORMATION` layout for x64 (from the phnt headers).
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct SystemProcessInformation {
@@ -71,45 +71,45 @@ struct SystemProcessInformation {
 }
 const _: () = assert!(size_of::<SystemProcessInformation>() == 256);
 
-/// Сырые данные процесса из одного снимка.
+/// Raw process data from one snapshot.
 #[derive(Clone, Debug)]
 pub struct RawProc {
     pub pid: u32,
     pub ppid: u32,
     pub name: String,
-    /// Время создания, FILETIME (100 нс с 1601 года). Вместе с PID — уникальный ключ процесса.
+    /// Creation time, FILETIME (100 ns since 1601). Together with the PID — a unique process key.
     pub create_time: i64,
-    /// Суммарное время ЦП (user + kernel), в 100 нс.
+    /// Total CPU time (user + kernel), in 100 ns.
     pub cpu_time: i64,
     pub threads: u32,
     pub handles: u32,
     pub session: u32,
     pub base_priority: i32,
-    /// Частный рабочий набор — то, что диспетчер Windows показывает как «Память».
+    /// The private working set — what the Windows Task Manager shows as “Memory”.
     pub ws_private: u64,
     pub working_set: u64,
-    /// Выделенная частная память (commit).
+    /// Committed private memory (commit).
     pub private_bytes: u64,
     pub io_read: u64,
     pub io_write: u64,
     pub io_other: u64,
-    /// Все потоки ждут с причиной Suspended — процесс приостановлен.
+    /// All threads wait with the Suspended reason — the process is suspended.
     pub suspended: bool,
-    /// Такты процессора, потраченные потоками процесса (точнее времени: не зависит от тика таймера).
+    /// CPU cycles spent by the process threads (more precise than time: does not depend on the timer tick).
     pub cycle_time: u64,
-    /// Байты, прочитанные и записанные на диск (PROCESS_DISK_COUNTERS из расширения записи);
-    /// None — расширения нет (Windows старше 10 RS3).
+    /// Bytes read from and written to disk (PROCESS_DISK_COUNTERS from the record extension);
+    /// None — there is no extension (Windows older than 10 RS3).
     pub disk: Option<(u64, u64)>,
 }
 
-/// Переиспользуемый буфер для снимков: память не выделяется заново каждую секунду.
+/// A reusable snapshot buffer: memory is not allocated again every second.
 pub struct ProcessQuery {
     buf: Vec<u64>,
 }
 
 impl Default for ProcessQuery {
     fn default() -> Self {
-        Self { buf: vec![0; 64 * 1024] } // 512 КБ, хватает на ~1000 процессов
+        Self { buf: vec![0; 64 * 1024] } // 512 KB, enough for ~1000 processes
     }
 }
 
@@ -123,7 +123,7 @@ impl ProcessQuery {
                 NtQuerySystemInformation(SYSTEM_PROCESS_INFORMATION_CLASS, self.buf.as_mut_ptr().cast(), len, &mut ret)
             };
             if st == STATUS_INFO_LENGTH_MISMATCH || st == STATUS_BUFFER_TOO_SMALL {
-                // процессы могли появиться между вызовами — берём с запасом
+                // processes may have appeared between calls — take some headroom
                 let need = (ret as usize).max(len as usize * 2) / 8 + 16 * 1024;
                 self.buf.resize(need, 0);
                 continue;
@@ -136,21 +136,21 @@ impl ProcessQuery {
         }
         out.clear();
         let base = self.buf.as_ptr() as *const u8;
-        // границы — по заполненной части: дальше в буфере остатки прошлого снимка
+        // bounds — by the filled part: further in the buffer are leftovers of the previous snapshot
         let total = if filled == 0 { self.buf.len() * 8 } else { filled.min(self.buf.len() * 8) };
         let mut off = 0usize;
         loop {
             if off + size_of::<SystemProcessInformation>() > total {
                 break;
             }
-            // SAFETY: смещение внутри буфера, который заполнило ядро; читаем без требований к выравниванию.
+            // SAFETY: an offset inside the buffer the kernel filled; read without alignment requirements.
             let p: SystemProcessInformation = unsafe { ptr::read_unaligned(base.add(off).cast()) };
             let name = if p.unique_process_id == 0 {
                 "System Idle Process".to_string()
             } else if p.image_name.buffer.is_null() || p.image_name.length == 0 {
                 String::new()
             } else {
-                // SAFETY: строка имени лежит в том же буфере.
+                // SAFETY: the name string lies in the same buffer.
                 let s = unsafe { std::slice::from_raw_parts(p.image_name.buffer, p.image_name.length as usize / 2) };
                 String::from_utf16_lossy(s)
             };
@@ -183,24 +183,24 @@ impl ProcessQuery {
     }
 }
 
-/// За массивом потоков лежит `SYSTEM_PROCESS_INFORMATION_EXTENSION` (Windows 10 RS3+,
-/// так её читает System Informer — PH_PROCESS_EXTENSION). В начале — PROCESS_DISK_COUNTERS:
-/// BytesRead, BytesWritten, … — это «Диск» диспетчера задач: чтение и запись именно диска,
-/// без сети и каналов, которые попадают в общие счётчики ввода-вывода.
+/// After the thread array lies `SYSTEM_PROCESS_INFORMATION_EXTENSION` (Windows 10 RS3+,
+/// System Informer reads it this way — PH_PROCESS_EXTENSION). It starts with PROCESS_DISK_COUNTERS:
+/// BytesRead, BytesWritten, … — the Task Manager’s “Disk”: reads and writes of the disk itself,
+/// without network and pipes, which go into the general I/O counters.
 fn extension_disk(base: *const u8, off: usize, total: usize, p: &SystemProcessInformation) -> Option<(u64, u64)> {
     const THREAD_SIZE: usize = 80;
     let ext = off + size_of::<SystemProcessInformation>() + p.number_of_threads as usize * THREAD_SIZE;
-    // запись должна вмещать расширение: у последней записи конец — конец данных
+    // the record must fit the extension: for the last record the end is the end of the data
     let end = if p.next_entry_offset == 0 { total } else { off + p.next_entry_offset as usize };
     if ext + 16 > end {
         return None;
     }
-    // SAFETY: границы проверены; чтение без требований к выравниванию.
+    // SAFETY: bounds checked; read without alignment requirements.
     unsafe { Some((ptr::read_unaligned(base.add(ext).cast::<u64>()), ptr::read_unaligned(base.add(ext + 8).cast::<u64>()))) }
 }
 
-/// За записью процесса лежат записи его потоков (`SYSTEM_THREAD_INFORMATION`, 80 байт на x64).
-/// Процесс приостановлен, если каждый поток в состоянии Waiting (5) с причиной Suspended (5).
+/// After the process record lie its thread records (`SYSTEM_THREAD_INFORMATION`, 80 bytes on x64).
+/// The process is suspended if every thread is in the Waiting (5) state with the Suspended (5) reason.
 fn all_threads_suspended(base: *const u8, off: usize, total: usize, n: u32) -> bool {
     const THREAD_SIZE: usize = 80;
     const STATE: usize = 68;
@@ -214,13 +214,13 @@ fn all_threads_suspended(base: *const u8, off: usize, total: usize, n: u32) -> b
     }
     (0..n as usize).all(|i| {
         let t = first + i * THREAD_SIZE;
-        // SAFETY: границы проверены выше; чтение без требований к выравниванию.
+        // SAFETY: bounds checked above; read without alignment requirements.
         let (state, reason) = unsafe { (ptr::read_unaligned(base.add(t + STATE).cast::<u32>()), ptr::read_unaligned(base.add(t + REASON).cast::<u32>())) };
         state == 5 && reason == 5
     })
 }
 
-/// Командная строка процесса (Windows 8.1+, хватает PROCESS_QUERY_LIMITED_INFORMATION).
+/// The process command line (Windows 8.1+, PROCESS_QUERY_LIMITED_INFORMATION is enough).
 pub fn command_line(h: HANDLE) -> Option<String> {
     let mut buf = vec![0u64; 512];
     loop {
@@ -238,7 +238,7 @@ pub fn command_line(h: HANDLE) -> Option<String> {
         if st < 0 {
             return None;
         }
-        // SAFETY: в начале буфера — UNICODE_STRING, указывающая внутрь этого же буфера.
+        // SAFETY: the buffer starts with a UNICODE_STRING pointing inside the same buffer.
         let us: UnicodeString = unsafe { ptr::read_unaligned(buf.as_ptr().cast()) };
         if us.buffer.is_null() || us.length == 0 {
             return Some(String::new());
@@ -248,10 +248,10 @@ pub fn command_line(h: HANDLE) -> Option<String> {
     }
 }
 
-/// Папка и окружение процесса — то, с чем его запустили (для перезапуска «как было»).
+/// The folder and environment of the process — what it was started with (for a restart “as it was”).
 pub struct LaunchParams {
     pub cwd: String,
-    /// Блок окружения UTF-16: строки `ИМЯ=значение\0`, в конце ещё один `\0`.
+    /// A UTF-16 environment block: `NAME=value\0` strings, with one more `\0` at the end.
     pub env: Vec<u16>,
 }
 
@@ -285,7 +285,7 @@ fn read_ptr(h: HANDLE, addr: usize, wow: bool) -> io::Result<usize> {
     Ok(u64::from_le_bytes(b) as usize)
 }
 
-/// UNICODE_STRING из памяти процесса: 16 байт на x64, 8 байт у 32-битного.
+/// A UNICODE_STRING from process memory: 16 bytes on x64, 8 bytes for a 32-bit process.
 fn read_ustr(h: HANDLE, addr: usize, wow: bool) -> io::Result<String> {
     let mut len = [0u8; 2];
     read_mem(h, addr, &mut len)?;
@@ -300,10 +300,10 @@ fn read_ustr(h: HANDLE, addr: usize, wow: bool) -> io::Result<String> {
     Ok(String::from_utf16_lossy(&w))
 }
 
-/// Читает текущую папку и окружение из PEB → RTL_USER_PROCESS_PARAMETERS
-/// (как PhGetProcessCurrentDirectory / PhGetProcessEnvironment в System Informer).
-/// Нужен дескриптор с PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ.
-/// У 32-битных процессов берётся их собственный 32-битный PEB: 64-битная копия у них не обновляется.
+/// Reads the current folder and environment from PEB → RTL_USER_PROCESS_PARAMETERS
+/// (like PhGetProcessCurrentDirectory / PhGetProcessEnvironment in System Informer).
+/// Needs a handle with PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ.
+/// For 32-bit processes their own 32-bit PEB is used: the 64-bit copy is not updated for them.
 pub fn launch_params(h: HANDLE) -> io::Result<LaunchParams> {
     let mut peb32 = 0usize;
     let st = unsafe { NtQueryInformationProcess(h, PROCESS_WOW64_INFORMATION, (&mut peb32 as *mut usize).cast(), 8, ptr::null_mut()) };
@@ -318,11 +318,11 @@ pub fn launch_params(h: HANDLE) -> io::Result<LaunchParams> {
         nt_ok(st, "NtQueryInformationProcess")?;
         pbi.peb
     };
-    // смещения из phnt: PEB.ProcessParameters, CurrentDirectory.DosPath, Environment, EnvironmentSize
+    // offsets from phnt: PEB.ProcessParameters, CurrentDirectory.DosPath, Environment, EnvironmentSize
     let (o_params, o_cwd, o_env, o_env_size) = if wow { (0x10, 0x24, 0x48, 0x290) } else { (0x20, 0x38, 0x80, 0x3F0) };
     let params = read_ptr(h, peb + o_params, wow)?;
     if params == 0 {
-        return Err(io::Error::other("у процесса нет параметров запуска"));
+        return Err(io::Error::other("the process has no start parameters"));
     }
     let cwd = read_ustr(h, params + o_cwd, wow)?;
     let env_ptr = read_ptr(h, params + o_env, wow)?;
@@ -334,7 +334,7 @@ pub fn launch_params(h: HANDLE) -> io::Result<LaunchParams> {
             read_mem(h, env_ptr, &mut raw)?;
             raw
         } else {
-            // старые системы без EnvironmentSize: читаем по страницам до двойного нуля
+            // old systems without EnvironmentSize: read page by page until a double zero
             let mut raw = Vec::new();
             let mut addr = env_ptr;
             loop {
@@ -352,7 +352,7 @@ pub fn launch_params(h: HANDLE) -> io::Result<LaunchParams> {
             raw
         };
         env = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        // обрезаем по концу блока (двойной ноль) и гарантируем, что он есть
+        // cut at the end of the block (double zero) and make sure it is there
         if let Some(end) = env.windows(2).position(|w| w == [0, 0]) {
             env.truncate(end + 2);
         } else {
@@ -378,7 +378,7 @@ fn nt_ok(st: i32, what: &str) -> io::Result<()> {
     }
 }
 
-/// Произвольный класс `NtQuerySystemInformation` целиком: буфер растёт, пока данные не поместятся.
+/// An arbitrary `NtQuerySystemInformation` class in full: the buffer grows until the data fits.
 pub fn query_system(class: i32, hint: usize) -> io::Result<Vec<u8>> {
     let mut buf = vec![0u8; hint.max(4096)];
     loop {
@@ -397,7 +397,7 @@ pub fn query_system(class: i32, hint: usize) -> io::Result<Vec<u8>> {
     }
 }
 
-/// Точный размер ответа: для массивов «по процессору» лишний хвост буфера — не данные.
+/// The exact response size: for “per processor” arrays the extra tail of the buffer is not data.
 fn query_exact(class: i32, len: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; len];
     let mut ret = 0u32;
@@ -413,36 +413,36 @@ fn sum_u64(b: &[u8], stride: usize, at: usize) -> u64 {
     b.chunks_exact(stride).map(|c| u64::from_le_bytes(c[at..at + 8].try_into().unwrap())).fold(0u64, u64::wrapping_add)
 }
 
-/// Время процессоров с начала работы (сумма по всем логическим процессорам группы), 100 нс.
+/// Processor time since start (sum over all logical processors of the group), 100 ns.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CpuPerf {
     pub idle: u64,
-    /// Включает idle, DPC и прерывания.
+    /// Includes idle, DPC and interrupts.
     pub kernel: u64,
     pub user: u64,
     pub dpc: u64,
     pub interrupt: u64,
 }
 
-/// SystemProcessorPerformanceInformation (класс 8): 48 байт на процессор.
+/// SystemProcessorPerformanceInformation (class 8): 48 bytes per processor.
 pub fn cpu_perf(ncpu: u32) -> Option<CpuPerf> {
     let b = query_exact(8, 48 * ncpu.max(1) as usize)?;
     Some(CpuPerf { idle: sum_u64(&b, 48, 0), kernel: sum_u64(&b, 48, 8), user: sum_u64(&b, 48, 16), dpc: sum_u64(&b, 48, 24), interrupt: sum_u64(&b, 48, 32) })
 }
 
-/// Такты простоя всех процессоров (класс 83, SystemProcessorIdleCycleTimeInformation).
+/// Idle cycles of all processors (class 83, SystemProcessorIdleCycleTimeInformation).
 pub fn idle_cycles(ncpu: u32) -> Option<u64> {
     query_exact(83, 8 * ncpu.max(1) as usize).map(|b| sum_u64(&b, 8, 0))
 }
 
-/// Такты, потраченные на DPC и прерывания (класс 108, SystemProcessorCycleTimeInformation).
+/// Cycles spent on DPC and interrupts (class 108, SystemProcessorCycleTimeInformation).
 pub fn system_cycles(ncpu: u32) -> Option<u64> {
     query_exact(108, 8 * ncpu.max(1) as usize).map(|b| sum_u64(&b, 8, 0))
 }
 
-/// Путь к файлу процесса по PID без открытия процесса (класс 88, SystemProcessIdInformation):
-/// работает и для защищённых процессов и процессов администратора. Путь — в NT-виде
-/// (\Device\HarddiskVolume3\…), его переводит `crate::info::dos_path`.
+/// The process file path by PID without opening the process (class 88, SystemProcessIdInformation):
+/// works for protected and administrator processes too. The path is in NT form
+/// (\Device\HarddiskVolume3\…), `crate::info::dos_path` converts it.
 pub fn image_path_by_pid(pid: u32) -> Option<String> {
     #[repr(C)]
     struct ProcessIdInformation {
@@ -455,7 +455,7 @@ pub fn image_path_by_pid(pid: u32) -> Option<String> {
         let max = (cap * 2).min(u16::MAX as usize & !1) as u16;
         let mut info = ProcessIdInformation { pid: pid as usize, name: UnicodeString { length: 0, maximum_length: max, buffer: buf.as_mut_ptr() } };
         let st = unsafe { NtQuerySystemInformation(88, (&mut info as *mut ProcessIdInformation).cast(), size_of::<ProcessIdInformation>() as u32, ptr::null_mut()) };
-        // длинный путь: ядро пишет нужный размер в MaximumLength — повторяем один раз
+        // a long path: the kernel writes the needed size into MaximumLength — retry once
         if st == STATUS_INFO_LENGTH_MISMATCH && info.name.maximum_length > max {
             cap = info.name.maximum_length as usize / 2;
             continue;
@@ -469,9 +469,9 @@ pub fn image_path_by_pid(pid: u32) -> Option<String> {
     None
 }
 
-/// Время создания процесса, округлённое до точности числа double (теряется < 1 мкс).
-/// Ключ процесса (PID, время создания) ходит через JSON в окно на JavaScript, где целые
-/// больше 2^53 искажаются, — после округления значение одинаково у всех участников.
+/// Process creation time rounded to the precision of a double (loses < 1 µs).
+/// The process key (PID, creation time) travels through JSON to the JavaScript window, where integers
+/// above 2^53 get distorted — after rounding the value is the same for all participants.
 pub fn js_safe(filetime: i64) -> i64 {
     filetime as f64 as i64
 }

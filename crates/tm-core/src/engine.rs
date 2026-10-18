@@ -1,6 +1,6 @@
-//! Движок: фоновый сборщик раз в секунду, история за сутки и наблюдатель за проблемами.
-//! Один экземпляр на машину — его запускает приложение (или `tm daemon`),
-//! а окно, CLI и другие клиенты получают данные через `Service`.
+//! The engine: a background sampler once a second, a day of history and a problem watcher.
+//! One instance per machine — the app starts it (or `tm daemon`),
+//! and the window, the CLI and other clients get the data through `Service`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,23 +17,23 @@ use crate::net::{NetSampler, NetStat};
 use crate::watch::{Event, Issue, Watch};
 use crate::{apps, AppStat, Frame, InfoCache, ProcKey, Sampler, Tree};
 
-/// Всё, что известно о последнем замере. Дёшево клонируется (только счётчики ссылок).
+/// Everything known about the last sample. Cheap to clone (reference counts only).
 #[derive(Clone)]
 pub struct Snapshot {
-    /// Номер замера: растёт на 1 каждую секунду.
+    /// Sample number: grows by 1 every second.
     pub seq: u64,
     pub frame: Arc<Frame>,
-    /// Приложения — с уже найденными названиями.
+    /// Apps — with their names already resolved.
     pub apps: Arc<Vec<AppStat>>,
     pub nets: Arc<Vec<NetStat>>,
-    /// Видеокарты (пусто, если счётчиков нет).
+    /// GPUs (empty if there are no counters).
     pub gpus: Arc<Vec<GpuStat>>,
-    /// Есть ли трафик по процессам (нужны права администратора).
+    /// Whether per-process traffic is available (needs administrator rights).
     pub net_per_process: bool,
-    /// Память ядра, кэша и драйверов — то, что занято, но не принадлежит процессам.
+    /// Kernel, cache and driver memory — what is in use but does not belong to processes.
     pub mem_detail: crate::sysmem::MemDetail,
     pub issues: Arc<Vec<Issue>>,
-    /// Тревоги по пулу ядра: утечки в драйверах, накопление токенов, зомби-процессы.
+    /// Kernel pool alarms: driver leaks, token build-up, zombie processes.
     pub pool_alerts: Arc<Vec<crate::pool::PoolAlert>>,
 }
 
@@ -45,7 +45,7 @@ struct State {
     samples: u64,
     cost_avg_ms: f64,
     cost_max_ms: f64,
-    /// Сколько из замера уходит на видеокарты (счётчики PDH), мс, скользящее среднее.
+    /// How much of a sample goes to the GPUs (PDH counters), ms, moving average.
     gpu_cost_ms: f64,
     error: Option<String>,
 }
@@ -56,11 +56,11 @@ struct Inner {
     stop: AtomicBool,
     started_ms: u64,
     interval: Duration,
-    /// Куда сохранять историю; `None` — не сохранять.
+    /// Where to save the history; `None` — do not save.
     store: Option<PathBuf>,
-    /// Сериализует запись файла: периодическое сохранение и сохранение при выходе не пересекутся.
+    /// Serialises file writes: the periodic save and the save on exit will not overlap.
     save_lock: Mutex<()>,
-    /// false — историю только читаем с диска, но не пишем (второй экземпляр, режим разработки).
+    /// false — the history is only read from disk, never written (a second instance, development mode).
     persist: bool,
 }
 
@@ -69,7 +69,7 @@ pub struct Engine {
     inner: Arc<Inner>,
 }
 
-/// Файл истории по умолчанию: %LOCALAPPDATA%\tm\history.bin.
+/// The default history file: %LOCALAPPDATA%\tm\history.bin.
 pub fn default_store() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("tm").join("history.bin"))
 }
@@ -81,12 +81,12 @@ pub fn wall_ms() -> u64 {
 }
 
 impl Engine {
-    /// Запускает сборщик. История подхватывается из `store`, если файл есть и подходит.
+    /// Starts the sampler. The history is picked up from `store` if the file exists and fits.
     pub fn start(interval: Duration, store: Option<PathBuf>) -> Self {
         Self::start_with(interval, store, true)
     }
 
-    /// Как `start`, но историю с диска только читает: файл основного движка не перезаписывается.
+    /// Like `start`, but only reads the history from disk: the main engine’s file is not overwritten.
     pub fn start_readonly(interval: Duration, store: Option<PathBuf>) -> Self {
         Self::start_with(interval, store, false)
     }
@@ -121,7 +121,7 @@ impl Engine {
         std::thread::Builder::new()
             .name("tm-sampler".into())
             .spawn(move || run(&worker))
-            .expect("не удалось запустить поток сборщика");
+            .expect("could not start the sampler thread");
         Self { inner }
     }
 
@@ -133,7 +133,7 @@ impl Engine {
         self.inner.interval
     }
 
-    /// Записывает историю на диск: сначала во временный файл, потом атомарная замена.
+    /// Writes the history to disk: first to a temporary file, then an atomic replace.
     pub fn save(&self) -> std::io::Result<()> {
         save(&self.inner)
     }
@@ -142,7 +142,7 @@ impl Engine {
         self.inner.state.lock().unwrap().latest.clone()
     }
 
-    /// Ждёт замер новее `after` не дольше `timeout`. Если он уже есть — возвращает сразу.
+    /// Waits for a sample newer than `after` no longer than `timeout`. Returns at once if it is already there.
     pub fn wait_newer(&self, after: u64, timeout: Duration) -> Option<Snapshot> {
         let deadline = Instant::now() + timeout;
         let mut st = self.inner.state.lock().unwrap();
@@ -164,18 +164,18 @@ impl Engine {
         self.inner.state.lock().unwrap().history.query(q)
     }
 
-    /// Посекундные ряды (до 5 мин) для групп процессов — по одной сумме на группу.
+    /// Per-second series (up to 5 min) for process groups — one sum per group.
     pub fn procs_t0(&self, groups: &[Vec<ProcKey>], m: Metric, points: usize) -> Vec<Vec<f64>> {
         let st = self.inner.state.lock().unwrap();
         groups.iter().map(|g| st.history.procs_t0(g, m, points)).collect()
     }
 
-    /// Пул ядра по меткам: размеры, скорость роста, тревоги.
+    /// Kernel pool by tag: sizes, growth rate, alarms.
     pub fn pool_report(&self, n: usize, by: &str) -> crate::pool::PoolReport {
         self.inner.state.lock().unwrap().pool.report(n, by)
     }
 
-    /// Метки, за которыми следит движок (для поиска драйверов).
+    /// Tags the engine watches (for finding drivers).
     pub fn pool_tracked(&self) -> Vec<u32> {
         self.inner.state.lock().unwrap().pool.tracked()
     }
@@ -184,7 +184,7 @@ impl Engine {
         self.inner.state.lock().unwrap().watch.events_after(after)
     }
 
-    /// Запись в журнал (например, о действии пользователя).
+    /// A log entry (for example, about a user action).
     pub fn log(&self, level: &str, text: String, who: Option<ProcKey>) {
         self.inner.state.lock().unwrap().watch.log(wall_ms(), level, text, who);
     }
@@ -218,23 +218,23 @@ fn pt(cpu: f32, gpu: f32, mem: u64, rd: f64, wr: f64) -> Pt {
 }
 
 fn run(inner: &Inner) {
-    // выше обычного: график не замирает, даже когда процессор загружен на 100 %
+    // above normal: the chart does not freeze even when the CPU is at 100 %
     unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL) };
     let mut sampler = Sampler::new();
     let mut nets = NetSampler::default();
     let mut gpu = GpuSampler::new();
-    // сеанс ETW общий для всей системы: второй экземпляр (режим разработки) его не трогает,
-    // иначе он перехватил бы или остановил сеанс основного приложения
+    // the ETW session is shared by the whole system: a second instance (development mode) does not touch it,
+    // otherwise it would take over or stop the main app’s session
     let etw = if inner.persist { crate::net_etw::NetEtw::start() } else { None };
     let mut sysmem = crate::sysmem::MemSampler::new();
     let mut info = InfoCache::default();
     let mut lineage = apps::Lineage::default();
     let mut spawns = apps::Spawns::default();
-    // процесс → приложение по прошлому замеру: ЦП завершившегося процесса отдаём его приложению
+    // process → app from the previous sample: the CPU of an exited process goes to its app
     let mut prev_app: HashMap<ProcKey, String> = HashMap::new();
-    let _ = sampler.sample(); // первый замер — только база для скоростей
+    let _ = sampler.sample(); // the first sample is only the baseline for rates
     nets.sample();
-    // время истории: монотонные часы, привязанные к настенным при старте (перевод часов не ломает кольца)
+    // history time: a monotonic clock anchored to the wall clock at start (clock changes do not break the rings)
     let t0 = Instant::now();
     let wall0 = wall_ms();
     let mut next = Instant::now() + inner.interval;
@@ -247,7 +247,7 @@ fn run(inner: &Inner) {
         if next > now {
             std::thread::sleep(next - now);
         }
-        // после сна или зависания не пытаемся «догнать» пропущенные тики
+        // after sleep or a hang, do not try to “catch up” with missed ticks
         next = (next + inner.interval).max(Instant::now());
 
         let t = Instant::now();
@@ -255,8 +255,8 @@ fn run(inner: &Inner) {
             Ok(f) => f,
             Err(e) => {
                 let msg = e.to_string();
-                // в журнал — только новую ошибку, а не каждую секунду одну и ту же; запись в файл —
-                // вне замка состояния, чтобы не задерживать читателей
+                // into the log — only a new error, not the same one every second; the file write is
+                // outside the state lock, so readers are not delayed
                 let new = {
                     let mut st = inner.state.lock().unwrap();
                     let new = st.error.as_deref() != Some(msg.as_str());
@@ -264,7 +264,7 @@ fn run(inner: &Inner) {
                     new
                 };
                 if new {
-                    crate::logs::error(format!("замер: {msg}"));
+                    crate::logs::error(format!("sample: {msg}"));
                 }
                 continue;
             }
@@ -282,7 +282,7 @@ fn run(inner: &Inner) {
         }
         if let Some(e) = &etw {
             let dt = (frame.interval_ms / 1000.0).max(0.001);
-            // локальный адрес пакета (источник при отправке, назначение при приёме — проверяем оба) → адаптер
+            // the packet’s local address (source when sending, destination when receiving — check both) → adapter
             let addrs = nets.addresses();
             let mut per: HashMap<u32, HashMap<&str, (u64, u64)>> = HashMap::new();
             let bytes = e.take();
@@ -311,7 +311,7 @@ fn run(inner: &Inner) {
         let mut exited_cpu = 0.0f32;
         for e in &frame.exited {
             exited_cpu += e.cpu;
-            // приложения уже нет (завершился последний процесс) — его ЦП учтён в системе, но не в группах
+            // the app is gone (its last process exited) — its CPU is counted in the system, but not in the groups
             if let Some(g) = prev_app.get(&e.key()).and_then(|k| groups.iter_mut().find(|g| &g.key == k)) {
                 g.cpu += e.cpu;
             }
@@ -345,10 +345,10 @@ fn run(inner: &Inner) {
             .filter(|p| p.pid != 0)
             .map(|p| ProcSample { key: p.key(), name: &p.name, pt: pt(p.cpu, p.gpu, p.mem, p.io_read_bps, p.io_write_bps) })
             .collect();
-        // Время замера — по тику, а не по окончании работы: сам замер под полной нагрузкой длится то 50,
-        // то 400 мс, и метка «после работы» то попадала дважды в одну секундную ячейку (второй затирал
-        // первый), то перескакивала через ячейку — там оставался ноль, и график ЦП «пилил» 100 → 0 → 100.
-        // Тик пришёл примерно вовремя — ставим ровно на шаг после прошлого; сильно опоздал — по часам.
+        // The sample time is by tick, not by the end of the work: under full load the sample itself takes 50
+        // or 400 ms, and an “after the work” stamp sometimes landed twice in one second slot (the second overwrote
+        // the first), sometimes skipped a slot — a zero stayed there, and the CPU chart sawed 100 → 0 → 100.
+        // The tick came roughly on time — place it exactly one step after the previous one; very late — by the clock.
         let real_t = wall0 + (t - t0).as_millis() as u64;
         let iv = inner.interval.as_millis() as u64;
         let hist_t = match last_hist {
@@ -356,7 +356,7 @@ fn run(inner: &Inner) {
             _ => real_t,
         };
         last_hist = Some(hist_t);
-        // пул ядра — раз в минуту; сам вызов вне замка
+        // kernel pool — once a minute; the call itself is outside the lock
         let pool_raw = pool_due.then(crate::pool::query);
 
         let mut st = inner.state.lock().unwrap();
@@ -373,7 +373,7 @@ fn run(inner: &Inner) {
         }
         pool_due = st.pool.due(hist_t + inner.interval.as_millis() as u64);
         st.samples += 1;
-        // сжатая память живёт в рабочем наборе процесса «Memory Compression»
+        // compressed memory lives in the working set of the “Memory Compression” process
         let compressed = frame.procs.iter().find(|p| p.name.eq_ignore_ascii_case("Memory Compression")).map_or(0, |p| p.working_set);
         let snap = Snapshot {
             seq: st.samples,
@@ -398,8 +398,8 @@ fn run(inner: &Inner) {
         if inner.store.is_some() && last_save.elapsed() >= SAVE_EVERY {
             last_save = Instant::now();
             if let Err(e) = save(inner) {
-                crate::logs::error(format!("не удалось сохранить историю: {e}"));
-                inner.state.lock().unwrap().error = Some(format!("не удалось сохранить историю: {e}"));
+                crate::logs::error(format!("could not save the history: {e}"));
+                inner.state.lock().unwrap().error = Some(format!("could not save the history: {e}"));
             }
         }
     }
@@ -408,7 +408,7 @@ fn run(inner: &Inner) {
 fn save(inner: &Inner) -> std::io::Result<()> {
     let Some(path) = inner.store.as_ref().filter(|_| inner.persist) else { return Ok(()) };
     let _guard = inner.save_lock.lock().unwrap();
-    let bytes = inner.state.lock().unwrap().history.save(); // под замком только сериализация, без диска
+    let bytes = inner.state.lock().unwrap().history.save(); // only serialisation under the lock, no disk
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

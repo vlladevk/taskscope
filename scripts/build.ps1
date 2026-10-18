@@ -1,15 +1,15 @@
-﻿# Сборка под Windows внутри Docker (Linux-контейнер + cargo-xwin).
-# Примеры:
-#   .\scripts\build.ps1                 # release-сборка tm.exe → dist\
-#   .\scripts\build.ps1 -Debug          # debug-сборка
-#   .\scripts\build.ps1 -Test           # собрать тесты tm-core в контейнере и запустить их здесь, в Windows
-#   .\scripts\build.ps1 -Cargo "check"  # произвольная команда cargo xwin
+﻿# Windows build inside Docker (a Linux container + cargo-xwin).
+# Examples:
+#   .\scripts\build.ps1                 # release build of tm.exe → dist\
+#   .\scripts\build.ps1 -Debug          # debug build
+#   .\scripts\build.ps1 -Test           # build the tm-core tests in the container and run them here, on Windows
+#   .\scripts\build.ps1 -Cargo "check"  # an arbitrary cargo xwin command
 param(
     [switch]$Debug,
     [switch]$Test,
     [string]$Cargo = ""
 )
-# Continue: PowerShell 5.1 иначе считает вывод docker в stderr ошибкой
+# Continue: otherwise PowerShell 5.1 treats docker output on stderr as an error
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $PSScriptRoot
 $profileDir = if ($Debug) { 'debug' } else { 'release' }
@@ -25,7 +25,7 @@ if ($Test) {
     $Cargo = "build --target $target$release"
 }
 
-# Работающий движок держит dist\tm.exe открытым — останавливаем на время сборки и потом запускаем снова.
+# A running engine keeps dist\tm.exe open — stop it for the build and start it again afterwards.
 $wasRunning = $false
 $appExe = Join-Path $root 'dist\tm-app.exe'
 $wasApp = $false
@@ -36,17 +36,17 @@ if (-not $Test -and (Test-Path $tmExe)) {
         $wasApp = [bool](Get-Process tm-app -ErrorAction SilentlyContinue)
         & $tmExe daemon stop | Out-Null
     }
-    # ждём, пока приложение и его WebView действительно закроются и отпустят exe
+    # wait until the app and its WebView have really closed and released the exe
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while ((Get-Process tm-app -ErrorAction SilentlyContinue) -and $sw.Elapsed.TotalSeconds -lt 10) { Start-Sleep -Milliseconds 200 }
     Start-Sleep -Milliseconds 500
 }
 
-# Кэши в именованных томах: реестр crates, xwin SDK и target — сборка остаётся быстрой между запусками.
+# Caches in named volumes: the crates registry, the xwin SDK and target — the build stays fast between runs.
 $dockerArgs = @(
     'run', '--rm',
-    '--name', 'tm-build-run',   # фиксированное имя: второй параллельный запуск Docker не даст создать
-    '--cpus', '6',              # оставляем часть ядер системе, чтобы компьютер не подтормаживал
+    '--name', 'tm-build-run',   # a fixed name: Docker will not let a second parallel run start
+    '--cpus', '6',              # leave some cores to the system so the computer does not lag
     '-v', "${root}:/src",
     '-v', 'tm-cargo-registry:/usr/local/cargo/registry',
     '-v', 'tm-xwin-cache:/xwin-cache',
@@ -60,11 +60,11 @@ $code = $LASTEXITCODE
 if ($wasRunning) {
     if ($wasApp) { Start-Process $appExe -ArgumentList '--tray' } else { & $tmExe daemon start | Out-Null }
 }
-if ($code -ne 0) { throw "Сборка упала (код $code)" }
+if ($code -ne 0) { throw "Build failed (code $code)" }
 
 if ($Test) {
     & (Join-Path $root 'dist\tests\tm_core_tests.exe')
-    if ($LASTEXITCODE -ne 0) { throw "Тесты упали" }
+    if ($LASTEXITCODE -ne 0) { throw "Tests failed" }
 } else {
     Get-ChildItem (Join-Path $root 'dist') -Filter *.exe | Select-Object Name, Length, LastWriteTime
 }

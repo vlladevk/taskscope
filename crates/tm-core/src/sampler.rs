@@ -1,5 +1,5 @@
-//! Сборщик: каждый вызов `sample()` делает снимок и считает скорости
-//! (ЦП %, ввод-вывод в байтах/с) относительно предыдущего снимка.
+//! The sampler: every `sample()` call takes a snapshot and computes rates
+//! (CPU %, I/O in bytes/s) relative to the previous snapshot.
 
 use std::collections::HashMap;
 use std::io;
@@ -13,16 +13,16 @@ use crate::handle::ProcHandle;
 use crate::nt::{ProcessQuery, RawProc};
 use crate::system::{self, CpuTimes, Memory};
 
-/// Уникальный ключ процесса: PID + время создания (PID в Windows переиспользуются).
+/// A unique process key: PID + creation time (PIDs are reused in Windows).
 pub type ProcKey = (u32, i64);
 
-/// Ключ, пришедший снаружи (из окна, от агента): время создания приводим к той же точности,
-/// что и в замерах (см. `nt::js_safe`), — в JSON из JavaScript оно приходит в другой записи.
+/// A key that came from outside (from the window, from an agent): the creation time is brought to the same precision
+/// as in the samples (see `nt::js_safe`) — in JSON from JavaScript it arrives in a different notation.
 pub fn norm_key(k: ProcKey) -> ProcKey {
     (k.0, crate::nt::js_safe(k.1))
 }
 
-/// Строковый ключ «PID:время создания» в той же записи, что даёт JavaScript (`String(число)`).
+/// The string key “PID:creation time” in the same notation JavaScript produces (`String(number)`).
 pub fn key_str(k: ProcKey) -> String {
     format!("{}:{}", k.0, k.1 as f64)
 }
@@ -33,15 +33,15 @@ pub struct ProcStat {
     pub ppid: u32,
     pub name: String,
     pub create_time: i64,
-    /// Загрузка ЦП в процентах от всей машины (как в диспетчере Windows).
+    /// CPU load in percent of the whole machine (as in the Windows Task Manager).
     pub cpu: f32,
-    /// Всего потрачено времени ЦП, мс.
+    /// Total CPU time spent, ms.
     pub cpu_time_ms: u64,
-    /// Частный рабочий набор, байты («Память» в диспетчере Windows).
+    /// The private working set, bytes (“Memory” in the Windows Task Manager).
     pub mem: u64,
     pub working_set: u64,
     pub private_bytes: u64,
-    /// Чтение и запись (диск, сеть через файловые API, каналы), байт/с.
+    /// Read and write (disk, network through file APIs, pipes), bytes/s.
     pub io_read_bps: f64,
     pub io_write_bps: f64,
     pub threads: u32,
@@ -50,26 +50,26 @@ pub struct ProcStat {
     pub base_priority: i32,
     #[serde(default)]
     pub suspended: bool,
-    /// Загрузка видеокарты, % (самый занятый движок); заполняет движок.
+    /// GPU load, % (the busiest engine); filled in by the engine.
     #[serde(default)]
     pub gpu: f32,
-    /// Выделенная видеопамять, байты.
+    /// Dedicated video memory, bytes.
     #[serde(default)]
     pub gpu_mem: u64,
-    /// Загрузка по каждой видеокарте (ключ — как у `GpuStat::key`), только где она не нулевая:
-    /// одна программа может рисовать на встроенной, а считать на дискретной.
+    /// Load per GPU (key — as in `GpuStat::key`), only where it is non-zero:
+    /// one program may draw on the integrated GPU and compute on the discrete one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gpu_by: Vec<GpuShare>,
-    /// Сетевой трафик процесса, байт/с (только с правами администратора, иначе 0).
+    /// Network traffic of the process, bytes/s (only with administrator rights, otherwise 0).
     #[serde(default)]
     pub net_rx_bps: f64,
     #[serde(default)]
     pub net_tx_bps: f64,
-    /// Тот же трафик по адаптерам (ключ — как у `NetStat::key`; пустой — адаптер не определён):
-    /// программа через VPN и сам клиент VPN, шифрующий её трафик для Wi-Fi, — на разных адаптерах.
+    /// The same traffic by adapter (key — as in `NetStat::key`; empty — adapter unknown):
+    /// a program through a VPN and the VPN client itself, encrypting its traffic for Wi-Fi, are on different adapters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub net_by: Vec<NetShare>,
-    /// Процесс родился после прошлого замера (его ЦП — всё время с момента запуска).
+    /// The process was born after the previous sample (its CPU is all the time since it started).
     #[serde(default)]
     pub born: bool,
 }
@@ -102,43 +102,43 @@ pub struct SystemStat {
     pub threads: u64,
     pub handles: u64,
     pub uptime_ms: u64,
-    /// ЦП коротких процессов, которые родились и завершились между замерами и в списке
-    /// не видны (git, grep, sh из скриптов): занятость машины минус сумма по видимым процессам,
-    /// по завершившимся за интервал и по прерываниям с DPC.
-    /// Движок раздаёт его приложениям, которые такие процессы запускают (`AppStat::short_cpu`);
-    /// здесь — остаток, который отнести некому.
+    /// CPU of short-lived processes that were born and exited between samples and are not visible
+    /// in the list (git, grep, sh from scripts): machine load minus the sum over visible processes,
+    /// over those that exited during the interval and over interrupts with DPC.
+    /// The engine hands it to the apps that start such processes (`AppStat::short_cpu`);
+    /// here is the remainder that cannot be attributed to anyone.
     #[serde(default)]
     pub unseen_cpu: f32,
-    /// Сколько процессов в секунду запускается (замеченных живыми), сглажено.
+    /// How many processes are started per second (noticed alive), smoothed.
     #[serde(default)]
     pub spawn_rate: f32,
-    /// Загрузка ЦП обработкой аппаратных прерываний, % — ни одному процессу не принадлежит;
-    /// видна и строкой-псевдопроцессом в списке.
+    /// CPU load from hardware interrupt handling, % — belongs to no process;
+    /// also visible as a pseudo-process row in the list.
     #[serde(default)]
     pub interrupt_cpu: f32,
-    /// То же для отложенных вызовов процедур (DPC).
+    /// The same for deferred procedure calls (DPC).
     #[serde(default)]
     pub dpc_cpu: f32,
-    /// ЦП считается по тактам процессора (как в System Informer), а не по тикам таймера.
+    /// CPU is computed from processor cycles (as in System Informer), not from timer ticks.
     #[serde(default)]
     pub by_cycles: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Frame {
-    /// Время замера, мс Unix.
+    /// Sample time, Unix ms.
     pub at_ms: u64,
-    /// Интервал до предыдущего замера, мс (0 — первый замер, скорости ещё не посчитаны).
+    /// The interval since the previous sample, ms (0 — the first sample, rates not computed yet).
     pub interval_ms: f64,
     pub system: SystemStat,
     pub procs: Vec<ProcStat>,
-    /// Процессы, завершившиеся за интервал, с ЦП за их последние мгновения — дочитано по
-    /// удерживаемому дескриптору. В `procs` их уже нет; движок относит этот ЦП их приложениям.
+    /// Processes that exited during the interval, with the CPU of their last moments — read through
+    /// the held handle. They are no longer in `procs`; the engine attributes this CPU to their apps.
     #[serde(default)]
     pub exited: Vec<ProcStat>,
 }
 
-/// Псевдопроцессы, как у System Informer: прерывания и DPC. PID вне диапазона настоящих.
+/// Pseudo-processes, as in System Informer: interrupts and DPC. PIDs outside the range of real ones.
 pub const INTERRUPTS_PID: u32 = u32::MAX - 2;
 pub const DPC_PID: u32 = u32::MAX - 1;
 
@@ -152,18 +152,18 @@ struct Prev {
     cycles: u64,
     io_read: u64,
     io_write: u64,
-    /// Для строки завершившегося процесса.
+    /// For the row of an exited process.
     name: String,
     ppid: u32,
     mem: u64,
 }
 
-/// Счётчики чтения и записи: диск из расширения записи процесса, иначе общий ввод-вывод.
+/// Read and write counters: disk from the process record extension, otherwise the general I/O.
 fn io_of(r: &RawProc) -> (u64, u64) {
     r.disk.unwrap_or((r.io_read, r.io_write))
 }
 
-/// Процессорные счётчики прошлого замера.
+/// Processor counters of the previous sample.
 #[derive(Clone, Copy)]
 struct Cpu {
     times: CpuTimes,
@@ -176,17 +176,17 @@ pub struct Sampler {
     query: ProcessQuery,
     raw: Vec<RawProc>,
     prev: HashMap<ProcKey, Prev>,
-    /// Дескрипторы живых процессов: после завершения процесса по дескриптору ещё можно
-    /// дочитать его итоговое время ЦП (так делает System Informer).
+    /// Handles of live processes: after a process exits, its final CPU time can still be read
+    /// through the handle (System Informer does this).
     handles: HashMap<ProcKey, ProcHandle>,
     prev_at: Option<Instant>,
     prev_cpu: Option<Cpu>,
-    /// Время прошлого замера (FILETIME): кто создан позже — родился между замерами.
+    /// The time of the previous sample (FILETIME): whoever was created later was born between samples.
     prev_ft: i64,
     ncpu: u32,
-    /// Групп процессоров: при нескольких классы 83 и 108 видят не все процессоры — считаем по времени.
+    /// Processor groups: with several of them classes 83 and 108 do not see all processors — compute by time.
     groups: u16,
-    /// Процессы, которые не открыть (нет прав): не пытаемся каждую секунду заново.
+    /// Processes that cannot be opened (no rights): do not retry every second.
     denied: std::collections::HashSet<ProcKey>,
 }
 
@@ -196,7 +196,7 @@ impl Default for Sampler {
     }
 }
 
-/// Итоговые время ЦП (100 нс) и такты процесса — работает и после его завершения.
+/// The final CPU time (100 ns) and cycles of a process — works after it exits too.
 fn final_counters(h: &ProcHandle) -> Option<(i64, u64)> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::GetProcessTimes;
@@ -214,7 +214,7 @@ fn final_counters(h: &ProcHandle) -> Option<(i64, u64)> {
     Some((ft(k) + ft(u), cycles))
 }
 
-/// Приращения одного процесса за интервал.
+/// Increments of one process over the interval.
 struct Delta {
     cycles: u64,
     time: i64,
@@ -251,10 +251,10 @@ impl Sampler {
         self.query.snapshot(&mut self.raw)?;
 
         let dt = self.prev_at.map(|p| now.duration_since(p).as_secs_f64()).unwrap_or(0.0);
-        // время ЦП в 100 нс, доступное всем ядрам за интервал
+        // CPU time in 100 ns available to all cores over the interval
         let cpu_budget = dt * 1e7 * self.ncpu as f64;
 
-        // 1. приращения по живым процессам: такты, время, диск
+        // 1. increments of live processes: cycles, time, disk
         let mut deltas = Vec::with_capacity(self.raw.len());
         let mut next = HashMap::with_capacity(self.raw.len());
         for r in &self.raw {
@@ -270,8 +270,8 @@ impl Sampler {
                     wr: wr_now.saturating_sub(p.io_write) as f64 / dt,
                     born,
                 },
-                // родился между замерами: всё его время ЦП потрачено за этот интервал
-                // (раньше первый замер давал 0 — сборка из сотни коротких javac и git была невидима)
+                // born between samples: all its CPU time was spent in this interval
+                // (previously the first sample gave 0 — a build of a hundred short javac and git runs was invisible)
                 None if born => Delta { cycles: r.cycle_time, time: r.cpu_time.max(0), rd: rd_now as f64 / dt, wr: wr_now as f64 / dt, born },
                 _ => Delta { cycles: 0, time: 0, rd: 0.0, wr: 0.0, born },
             });
@@ -288,7 +288,7 @@ impl Sampler {
             }
         }
 
-        // 2. завершившиеся за интервал: итог по дескриптору минус прошлый замер
+        // 2. exited during the interval: the final value by handle minus the previous sample
         let mut gone: Vec<(&Prev, ProcKey, u64, i64)> = Vec::new();
         for (key, p) in &self.prev {
             if next.contains_key(key) {
@@ -299,18 +299,18 @@ impl Sampler {
             }
         }
 
-        // 3. знаменатель по тактам — сумма приращений всех процессов (и завершившихся), простоя
-        //    и прерываний с DPC: способ System Informer, он не ломается, когда процессы завершаются
+        // 3. the denominator by cycles — the sum of increments of all processes (including exited ones), idle
+        //    and interrupts with DPC: System Informer’s method, it does not break when processes exit
         let prev_cpu = self.prev_cpu;
         let cyc = prev_cpu.and_then(|p| {
             let idle = cpu_now.idle_cycles?.checked_sub(p.idle_cycles?)?;
             let sys = cpu_now.sys_cycles?.checked_sub(p.sys_cycles?)?;
-            // PID 0 («Бездействие системы») в классе 5 несёт те же такты простоя, что и класс 83, —
-            // берём их один раз, из класса 83 (иначе знаменатель = занятость + 2 × простой)
+            // PID 0 (“System Idle Process”) in class 5 carries the same idle cycles as class 83 —
+            // take them once, from class 83 (otherwise the denominator = busy + 2 × idle)
             let procs: u64 = self.raw.iter().zip(&deltas).filter(|(r, _)| r.pid != 0).map(|(_, d)| d.cycles).sum::<u64>() + gone.iter().map(|g| g.2).sum::<u64>();
             let total = procs + idle + sys;
-            // на виртуальных машинах без счётчика тактов простой = 0 — тогда по времени;
-            // так же при нескольких группах процессоров (больше 64 логических)
+            // on virtual machines without a cycle counter idle = 0 — then by time;
+            // the same with several processor groups (more than 64 logical)
             (dt > 0.0 && idle > 0 && total > 0 && self.groups <= 1).then_some((total as f64, idle as f64, sys as f64))
         });
         let share = |cycles: u64, time: i64| -> f32 {
@@ -353,8 +353,8 @@ impl Sampler {
             .map(|&(p, key, cycles, time)| ProcStat { ppid: p.ppid, create_time: key.1, cpu: share(cycles, time), mem: p.mem, ..blank(key.0, &p.name) })
             .collect();
 
-        // 4. прерывания и DPC (класс 8). По тактам известна их общая доля (класс 108) —
-        //    делим её в пропорции времени; без тактов — просто доли времени
+        // 4. interrupts and DPC (class 8). By cycles their total share is known (class 108) —
+        //    split it in proportion to time; without cycles — just time shares
         let (mut isr, mut dpc) = (0.0f32, 0.0f32);
         if let (Some(p), Some(n)) = (prev_cpu.and_then(|p| p.perf), cpu_now.perf) {
             let dpc_t = n.dpc.saturating_sub(p.dpc) as f64;
@@ -383,7 +383,7 @@ impl Sampler {
             (None, Some(p)) => system::cpu_busy(p.times, cpu_now.times),
             _ => 0.0,
         };
-        // дескрипторы завершившихся больше не нужны
+        // handles of exited processes are no longer needed
         self.handles.retain(|k, _| next.contains_key(k));
         self.denied.retain(|k| next.contains_key(k));
         self.prev = next;
@@ -414,7 +414,7 @@ impl Sampler {
     }
 }
 
-/// Пустая строка процесса: основа для псевдопроцессов и завершившихся.
+/// An empty process row: the base for pseudo-processes and exited ones.
 fn blank(pid: u32, name: &str) -> ProcStat {
     ProcStat {
         pid,
@@ -449,12 +449,12 @@ mod tests {
 
     #[test]
     fn keys_survive_javascript() {
-        // FILETIME ~1,3e17 больше 2^53: JavaScript хранит его приближённо и пишет по-своему
+        // FILETIME ~1.3e17 is above 2^53: JavaScript stores it approximately and prints it its own way
         let raw = 134_348_367_698_375_941i64;
         let ct = crate::nt::js_safe(raw);
-        assert_eq!(ct, 134_348_367_698_375_936); // так значение хранится в замере
-        assert_eq!(key_str((7, ct)), "7:134348367698375940"); // так его покажет String(ct) в JS
-        // обратно из JS приходит запись «…940» — ключ совпадает с замером
+        assert_eq!(ct, 134_348_367_698_375_936); // this is how the value is stored in the sample
+        assert_eq!(key_str((7, ct)), "7:134348367698375940"); // this is how String(ct) shows it in JS
+        // the notation “…940” comes back from JS — the key matches the sample
         assert_eq!(norm_key((7, 134_348_367_698_375_940)), (7, ct));
         assert_eq!(crate::nt::js_safe(ct), ct);
     }

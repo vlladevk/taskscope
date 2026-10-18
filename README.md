@@ -1,78 +1,126 @@
-# Диспетчер задач (tm)
+# tm — a task manager for Windows
 
-Своя замена диспетчера задач Windows: быстрый, не замирает под нагрузкой, показывает,
-кто грузит процессор, память, диск, видеокарту, сеть и Docker — и даёт это завершить,
-приостановить или перезапустить. Всё то же доступно ИИ-агентам через CLI и MCP.
+A replacement for the Windows Task Manager. It stays fast and keeps responding under full load.
+It shows who is using the CPU, memory, disk, GPU, network and Docker, and lets you end, suspend
+or restart them. The CLI and an MCP server give AI agents the same features.
 
-## Состав
+## What's inside
 
-| Файл | Что это |
+| File | What it is |
 |---|---|
-| `dist\tm-app.exe` | Приложение: окно + значок в трее с живым графиком ЦП. Держит движок (замер раз в секунду, история за сутки) и канал `\\.\pipe\tm` |
-| `dist\tm.exe` | CLI для терминала и агентов. Если приложение запущено — берёт данные у него мгновенно, иначе меряет сам |
+| `tm-app.exe` | The app: a window plus a tray icon with a live CPU chart. It holds the engine (a sample every second, a day of history) and the named pipe for the CLI |
+| `tm.exe` | The CLI for the terminal and for agents. If the app is running, it gets data from it instantly; otherwise it samples by itself |
 
-## Приложение
+## Features
 
-- Запуск — `tm-app.exe`. Повторный запуск просто показывает окно.
-- Крестик прячет окно в трей (движок продолжает собирать историю). Через минуту в трее окно
-  закрывается целиком вместе с WebView2 — в трее приложение занимает ~20 МБ; следующее открытие
-  займёт около секунды. Окно всегда создаётся скрытым и показывается, когда WebView2 уже встроен:
-  если встраивать его в показывающееся окно, WebView2 иногда падает с «Not enough quota»
-  (0x80070718). При сбое создание повторяется, в крайнем случае приложение перезапускается.
-- `Esc` — в трей, `Del` — завершить, `Shift+Del` — с дочерними, `Ctrl+F` — поиск,
-  `Ctrl+J` — нижняя панель, `Ctrl+Alt+B` — правая, `Ctrl+B` — список ресурсов слева.
-  Те же панели и центральные вкладки включаются кнопками справа вверху и в `⋯` → «Панели»;
-  если спрятать центральные вкладки, нижняя панель с графиком занимает их место.
-- График на всё окно — кнопка ⤢ в нижней панели или двойной клик по графику (ресурсы слева
-  остаются, можно переключать); то же для графика процесса в «Деталях». `Esc` — обратно.
-- `⋯` → «Запускать вместе с Windows» — автозапуск в трей (HKCU\…\Run, выключен по умолчанию).
-- `⋯` → «Перезапустить от администратора» — видно пути всех процессов и **сетевой трафик
-  по процессам** (Windows отдаёт его только программам с правами администратора).
-- История: `%LOCALAPPDATA%\tm\history.bin` (сохраняется раз в 10 минут и при выходе).
+- Processes grouped by app. Short-lived helper processes (git, grep, compilers) are counted
+  towards the app that starts them.
+- Readable labels instead of `java`, `node`, `cmd`: the jar or main class, the script, the browser tab,
+  the Claude Code session.
+- 24 hours of history for apps, processes, GPUs and network adapters.
+- A watcher that logs runaway loops, memory leaks and system overloads with the main culprit.
+- Kernel pool by tag: driver memory that no process shows, with leak alarms and a search
+  for the owning driver.
+- Per-process network traffic (ETW, needs administrator rights) and connections and open ports.
+- Process details: modules, threads, handles, environment, file signature and a VirusTotal link.
+- "Who holds this file": find the processes that lock a file or anything in a folder.
+- Windows services and Docker containers: list, start, stop, restart.
+- Safe actions: critical Windows processes are protected. Programs with windows are asked to close
+  first, so they can save their data. Restart keeps the same command line, folder, environment
+  and rights.
+
+## The app
+
+- Run `tm-app.exe`. Starting it again just shows the window.
+- The close button hides the window to the tray, and the engine keeps collecting history. After a minute
+  in the tray, the window and its WebView2 are unloaded completely, so the app uses about 20 MB.
+  The next opening takes about a second.
+- Shortcuts:
+
+  | Key | Action |
+  |---|---|
+  | `Esc` | Hide to the tray |
+  | `Del` | End the process |
+  | `Shift+Del` | End it with its children |
+  | `Ctrl+F` | Search |
+  | `Ctrl+J` | Bottom panel |
+  | `Ctrl+Alt+B` | Right panel |
+  | `Ctrl+B` | Resource list on the left |
+
+- To open a full-window chart, click ⤢ in the bottom panel or double-click the chart.
+- `⋯` → "Start with Windows" adds autostart to the tray (HKCU\…\Run). It is off by default.
+- `⋯` → "Restart as administrator" shows the paths of all processes and **per-process network
+  traffic**. Windows gives that data only to programs with administrator rights.
+- Settings: `%LOCALAPPDATA%\tm\settings.json`. History: `%LOCALAPPDATA%\tm\history.bin`
+  (saved every 10 minutes and on exit). Logs: `%LOCALAPPDATA%\tm\logs\`.
 
 ## CLI
 
 ```
-tm top                     кто грузит сейчас (--by cpu|mem|io|gpu|net)
-tm apps / tm ps [имя]      приложения / процессы
-tm tree [цель]             дерево с суммами по поддереву
-tm show <цель>             всё о процессе
-tm kill|suspend|resume|restart <цель> [--tree] [--dry-run]
-tm prio <цель> idle|below|normal|above|high
+tm sys                     summary: CPU, memory, GPUs, network
+tm top                     who is loading the system now (--by cpu|mem|io|gpu|net)
+tm apps / tm ps [name]     apps / processes
+tm tree [target]           process tree with subtree totals
+tm show <target>           everything about a process
+tm kill|suspend|resume|restart <target> [--tree] [--app] [--dry-run]
+tm prio <target> idle|below|normal|above|high
 tm history --range 1h [--apps|--procs|--system|--net|--gpu] [--by …]
-tm events                  журнал: зависания, утечки, перегрузки, действия
-tm docker [stop|start|restart|pause|unpause|kill <имя>]
-tm pool [--by size|growth] [--owners]   пул ядра: память драйверов по меткам, рост в час,
-                           утечки в драйверах, накопление токенов, зомби-процессы
-tm sys                     сводка, видеокарты, сеть
+tm events                  log: hangs, leaks, overloads, actions
+tm svc [filter]            Windows services (svc start|stop|restart <name>)
+tm conns [target]          network connections and open ports
+tm who <path>              who keeps a file or folder open
+tm inspect <target> modules|threads|handles|env
+tm sig <path|target>       file signature and SHA-256
+tm docker [stop|start|restart|pause|unpause|kill <name>]
+tm pool [--by size|growth] [--owners]   kernel pool by tag
+tm daemon start|stop|status             background engine without the window
 ```
 
-Любая команда понимает `--json`. Цель — PID, имя (`chrome`) или `PID:create_time` из JSON.
-Критические процессы Windows защищены от действий.
+Every command accepts `--json`. A target is a PID, a name (`chrome`) or `PID:create_time` from the JSON output.
+Run `tm help` for the full list.
 
-## MCP (для Claude Code и других агентов)
+## MCP (Claude Code and other agents)
 
 ```json
 { "mcpServers": { "tm": { "command": "C:\\path\\to\\tm.exe", "args": ["mcp"] } } }
 ```
 
-Инструменты: `sys`, `top`, `apps`, `ps`, `tree`, `show`, `history`, `events`, `docker`, `pool`, `act`.
+Tools: `sys`, `top`, `apps`, `ps`, `tree`, `show`, `history`, `events`, `docker`, `pool`, `services`,
+`connections`, `who`, `inspect`, `signature`.
 
-## Пул ядра
+The server is read-only by default. `tm mcp --allow-actions` adds `act`, `service_act` and container
+actions. An agent can affect at most 20 processes at a time. It has no force mode, and it never sees process
+environments.
 
-Память ядра и драйверов не видна ни у одного процесса, поэтому утечку в драйвере обычный
-диспетчер не показывает. Движок раз в минуту снимает пул по меткам (четыре буквы, которыми
-драйвер помечает свою память; права администратора не нужны) и считает рост за час и за сутки.
-Вкладка «Пул ядра» и `tm pool` показывают крупнейшие и растущие метки, а журнал — тревоги:
-метка растёт часами без спадов, накопились десятки тысяч токенов, в памяти висят сотни
-завершённых процессов. «Найти драйверы» / `--owners` ищет метки в файлах драйверов
-(в том числе выгруженных, если они не вернули память).
+## Building
 
-## Сборка
+You need Windows 10/11, the [Rust toolchain](https://rustup.rs/) with the MSVC target
+(Visual Studio Build Tools with the "Desktop development with C++" workload) and the
+WebView2 runtime. WebView2 is preinstalled on Windows 11.
 
-`scripts\build.ps1` — сборка в Docker (cargo-xwin → x86_64-pc-windows-msvc), результат в `dist\`.
-`-Test` — тесты ядра. Режим разработки интерфейса: `tm serve --root ui` → http://127.0.0.1:5174.
+```
+cargo build --release
+```
 
-Структура: `crates/tm-core` (ядро: замеры, дерево, приложения, история, наблюдатель,
-видеокарты, Docker, сеть по процессам через ETW, `Service::call` — единая точка входа),
-`crates/tm-cli` (CLI, MCP, dev-сервер), `crates/tm-app` (Tauri 2), `ui/` (интерфейс).
+The binaries are written to `target\release\tm.exe` and `target\release\tm-app.exe`.
+
+```
+cargo test -p tm-core
+```
+
+UI development mode: `tm serve --root ui` serves the interface at http://127.0.0.1:5174. Actions on processes
+are off unless you pass `--allow-actions`.
+
+## Project layout
+
+| Path | Contents |
+|---|---|
+| `crates/tm-core` | The core: sampling, tree, apps, history, watcher, GPUs, Docker, ETW, actions. `Service::call` is the single entry point |
+| `crates/tm-cli` | The `tm` CLI, the MCP server and the dev server |
+| `crates/tm-app` | The tray app (Tauri 2) |
+| `ui/` | The interface (plain JavaScript) |
+
+## License
+
+[MIT](LICENSE). `ui/vendor/dockview-core.min.js` is [dockview](https://github.com/dockview/dockview)
+8.3.1 and is also MIT-licensed.

@@ -1,9 +1,9 @@
-//! Сетевой трафик по процессам: события провайдера Microsoft-Windows-Kernel-Network (ETW).
+//! Network traffic per process: events of the Microsoft-Windows-Kernel-Network provider (ETW).
 //!
-//! Windows отдаёт трафик процессов только через трассировку событий, а своя сессия
-//! трассировки требует прав администратора (поэтому и диспетчер Windows запускается
-//! с повышенными правами). Без прав `NetEtw::start` возвращает `None` — остальное работает.
-//! Трафик через localhost не считается: он не выходит в сеть.
+//! Windows reports per-process traffic only through event tracing, and an own tracing
+//! session requires administrator rights (that is why the Windows Task Manager runs
+//! elevated too). Without the rights `NetEtw::start` returns `None` — everything else works.
+//! Traffic over localhost is not counted: it never leaves the machine.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -23,10 +23,10 @@ const PROVIDER: GUID = GUID::from_u128(0x7dd42a49_5329_4832_8dfd_43d979153a88);
 const KEYWORDS: u64 = 0x10 | 0x20;
 const INVALID_PROCESSTRACE: u64 = u64::MAX;
 
-/// PID → (принято, отправлено) байт с последнего `take`.
-/// Процесс и оба адреса пакета (источник, назначение): по локальному из них движок узнаёт
-/// адаптер — трафик программы через туннель VPN и зашифрованный туннель через Wi-Fi не
-/// складываются в одно число.
+/// PID → (received, sent) bytes since the last `take`.
+/// The process and both packet addresses (source, destination): the engine finds the adapter by the
+/// local one — a program’s traffic through a VPN tunnel and the encrypted tunnel over Wi-Fi are not
+/// added up into one number.
 pub type Key = (u32, IpAddr, IpAddr);
 
 fn counters() -> &'static Mutex<HashMap<Key, (u64, u64)>> {
@@ -38,7 +38,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Свойства сессии с местом под её имя сразу за структурой (так требует ETW).
+/// Session properties with room for its name right after the struct (ETW requires this).
 struct Props {
     buf: Vec<u64>,
 }
@@ -50,12 +50,12 @@ impl Props {
         let e = p.get();
         e.Wnode.BufferSize = size as u32;
         e.Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-        e.Wnode.ClientContext = 1; // часы QPC
+        e.Wnode.ClientContext = 1; // QPC clock
         e.LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-        e.BufferSize = 64; // КБ
+        e.BufferSize = 64; // KB
         e.MinimumBuffers = 4;
         e.MaximumBuffers = 16;
-        e.FlushTimer = 1; // с
+        e.FlushTimer = 1; // s
         e.LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
         p
     }
@@ -78,9 +78,9 @@ fn is_loopback_v6(a: &[u8]) -> bool {
 }
 
 unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
-    // в нашей сессии включён единственный провайдер — Kernel-Network
+    // our session enables a single provider — Kernel-Network
     let r = &*rec;
-    // 10/11 — TCP IPv4 отправка/приём, 26/27 — TCP IPv6, 42/43 — UDP IPv4, 58/59 — UDP IPv6
+    // 10/11 — TCP IPv4 send/receive, 26/27 — TCP IPv6, 42/43 — UDP IPv4, 58/59 — UDP IPv6
     let (recv, v6) = match r.EventHeader.EventDescriptor.Id {
         10 | 42 => (false, false),
         11 | 43 => (true, false),
@@ -88,7 +88,7 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
         27 | 59 => (true, true),
         _ => return,
     };
-    // PID (u32), размер (u32), адрес назначения, адрес источника, …
+    // PID (u32), size (u32), destination address, source address, …
     let len = r.UserDataLength as usize;
     let need = if v6 { 8 + 32 } else { 8 + 8 };
     if len < need || r.UserData.is_null() {
@@ -101,7 +101,7 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     if local {
         return;
     }
-    // daddr, затем saddr
+    // daddr, then saddr
     let (d, s): (IpAddr, IpAddr) = if v6 {
         let a: [u8; 16] = data[8..24].try_into().unwrap_or([0; 16]);
         let b: [u8; 16] = data[24..40].try_into().unwrap_or([0; 16]);
@@ -121,8 +121,8 @@ unsafe extern "system" fn on_event(rec: *mut EVENT_RECORD) {
     }
 }
 
-/// Останавливает сессию трассировки. Вызывать при выходе из программы: сама Windows
-/// её не остановит, а движок при завершении процесса не уничтожается.
+/// Stops the tracing session. Call on program exit: Windows itself
+/// will not stop it, and the engine is not destroyed when the process ends.
 pub fn shutdown() {
     stop_session();
 }
@@ -133,12 +133,12 @@ pub struct NetEtw {
 }
 
 impl NetEtw {
-    /// Запускает свою сессию трассировки. `None` — нет прав администратора или ETW недоступен.
+    /// Starts an own tracing session. `None` — no administrator rights or ETW is unavailable.
     pub fn start() -> Option<Self> {
         if !crate::system::is_elevated() {
             return None;
         }
-        stop_session(); // сессия могла остаться от аварийно завершённого экземпляра
+        stop_session(); // the session may be left over from a crashed instance
         let mut session = CONTROLTRACE_HANDLE { Value: 0 };
         let mut p = Props::new();
         if unsafe { StartTraceW(&mut session, wide(SESSION).as_ptr(), p.get()) } != 0 {
@@ -160,7 +160,7 @@ impl NetEtw {
             return None;
         }
         let h = trace.Value;
-        // ProcessTrace блокирует поток, пока сессия не остановлена
+        // ProcessTrace blocks the thread until the session is stopped
         let spawned = std::thread::Builder::new().name("tm-net-etw".into()).spawn(move || unsafe {
             let handle = PROCESSTRACE_HANDLE { Value: h };
             ProcessTrace(&handle, 1, std::ptr::null(), std::ptr::null());
@@ -173,7 +173,7 @@ impl NetEtw {
         Some(Self { session, trace: h })
     }
 
-    /// Байты с прошлого вызова: (PID, источник, назначение) → (принято, отправлено).
+    /// Bytes since the previous call: (PID, source, destination) → (received, sent).
     pub fn take(&self) -> HashMap<Key, (u64, u64)> {
         let _ = self.session;
         counters().lock().map(|mut m| std::mem::take(&mut *m)).unwrap_or_default()

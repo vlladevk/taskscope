@@ -1,16 +1,16 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Диспетчер задач</title>
+<title>Task Manager</title>
 <style>
-/* ===== Токены: Fluent 2 / Windows 11, тёмная тема (WinUI theme resources) ===== */
+/* ===== Tokens: Fluent 2 / Windows 11, dark theme (WinUI theme resources) ===== */
 :root{
-  --bg-base:#202020;           /* SolidBackgroundFillColorBase — «Mica» фон окна */
+  --bg-base:#202020;           /* SolidBackgroundFillColorBase — “Mica” window background */
   --bg-secondary:#1c1c1c;      /* SolidBackgroundFillColorSecondary */
   --bg-tertiary:#282828;       /* SolidBackgroundFillColorTertiary */
-  --layer:#272727;             /* LayerFillColorDefault поверх Mica */
+  --layer:#272727;             /* LayerFillColorDefault on top of Mica */
   --card:rgba(255,255,255,.0512);
   --ctrl:rgba(255,255,255,.0605);
   --ctrl-2:rgba(255,255,255,.0837);
@@ -24,13 +24,13 @@
   --text-2:rgba(255,255,255,.786);
   --text-3:rgba(255,255,255,.5442);
   --text-4:rgba(255,255,255,.3628);
-  --accent:#4cc2ff;            /* AccentFillColorDefault = SystemAccentColorLight2 для #0078D4 */
+  --accent:#4cc2ff;            /* AccentFillColorDefault = SystemAccentColorLight2 for #0078D4 */
   --accent-sel:rgba(76,194,255,.14);
   --on-accent:#000;
   --critical:#ff99a4;          /* SystemFillColorCritical */
   --caution:#fce100;           /* SystemFillColorCaution */
   --success:#6ccb5f;           /* SystemFillColorSuccess */
-  --overlay:#2c2c2c;           /* фон всплывающих меню (Acrylic, упрощённо) */
+  --overlay:#2c2c2c;           /* popup menu background (Acrylic, simplified) */
   --r-ctrl:4px; --r-over:8px;
   --font:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
   --font-d:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
@@ -48,7 +48,7 @@ button,input{font:inherit;color:inherit}
 .mono{font-family:var(--mono);font-size:12px}
 .num{font-variant-numeric:tabular-nums}
 
-/* ===== верхняя панель ===== */
+/* ===== top bar ===== */
 .bar{display:flex;align-items:center;gap:12px;height:48px;padding:0 12px 0 16px;flex:none}
 .title{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-2);white-space:nowrap}
 .title svg{flex:none}
@@ -96,7 +96,7 @@ button,input{font:inherit;color:inherit}
 .wh-row .search{flex:1;min-width:0}
 .m-row.wh-h{grid-template-columns:16px minmax(0,1fr) 56px auto}
 .m-row.wh-h .btn{height:24px;padding:0 8px;font-size:12px}
-/* открытые файлы под именем процесса: по строке, длинный путь — с многоточием */
+/* open files under the process name: one per line, long paths get an ellipsis */
 .m-row.wh-h .wh-f{font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .m-row.wh-h{align-items:start}.m-row.wh-h>.num,.m-row.wh-h>.btn{margin-top:2px}
 .toast .btn{margin-left:4px;height:24px;padding:0 8px;font-size:12px;flex:none;align-self:center}
@@ -109,7 +109,7 @@ button,input{font:inherit;color:inherit}
 .dot.ring{background:none;box-shadow:inset 0 0 0 1.5px var(--text-3);width:7px;height:7px}
 .dot.ring.red{box-shadow:inset 0 0 0 1.5px var(--critical)} .dot.ring.yel{box-shadow:inset 0 0 0 1.5px var(--caution)}
 
-/* ===== dockview в стиле Fluent ===== */
+/* ===== dockview in Fluent style ===== */
 #dock{flex:1;min-height:0;padding:0 8px 8px}
 #dock .dockview-theme-dark{
   --dv-group-view-background-color:var(--layer);
@@ -143,7 +143,7 @@ button,input{font:inherit;color:inherit}
 #dock .dv-tab{padding:0 12px}
 #dock .dv-tabs-and-actions-container{border-bottom:0}
 
-/* ===== общие элементы панелей ===== */
+/* ===== shared panel elements ===== */
 .pnl{height:100%;display:flex;flex-direction:column;overflow:hidden;position:relative}
 .ph{display:flex;align-items:center;gap:10px;padding:10px 14px 8px;flex:none;flex-wrap:wrap}
 .ph h2{margin:0;font:600 20px/28px var(--font-d)}
@@ -161,7 +161,7 @@ button,input{font:inherit;color:inherit}
 .chip.warn{background:rgba(252,225,0,.14);color:var(--caution)}
 .chip.bad{background:rgba(255,153,164,.14);color:var(--critical)}
 
-/* ===== Ресурсы ===== */
+/* ===== Resources ===== */
 .res{padding:4px}
 .ri{display:grid;grid-template-columns:72px 1fr;gap:10px;align-items:center;padding:8px 10px;border-radius:var(--r-ctrl);cursor:pointer;position:relative}
 .ri:hover{background:var(--subtle-hover)}
@@ -171,7 +171,7 @@ button,input{font:inherit;color:inherit}
 .ri .rn{display:flex;align-items:center;gap:6px;font-size:14px}
 .ri .rv{font-size:12px;color:var(--text-3);line-height:16px}
 
-/* ===== График ===== */
+/* ===== Chart ===== */
 .chart-body{flex:1;min-height:0;display:flex;gap:16px;padding:0 14px 12px}
 .charts{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
 .cbox{position:relative;flex:1;min-height:110px;display:flex;flex-direction:column}
@@ -195,7 +195,7 @@ button,input{font:inherit;color:inherit}
 @container (max-width:760px){.stats{display:none}}
 .pnl.chart{container-type:inline-size}
 
-/* ===== Процессы ===== */
+/* ===== Processes ===== */
 .tbl-wrap{overflow:auto;flex:1;min-height:0}
 .tbl{width:100%;border-collapse:separate;border-spacing:0;font-size:13px;font-variant-numeric:tabular-nums;table-layout:fixed}
 .tbl td{overflow:hidden;text-overflow:ellipsis}
@@ -203,20 +203,20 @@ button,input{font:inherit;color:inherit}
 .tbl th:first-child{text-align:left}
 .tbl th:hover{color:var(--text-1)}
 .tbl th.on{color:var(--text-1)}
-/* ручка ширины — правый край заголовка; видна чёрточкой при наведении на заголовки */
+/* width handle — the header's right edge; shows as a line when hovering the headers */
 .tbl th .crz{position:absolute;right:0;top:0;bottom:0;width:8px;cursor:col-resize;z-index:3}
 .tbl th .crz::after{content:'';position:absolute;left:7px;top:8px;bottom:8px;width:1px;background:var(--text-4);opacity:0;transition:opacity .12s}
 .tbl thead:hover th .crz::after{opacity:.7}
 .tbl th .crz:hover::after,body.col-resizing .tbl th .crz::after{background:var(--accent);opacity:1;top:4px;bottom:4px;width:2px;left:6px}
 body.col-resizing,body.col-resizing *{cursor:col-resize!important;user-select:none}
 body.col-dragging,body.col-dragging *{cursor:grabbing!important;user-select:none}
-/* перетаскиваемая колонка: её место в таблице подсвечено, сам заголовок едет за курсором */
+/* dragged column: its place in the table is highlighted, the header itself follows the cursor */
 .tbl th.cdrag{color:transparent;background:var(--accent-sel)}
 .col-ghost{position:fixed;z-index:1000;pointer-events:none;display:flex;align-items:center;justify-content:flex-end;padding:0 10px;box-sizing:border-box;font-size:12px;color:var(--text-1);background:var(--layer);border:1px solid var(--accent);border-radius:4px;box-shadow:0 6px 16px rgba(0,0,0,.45)}
 .tbl td{padding:0 10px;height:32px;white-space:nowrap;text-align:right;position:relative}
 .tbl.left td{text-align:left}
 .tbl.left td.num{text-align:right}
-/* имя процесса остаётся на месте при прокрутке вбок (с дополнительными колонками таблица шире панели) */
+/* the process name stays put when scrolling sideways (with extra columns the table is wider than the panel) */
 .tbl.procs td:first-child,.tbl.procs th:first-child{position:sticky;left:0;z-index:1;background:var(--layer)}
 .tbl.procs th:first-child{z-index:3}
 .tbl.procs tbody tr.new td:first-child{background:linear-gradient(rgba(108,203,95,.14),rgba(108,203,95,.14)),var(--layer)}
@@ -237,7 +237,7 @@ body.col-dragging,body.col-dragging *{cursor:grabbing!important;user-select:none
 .nm .tw svg{transition:transform .12s}
 .nm .tw.open svg{transform:rotate(90deg)}
 .nm .n1{overflow:hidden;text-overflow:ellipsis}
-/* пометки («низкий приоритет», «приостановлен») сжимаются первыми — имя процесса не пропадает */
+/* badges (“low priority”, “suspended”) shrink first — the process name never disappears */
 .nm .n1{min-width:min(60px,40%)}.nm .chip{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .nm .n2{color:var(--text-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;flex-shrink:20}
 .kid2{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:4px 8px;font-size:12px}
@@ -262,7 +262,7 @@ tr.susp .n1{color:var(--text-3)}
 .foot{display:flex;gap:16px;align-items:center;padding:6px 14px;border-top:1px solid var(--divider);font-size:12px;color:var(--text-3);flex:none;flex-wrap:wrap}
 .kbd{font-family:var(--mono);font-size:11px;padding:0 4px;border-radius:3px;border:1px solid var(--stroke-ctrl);border-bottom-width:2px;color:var(--text-2)}
 
-/* ===== Детали ===== */
+/* ===== Details ===== */
 .dt-h{display:flex;gap:12px;align-items:flex-start;padding:14px 16px 8px}
 .dt-h h3{margin:0;font:600 16px/22px var(--font)}
 .dt-h .caption{margin-top:2px}
@@ -290,13 +290,13 @@ tr.susp .n1{color:var(--text-3)}
 .conn{display:grid;grid-template-columns:1fr auto;gap:2px 10px;padding:0 16px 10px;font-size:12px}
 .empty{padding:48px 24px;text-align:center;color:var(--text-3);font-size:13px}
 
-/* ===== Карта памяти ===== */
+/* ===== Memory map ===== */
 .map-wrap{flex:1;min-height:0;position:relative;margin:0 14px}
 .map-wrap canvas{position:absolute;inset:0;width:100%;height:100%;cursor:pointer}
-/* шапка карты не рассыпается на узкой ширине: описание сокращается многоточием, «Цвет» — рядом с переключателем */
+/* the map header does not fall apart when narrow: the description gets an ellipsis, “Color” stays next to the toggle */
 .m-desc{min-width:0;flex:1 1 140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .m-cw{display:flex;align-items:center;gap:8px;flex:none}
-/* легенда и «крошки» — в одну строку: перенос менял высоту карты сразу после отрисовки */
+/* legend and crumbs on one line: wrapping changed the map height right after drawing */
 .maplegend.m-leg{flex-wrap:nowrap;overflow:hidden;white-space:nowrap}
 .maplegend .more{color:var(--text-3);cursor:default}
 .m-crumbs{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;min-width:0;flex:0 1 auto}
@@ -311,7 +311,7 @@ tr.susp .n1{color:var(--text-3)}
 .tip b{font-weight:600}
 .tip .pth{color:var(--text-3);margin-bottom:3px}
 
-/* ===== События ===== */
+/* ===== Events ===== */
 .evs{padding:4px 8px}
 .ev{display:grid;grid-template-columns:44px 10px 1fr;gap:8px;align-items:start;padding:7px 8px;border-radius:var(--r-ctrl);font-size:12px;line-height:17px;cursor:pointer}
 .ev:hover{background:var(--subtle-hover)}
@@ -319,7 +319,7 @@ tr.susp .n1{color:var(--text-3)}
 .ev .dot{margin-top:5px}
 .ev .who{color:var(--text-3)}
 
-/* ===== меню, всплывашки ===== */
+/* ===== menus, popups ===== */
 .menu{position:fixed;z-index:80;display:none;min-width:240px;background:var(--overlay);border:1px solid rgba(255,255,255,.08);border-radius:var(--r-over);box-shadow:0 8px 16px rgba(0,0,0,.28);padding:4px}
 .menu .mi{display:flex;justify-content:space-between;gap:24px;padding:0 12px;height:32px;align-items:center;border-radius:var(--r-ctrl);font-size:13px;cursor:pointer}
 .menu .mi:hover{background:var(--subtle-hover)}
@@ -333,7 +333,7 @@ tr.susp .n1{color:var(--text-3)}
 .toast .dot{margin-top:6px}
 @keyframes tin{from{opacity:0;transform:translateY(8px)}}
 
-/* ===================== v3: каркас как в IDE-редакторах ===================== */
+/* ===================== v3: IDE-style layout ===================== */
 .adm{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;margin-right:6px;border:1px solid var(--divider);border-radius:var(--r-ctrl);background:none;color:var(--text-2);font:inherit;font-size:12px;cursor:pointer}
 .adm[hidden]{display:none}
 .adm:hover{background:var(--subtle-hover);color:var(--text-1)}
@@ -365,8 +365,8 @@ tr.susp .n1{color:var(--text-3)}
 .shell.no-bottom .bottom,.shell.no-bottom #sashB{display:none}
 .shell.no-main #dock,.shell.no-main #sashB{display:none}
 .shell.no-main .bottom{flex:1;height:auto!important}
-/* развёрнутый график: поверх всех панелей, внутри окна (без отдельных окон) */
-/* нижняя панель: прячем вкладки и «Детали», слева остаётся список ресурсов для переключения */
+/* maximized chart: above all panels, inside the window (no separate windows) */
+/* bottom panel: hide the tabs and Details, the resource list stays on the left for switching */
 .shell.max-bottom #dock,.shell.max-bottom #sashB,.shell.max-bottom #sashR,.shell.max-bottom #right{display:none}
 .shell.max-bottom .bottom{flex:1;height:auto!important}
 .dchart.max{position:fixed;inset:8px;z-index:40;box-shadow:0 8px 32px rgba(0,0,0,.5)}
@@ -374,20 +374,20 @@ tr.susp .n1{color:var(--text-3)}
 .dchart.max canvas{flex:1;height:auto;min-height:0}
 .dchart .caption .ib{width:24px;height:20px;margin:-2px -4px -2px 6px;vertical-align:middle}
 .shell.no-right .right,.shell.no-right #sashR{display:none}
-/* узкое окно: «Детали» и ресурсы — выезжающими панелями поверх центра */
+/* narrow window: Details and resources become slide-over panels above the center */
 .shell{position:relative}
 .shell.ov-right #sashR{display:none}
 .shell.ov-right .right{position:absolute;right:8px;top:0;bottom:8px;z-index:30;width:min(360px,calc(100% - 16px))!important;box-shadow:0 8px 32px rgba(0,0,0,.55)}
 .shell.ov-rail .rail{position:absolute;left:0;top:0;bottom:0;z-index:31;width:min(240px,calc(100% - 48px));padding:4px 8px 8px;background:var(--bg-base);border-right:1px solid var(--stroke-ctrl);box-shadow:8px 0 32px rgba(0,0,0,.5)}
-/* верхняя строка сжимается постепенно: сначала подписи, потом название; уже 700 px — в две строки */
+/* the top row shrinks gradually: first the labels, then the title; below 700 px it wraps to two rows */
 @media (max-width:1180px){.bar .lbl{display:none}.adm span{display:none}}
 @media (max-width:900px){.bar .proto,.bar .title>span{display:none}.bar{gap:8px}}
-/* верхняя строка в две: период — отдельной строкой во всю ширину */
+/* top row on two lines: the period gets its own full-width row */
 body.narrow .bar{flex-wrap:wrap;height:auto;min-height:40px;padding:6px 8px;row-gap:6px;gap:6px}
 body.narrow .bar .lbl,body.narrow .bar .proto{display:none}
 body.narrow #range{order:10;flex:1 1 100%;display:flex}
 body.narrow #range button{flex:1;padding:0 4px}
-/* кнопка администратора — одним значком (подсказка остаётся), подпись «порядок заморожен» не занимает строку */
+/* admin button — just the icon (tooltip stays), the “order frozen” label takes no row */
 body.narrow .adm span,body.narrow .bar .title>span:not(.proto){display:none}body.narrow .p-frz{display:none}
 .sash{flex:none;position:relative;z-index:5}
 .sash.h{height:8px;cursor:row-resize}
@@ -408,7 +408,7 @@ body.narrow .adm span,body.narrow .bar .title>span:not(.proto){display:none}body
 .hdr-acts{display:flex;align-items:center;gap:0;height:100%;padding-right:4px}
 .hdr-acts .ib{width:28px;height:26px;color:var(--text-3)}
 
-/* ----- нижняя панель: один график + переключатель ----- */
+/* ----- bottom panel: one chart + switcher ----- */
 .ch-head{display:flex;align-items:center;gap:12px;padding:10px 14px 6px;flex-wrap:wrap;flex:none}
 .ch-head h2{margin:0;font:600 20px/28px var(--font-d)}
 .ch-head .big{font:600 20px/28px var(--font-d);font-variant-numeric:tabular-nums}
@@ -419,7 +419,7 @@ body.narrow .adm span,body.narrow .bar .title>span:not(.proto){display:none}body
 .ch-more div span{display:block;font-size:12px;color:var(--text-3);line-height:16px}
 .ch-more div b{font:600 14px/20px var(--font);font-variant-numeric:tabular-nums}
 .ch-more .note{grid-column:1/-1;font-size:12px;line-height:17px;color:var(--text-2)}
-/* список файлов у диска: не сжимать до одной строки — график уступает место */
+/* file list under the disk: do not squeeze it to one line — the chart gives way */
 .ch-more:has(.dfs){flex-shrink:0;max-height:62%}
 .dfs{grid-column:1/-1;font-size:12px;line-height:18px}
 .dfs-h{color:var(--text-3);margin-bottom:2px}
@@ -438,7 +438,7 @@ body.narrow .adm span,body.narrow .bar .title>span:not(.proto){display:none}body
 .more-t{font-size:12px;color:var(--text-2);background:none;border:0;cursor:pointer;padding:4px 6px;border-radius:var(--r-ctrl)}
 .more-t:hover{background:var(--subtle-hover);color:var(--text-1)}
 
-/* ----- процессы: активный столбец ----- */
+/* ----- processes: active column ----- */
 .tbl th.act{color:var(--text-1);box-shadow:inset 0 -2px var(--accent)}
 .tbl td.act .cell-bar{background:rgba(76,194,255,.2)}
 .tbl td.act{color:var(--text-1)}
@@ -447,7 +447,7 @@ body.narrow .adm span,body.narrow .bar .title>span:not(.proto){display:none}body
 .scope button{border:0;background:none;color:var(--accent);cursor:pointer;font-size:12px;padding:1px 6px;border-radius:10px}
 .scope button:hover{background:var(--subtle-hover)}
 
-/* ----- детали: сворачиваемые разделы ----- */
+/* ----- details: collapsible sections ----- */
 .dsec{border-top:1px solid var(--divider)}
 .dsec>summary{list-style:none;display:flex;align-items:center;gap:8px;padding:10px 16px;font:600 13px/20px var(--font);cursor:pointer;user-select:none}
 .dsec>summary::-webkit-details-marker{display:none}
@@ -459,7 +459,7 @@ body.narrow .adm span,body.narrow .bar .title>span:not(.proto){display:none}body
 .dchart .caption{display:flex;justify-content:space-between}
 .dchart canvas{width:100%;height:92px;display:block;margin-top:2px}
 
-/* ----- вкладка отдельного процесса ----- */
+/* ----- single-process tab ----- */
 .pt-bar{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--divider);flex-wrap:wrap}
 .pt-bar .search{width:220px}
 .pt-body{flex:1;min-height:0}
@@ -479,7 +479,7 @@ tr.gone .n1{text-decoration:line-through;text-decoration-color:rgba(255,153,164,
 .dead-note{margin:8px 16px;font-size:12px;color:var(--text-2);background:var(--card);border:1px solid var(--stroke-ctrl);border-radius:var(--r-ctrl);padding:8px 10px}
 .rail .ri{display:block}
 .rail .ri svg{border:0;background:none;border-radius:0;width:100%;height:30px}
-/* ===== приложение: настоящие иконки, состояние загрузки ===== */
+/* ===== app: real icons, loading state ===== */
 img.ico{background:none;box-shadow:none;object-fit:contain;border-radius:0}
 .boot{position:fixed;inset:0;display:grid;place-items:center;color:var(--text-3);font-size:13px;z-index:100;background:var(--bg-base)}
 .boot[hidden]{display:none}
@@ -492,47 +492,47 @@ img.ico{background:none;box-shadow:none;object-fit:contain;border-radius:0}
 <div class="bar">
   <div class="title">
     <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="9" width="3" height="6" rx="1" fill="#4cc2ff"/><rect x="6.5" y="5" width="3" height="10" rx="1" fill="#4cc2ff" opacity=".75"/><rect x="12" y="1" width="3" height="14" rx="1" fill="#4cc2ff" opacity=".5"/></svg>
-    <span>Диспетчер</span><span class="proto" id="host"></span>
+    <span>Task Manager</span><span class="proto" id="host"></span>
   </div>
-  <span class="issues" id="issues" title="Показать следующую проблему"></span>
+  <span class="issues" id="issues" title="Show the next problem"></span>
   <div class="spacer"></div>
-  <span class="lbl">Период</span>
+  <span class="lbl">Period</span>
   <div class="seg" id="range"></div>
   <div class="spacer"></div>
-  <button class="adm" id="adminBtn" hidden title="Без прав администратора Windows не показывает часть сведений.
-С ними появятся: трафик каждого процесса (колонка «Сеть» и карта сети), пути и командные строки
-защищённых процессов, завершение и приоритет системных процессов.
-Windows спросит подтверждение (UAC); окно перезапустится, история сохранится."><svg width="14" height="14" viewBox="0 0 16 16"><path d="M8 1.5 2.5 3.6v4.1c0 3.2 2.3 5.9 5.5 6.8 3.2-.9 5.5-3.6 5.5-6.8V3.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="m5.8 8 1.5 1.5 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Запустить от администратора</span></button>
-  <button class="ib" id="tglRail" title="Ресурсы слева · Ctrl+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="4.5" height="10" rx="1"/></svg></button>
-  <button class="ib" id="tglMain" title="Вкладки в центре (процессы, карта, службы…)"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="12" height="5.5" rx="1"/></svg></button>
-  <button class="ib" id="tglBottom" title="Нижняя панель · Ctrl+J"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="9" width="12" height="4" rx="1"/></svg></button>
-  <button class="ib" id="tglRight" title="Правая панель · Ctrl+Alt+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="9.5" y="3" width="4.5" height="10" rx="1"/></svg></button>
-  <button class="ib" id="moreBtn" title="Ещё"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor"/></svg></button>
+  <button class="adm" id="adminBtn" hidden title="Without administrator rights Windows hides some information.
+With them you also get: traffic of every process (the Network column and the network map), paths and command lines
+of protected processes, ending system processes and changing their priority.
+Windows will ask for confirmation (UAC); the window restarts and the history is kept."><svg width="14" height="14" viewBox="0 0 16 16"><path d="M8 1.5 2.5 3.6v4.1c0 3.2 2.3 5.9 5.5 6.8 3.2-.9 5.5-3.6 5.5-6.8V3.6z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="m5.8 8 1.5 1.5 3-3" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Run as administrator</span></button>
+  <button class="ib" id="tglRail" title="Resources on the left · Ctrl+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="4.5" height="10" rx="1"/></svg></button>
+  <button class="ib" id="tglMain" title="Center tabs (processes, map, services…)"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="3" width="12" height="5.5" rx="1"/></svg></button>
+  <button class="ib" id="tglBottom" title="Bottom panel · Ctrl+J"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="2" y="9" width="12" height="4" rx="1"/></svg></button>
+  <button class="ib" id="tglRight" title="Right panel · Ctrl+Alt+B"><svg width="16" height="16" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor"/><rect class="fillp" x="9.5" y="3" width="4.5" height="10" rx="1"/></svg></button>
+  <button class="ib" id="moreBtn" title="More"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.5" cy="8" r="1.2" fill="currentColor"/></svg></button>
 </div>
 <div class="shell" id="shell">
   <nav class="rail" id="rail"></nav>
   <div class="center" id="center">
     <div class="main" id="dock"></div>
-    <div class="sash h" id="sashB" title="Потяните, чтобы изменить высоту"></div>
+    <div class="sash h" id="sashB" title="Drag to change the height"></div>
     <section class="zone bottom" id="bottom">
-      <div class="ptabs" id="btabs"><button data-t="chart">График</button><button data-t="log">Журнал</button><div class="spacer"></div>
+      <div class="ptabs" id="btabs"><button data-t="chart">Chart</button><button data-t="log">Log</button><div class="spacer"></div>
         <button class="ib" id="maxBottom"></button>
-        <button class="ib" data-close="bottom" title="Скрыть · Ctrl+J"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button></div>
+        <button class="ib" data-close="bottom" title="Hide · Ctrl+J"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button></div>
       <div class="pbody" id="bChart"></div>
       <div class="pbody scroll" id="bLog"></div>
     </section>
   </div>
-  <div class="sash v" id="sashR" title="Потяните, чтобы изменить ширину"></div>
+  <div class="sash v" id="sashR" title="Drag to change the width"></div>
   <aside class="zone right" id="right">
-    <div class="ptabs"><span class="ptitle">Детали</span><div class="spacer"></div>
-      <button class="ib" data-close="right" title="Скрыть · Ctrl+Alt+B"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button></div>
+    <div class="ptabs"><span class="ptitle">Details</span><div class="spacer"></div>
+      <button class="ib" data-close="right" title="Hide · Ctrl+Alt+B"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M2.5 2.5l7 7m0-7l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button></div>
     <div class="pbody scroll" id="details"></div>
   </aside>
 </div>
 <div id="menu" class="menu"></div>
 <div id="tip" class="tip"></div>
 <div id="toasts"></div>
-<div class="boot" id="boot">Собираю данные…</div>
+<div class="boot" id="boot">Collecting data…</div>
 <div class="errbar" id="errbar"></div>
 <script src="vendor/dockview-core.min.js"></script>
 <script src="app.js"></script>

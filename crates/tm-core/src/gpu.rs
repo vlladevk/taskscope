@@ -1,9 +1,9 @@
-//! Видеокарты: загрузка и видеопамять — всего и по процессам.
+//! GPUs: load and video memory — total and per process.
 //!
-//! Источник — счётчики производительности «GPU Engine», «GPU Process Memory» и
-//! «GPU Adapter Memory» (их же показывает диспетчер Windows). Права администратора не нужны.
-//! Загрузка процесса — самый занятый из движков видеокарты, которыми он пользуется;
-//! загрузка видеокарты — самый занятый движок (3D, копирование, видеокодек…) по сумме процессов.
+//! The source is the “GPU Engine”, “GPU Process Memory” and
+//! “GPU Adapter Memory” performance counters (the Windows Task Manager shows the same). No administrator rights needed.
+//! A process’s load is the busiest of the GPU engines it uses;
+//! a GPU’s load is the busiest engine (3D, copy, video codec…) summed over processes.
 
 use std::collections::HashMap;
 
@@ -21,12 +21,12 @@ const PDH_MORE_DATA: u32 = 0x8000_07D2;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GpuStat {
-    /// LUID адаптера в записи счётчиков: `0x00000000_0x0000D1F2`.
+    /// Adapter LUID in the counter record: `0x00000000_0x0000D1F2`.
     pub key: String,
     pub name: String,
-    /// Загрузка, % (самый занятый движок).
+    /// Load, % (the busiest engine).
     pub util: f32,
-    /// Какой движок самый занятый: 3D, Copy, VideoDecode, Compute…
+    /// Which engine is the busiest: 3D, Copy, VideoDecode, Compute…
     pub engine: String,
     pub mem_used: u64,
     pub mem_total: u64,
@@ -37,7 +37,7 @@ pub struct GpuStat {
 pub struct ProcGpu {
     pub util: f32,
     pub mem: u64,
-    /// LUID видеокарты → самый занятый движок процесса на ней, %.
+    /// GPU LUID → the process’s busiest engine on it, %.
     pub by: Vec<(String, f32)>,
 }
 
@@ -53,7 +53,7 @@ pub struct GpuSampler {
     proc_mem: PdhCounter,
     dedicated: PdhCounter,
     shared: PdhCounter,
-    /// LUID → (название, объём видеопамяти) из реестра DirectX.
+    /// LUID → (name, video memory size) from the DirectX registry.
     names: HashMap<String, (String, u64)>,
     buf: Vec<u64>,
 }
@@ -74,7 +74,7 @@ unsafe fn pwstr(p: *const u16) -> String {
     String::from_utf16_lossy(std::slice::from_raw_parts(p, n))
 }
 
-/// «pid_1234_luid_0x00000000_0x0000D1F2_phys_0_eng_3_engtype_VideoDecode» → части.
+/// “pid_1234_luid_0x00000000_0x0000D1F2_phys_0_eng_3_engtype_VideoDecode” → parts.
 struct Inst<'a> {
     pid: Option<u32>,
     luid: &'a str,
@@ -90,7 +90,7 @@ fn parse(name: &str) -> Inst<'_> {
     };
     let pid = field("pid_").and_then(|r| r.split('_').next()).and_then(|s| s.parse().ok());
     let luid = field("luid_").map(|r| {
-        // «0x00000000_0x0000D1F2» — две части
+        // “0x00000000_0x0000D1F2” — two parts
         let end = r.match_indices('_').nth(1).map_or(r.len(), |(i, _)| i);
         &r[..end]
     });
@@ -99,7 +99,7 @@ fn parse(name: &str) -> Inst<'_> {
     Inst { pid, luid: luid.unwrap_or(""), eng, engtype }
 }
 
-/// Названия видеокарт из HKLM\SOFTWARE\Microsoft\DirectX\{…}: Description и AdapterLuid.
+/// GPU names from HKLM\SOFTWARE\Microsoft\DirectX\{…}: Description and AdapterLuid.
 fn adapter_names() -> HashMap<String, (String, u64)> {
     use windows_sys::Win32::System::Registry::{
         RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_QWORD, RRF_RT_REG_SZ,
@@ -143,7 +143,7 @@ fn adapter_names() -> HashMap<String, (String, u64)> {
 }
 
 impl GpuSampler {
-    /// `None` — счётчиков видеокарты в системе нет (старая Windows, удалённый сеанс без GPU).
+    /// `None` — the system has no GPU counters (old Windows, a remote session without a GPU).
     pub fn new() -> Option<Self> {
         let mut query: PdhQuery = 0;
         if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut query) } != 0 {
@@ -162,11 +162,11 @@ impl GpuSampler {
             unsafe { PdhCloseQuery(query) };
             return None;
         };
-        unsafe { PdhCollectQueryData(query) }; // база для загрузки: это счётчик скорости
+        unsafe { PdhCollectQueryData(query) }; // the baseline for the load: this is a rate counter
         Some(Self { query, engine, proc_mem, dedicated, shared, names: adapter_names(), buf: Vec::new() })
     }
 
-    /// Все значения счётчика: (имя экземпляра, число).
+    /// All values of a counter: (instance name, number).
     fn read(&mut self, c: PdhCounter, fmt: u32, mut f: impl FnMut(&str, f64)) {
         let mut size = 0u32;
         let mut count = 0u32;
@@ -195,7 +195,7 @@ impl GpuSampler {
         if unsafe { PdhCollectQueryData(self.query) } != 0 {
             return out;
         }
-        // (luid, движок) → сумма по процессам; процесс → самый занятый движок
+        // (luid, engine) → total over processes; process → its busiest engine
         let mut engines: HashMap<(String, String), (f64, String)> = HashMap::new();
         let engine = self.engine;
         self.read(engine, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, |name, v| {
@@ -235,7 +235,7 @@ impl GpuSampler {
             }
         }
         for (key, mut a) in adapters {
-            // программный «Microsoft Basic Render Driver» и прочие адаптеры без названия не показываем
+            // the software “Microsoft Basic Render Driver” and other adapters without a name are not shown
             let Some((name, total)) = self.names.get(&key) else { continue };
             if name.contains("Basic Render") {
                 continue;
@@ -248,7 +248,7 @@ impl GpuSampler {
         out.adapters.sort_by(|a, b| b.mem_total.cmp(&a.mem_total));
         for p in out.procs.values_mut() {
             p.util = p.util.min(100.0);
-            // только показанные видеокарты и только заметная загрузка — остальное не шлём в каждом кадре
+            // only the shown GPUs and only noticeable load — the rest is not sent in every frame
             p.by.retain(|(k, u)| *u >= 0.05 && out.adapters.iter().any(|a| &a.key == k));
             for b in &mut p.by {
                 b.1 = b.1.min(100.0);

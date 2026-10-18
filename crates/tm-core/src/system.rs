@@ -1,19 +1,19 @@
-//! Общесистемные показатели: загрузка ЦП, память, число логических процессоров.
+//! System-wide metrics: CPU load, memory, number of logical processors.
 
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::FILETIME;
 use windows_sys::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows_sys::Win32::System::Threading::{GetActiveProcessorCount, GetSystemTimes};
 
-/// Именованный мьютекс «один экземпляр». Проверка через канал не спасала от одновременного
-/// запуска: оба процесса успевали спросить «кто-то работает?» раньше, чем кто-то открывал канал.
-/// Мьютекс создаётся атомарно — первым становится ровно один. Дескриптор живёт до выхода
-/// процесса; после аварийного выхода Windows освобождает его сама.
+/// The named “single instance” mutex. The pipe check did not prevent a simultaneous
+/// start: both processes managed to ask “is anyone running?” before either opened the pipe.
+/// The mutex is created atomically — exactly one becomes first. The handle lives until the
+/// process exits; after a crash Windows releases it itself.
 pub struct InstanceLock(windows_sys::Win32::Foundation::HANDLE);
 
 impl InstanceLock {
-    /// `Some((замок, true))` — мы первые; `Some((замок, false))` — экземпляр уже есть;
-    /// `None` — создать мьютекс не удалось (тогда полагаемся на проверку через канал).
+    /// `Some((lock, true))` — we are first; `Some((lock, false))` — an instance already exists;
+    /// `None` — the mutex could not be created (then we rely on the pipe check).
     pub fn acquire(name: &str) -> Option<(Self, bool)> {
         use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
         use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -26,7 +26,7 @@ impl InstanceLock {
         Some((Self(h), first))
     }
 
-    /// Дождаться, пока прежний владелец выйдет, и забрать мьютекс себе.
+    /// Wait until the previous owner exits and take the mutex.
     pub fn wait(&self, timeout: std::time::Duration) -> bool {
         use windows_sys::Win32::Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0};
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
@@ -43,7 +43,7 @@ pub fn uptime_ms() -> u64 {
     unsafe { GetTickCount64() }
 }
 
-/// Текущее время как FILETIME (100 нс с 1601 г.) — в той же шкале, что время создания процесса.
+/// The current time as FILETIME (100 ns since 1601) — on the same scale as process creation time.
 pub fn filetime_now() -> i64 {
     let mut f = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
     unsafe { windows_sys::Win32::System::SystemInformation::GetSystemTimeAsFileTime(&mut f) };
@@ -53,7 +53,7 @@ pub fn filetime_now() -> i64 {
 #[derive(Clone, Copy, Default)]
 pub struct CpuTimes {
     idle: u64,
-    kernel: u64, // включает idle
+    kernel: u64, // includes idle
     user: u64,
 }
 
@@ -65,7 +65,7 @@ pub fn cpu_times() -> CpuTimes {
     CpuTimes { idle: ft(i), kernel: ft(k), user: ft(u) }
 }
 
-/// Загрузка ЦП в процентах между двумя замерами.
+/// CPU load in percent between two samples.
 pub fn cpu_busy(prev: CpuTimes, cur: CpuTimes) -> f32 {
     let total = cur.kernel.saturating_sub(prev.kernel) + cur.user.saturating_sub(prev.user);
     let idle = cur.idle.saturating_sub(prev.idle);
@@ -100,7 +100,7 @@ pub fn memory() -> Memory {
 }
 
 
-/// Запускает командную строку без наследования дескрипторов. `cwd` — рабочая папка.
+/// Runs a command line without handle inheritance. `cwd` — the working folder.
 pub fn spawn(cmdline: &str, cwd: Option<&std::path::Path>, flags: u32) -> std::io::Result<u32> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{CreateProcessW, PROCESS_INFORMATION, STARTUPINFOW};
@@ -133,9 +133,9 @@ pub fn spawn(cmdline: &str, cwd: Option<&std::path::Path>, flags: u32) -> std::i
     Ok(pi.dwProcessId)
 }
 
-/// Запускает процесс полностью отвязанным: без консоли, вне задания (job) родителя и,
-/// главное, без унаследованных дескрипторов — иначе он держал бы открытыми каналы вывода
-/// родителя, и `tm daemon start | ...` никогда бы не завершился.
+/// Starts a process fully detached: without a console, outside the parent’s job and,
+/// most importantly, without inherited handles — otherwise it would keep the parent’s output
+/// pipes open, and `tm daemon start | ...` would never finish.
 pub fn spawn_detached(exe: &std::path::Path, args: &[&str]) -> std::io::Result<u32> {
     use windows_sys::Win32::System::Threading::{CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
     let mut cmd = format!("\"{}\"", exe.display());
@@ -144,7 +144,7 @@ pub fn spawn_detached(exe: &std::path::Path, args: &[&str]) -> std::io::Result<u
         cmd.push_str(a);
     }
     let base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
-    // выход из задания разрешён не всегда — тогда запускаемся внутри него
+    // breaking away from the job is not always allowed — then we start inside it
     spawn(&cmd, None, base | CREATE_BREAKAWAY_FROM_JOB).or_else(|_| spawn(&cmd, None, base))
 }
 
@@ -152,14 +152,14 @@ pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// ShellExecute: открыть файл, папку или ссылку «как двойным щелчком» (`verb` = "open")
-/// или запустить с запросом прав администратора (`verb` = "runas").
+/// ShellExecute: open a file, folder or link “as with a double-click” (`verb` = "open")
+/// or run with an administrator rights prompt (`verb` = "runas").
 pub fn shell_execute(verb: &str, file: &str, params: &str) -> std::io::Result<()> {
     shell_execute_from(0, verb, file, params)
 }
 
-/// Как `shell_execute`, но от имени окна `parent` (HWND). Для "runas" это важно: без окна-владельца
-/// Windows не выводит запрос UAC сразу, а лишь мигает щитом на панели задач — «нажал, и ничего».
+/// Like `shell_execute`, but on behalf of the `parent` window (HWND). For "runas" this matters: without an owner window
+/// Windows does not show the UAC prompt right away, it only flashes a shield on the taskbar — “clicked and nothing happened”.
 pub fn shell_execute_from(parent: isize, verb: &str, file: &str, params: &str) -> std::io::Result<()> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -173,24 +173,24 @@ pub fn shell_execute_from(parent: isize, verb: &str, file: &str, params: &str) -
             SW_SHOWNORMAL,
         )
     };
-    // по документации значения ≤ 32 — ошибка
+    // per the documentation, values ≤ 32 are errors
     if (r as isize) <= 32 {
         let code = r as isize;
         return Err(if code == 5 || code == 1223 {
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "запуск отменён или запрещён")
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "launch cancelled or denied")
         } else {
-            std::io::Error::other(format!("ShellExecute: код {code}"))
+            std::io::Error::other(format!("ShellExecute: code {code}"))
         });
     }
     Ok(())
 }
 
-/// Открывает Проводник с выделенным файлом.
+/// Opens Explorer with the file selected.
 pub fn reveal_in_explorer(path: &str) -> std::io::Result<()> {
     shell_execute("open", "explorer.exe", &format!("/select,\"{path}\""))
 }
 
-/// Строковое значение из HKLM (например, модель процессора).
+/// A string value from HKLM (for example, the CPU model).
 pub fn reg_hklm(subkey: &str, value: &str) -> Option<String> {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
     let mut buf = vec![0u16; 512];
@@ -205,7 +205,7 @@ pub fn reg_hklm(subkey: &str, value: &str) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..n]).trim().to_string())
 }
 
-/// Запущен ли текущий процесс с правами администратора.
+/// Whether the current process runs with administrator rights.
 pub fn is_elevated() -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
@@ -223,7 +223,7 @@ pub fn is_elevated() -> bool {
     ok != 0 && te.TokenIsElevated != 0
 }
 
-/// SID владельца процесса строкой («S-1-5-21-…»); нужен дескриптор с PROCESS_QUERY_LIMITED_INFORMATION.
+/// The process owner SID as a string (“S-1-5-21-…”); needs a handle with PROCESS_QUERY_LIMITED_INFORMATION.
 pub fn process_user_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -240,7 +240,7 @@ pub fn process_user_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Opti
     if ok == 0 {
         return None;
     }
-    // SAFETY: GetTokenInformation заполнил буфер структурой TOKEN_USER, SID лежит в нём же.
+    // SAFETY: GetTokenInformation filled the buffer with a TOKEN_USER struct, the SID is in it too.
     let tu: TOKEN_USER = unsafe { std::ptr::read_unaligned(buf.as_ptr().cast()) };
     let mut s: windows_sys::core::PWSTR = std::ptr::null_mut();
     if unsafe { ConvertSidToStringSidW(tu.User.Sid, &mut s) } == 0 || s.is_null() {
@@ -252,20 +252,20 @@ pub fn process_user_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Opti
     Some(out)
 }
 
-/// SID пользователя, от имени которого работает tm.
+/// The SID of the user tm runs as.
 pub fn current_user_sid() -> Option<String> {
     process_user_sid(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
 }
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-/// Отметки «Автозагрузка» диспетчера задач Windows и Параметров: 12 байт, чётный первый байт —
-/// включено, нечётный (03, 07) — пользователь выключил. Запись в Run при этом остаётся.
+/// The “Startup” marks of the Windows Task Manager and Settings: 12 bytes, an even first byte —
+/// enabled, an odd one (03, 07) — the user turned it off. The Run entry stays in place.
 const APPROVED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 
-/// Выключен ли автозапуск пользователем в «Автозагрузке» Windows (запись в Run есть, но не работает).
+/// Whether autostart was turned off by the user in Windows “Startup apps” (the Run entry exists but does not work).
 pub fn autostart_disabled_by_user(name: &str) -> bool {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
-    // обычно 12 байт, но бывает и длиннее — с коротким буфером чтение не удалось бы
+    // usually 12 bytes, but can be longer — a short buffer would make the read fail
     let mut buf = [0u8; 64];
     let mut len = buf.len() as u32;
     let r = unsafe {
@@ -274,12 +274,12 @@ pub fn autostart_disabled_by_user(name: &str) -> bool {
     r == 0 && len >= 1 && buf[0] & 1 == 1
 }
 
-/// Работает ли автозапуск на самом деле: запись в Run есть и не выключена в «Автозагрузке».
+/// Whether autostart actually works: the Run entry exists and is not turned off in “Startup apps”.
 pub fn autostart_enabled(name: &str) -> bool {
     autostart_get(name).is_some() && !autostart_disabled_by_user(name)
 }
 
-/// Команда автозапуска текущего пользователя (HKCU\…\Run), если она есть.
+/// The current user’s autostart command (HKCU\…\Run), if there is one.
 pub fn autostart_get(name: &str) -> Option<String> {
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
     let mut buf = vec![0u16; 1024];
@@ -294,8 +294,8 @@ pub fn autostart_get(name: &str) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..n]))
 }
 
-/// Включает (`Some(команда)`) или выключает (`None`) автозапуск для текущего пользователя.
-/// Только HKCU — без прав администратора и без изменения системных настроек.
+/// Enables (`Some(command)`) or disables (`None`) autostart for the current user.
+/// HKCU only — no administrator rights and no system settings changes.
 pub fn autostart_set(name: &str, cmd: Option<&str>) -> std::io::Result<()> {
     use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
     use windows_sys::Win32::System::Registry::REG_BINARY;
@@ -303,22 +303,22 @@ pub fn autostart_set(name: &str, cmd: Option<&str>) -> std::io::Result<()> {
         Some(c) => {
             let data = wide(c);
             let r = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), wide(name).as_ptr(), REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) };
-            // включение в окне — явное желание пользователя: снимаем и отметку «выключено» из
-            // «Автозагрузки», иначе запись в Run была бы, а запуска — нет
+            // enabling it in the window is an explicit wish of the user: also clear the “disabled” mark from
+            // “Startup apps”, otherwise the Run entry would exist but nothing would start
             if r == 0 && autostart_disabled_by_user(name) {
                 let on = [2u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
                 let w = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr(), REG_BINARY, on.as_ptr().cast(), on.len() as u32) };
                 if w != 0 {
-                    crate::logs::warn(format!("автозапуск: не удалось снять отметку «выключено» ({w})"));
+                    crate::logs::warn(format!("autostart: could not clear the “disabled” mark ({w})"));
                 }
             }
             r
         }
         None => {
-            // отметку тоже убираем, чтобы в «Автозагрузке» не осталось пустой строки
+            // remove the mark too, so no empty row is left in “Startup apps”
             unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, wide(APPROVED_KEY).as_ptr(), wide(name).as_ptr()) };
             match unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, wide(RUN_KEY).as_ptr(), wide(name).as_ptr()) } {
-                2 => 0, // и так нет
+                2 => 0, // not there anyway
                 r => r,
             }
         }

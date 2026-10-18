@@ -1,6 +1,6 @@
-//! Журнал ошибок в файл: `%LOCALAPPDATA%\tm\logs\<программа>.log`. Туда же — паники
-//! с местом и стеком вызовов (panic hook): приложение в трее не имеет консоли, и без
-//! журнала падение оставалось бы без следа. Файл больше 1 МБ переименовывается в `.log.1`.
+//! Error log to a file: `%LOCALAPPDATA%\tm\logs\<program>.log`. Panics go there too,
+//! with location and backtrace (panic hook): the tray app has no console, and without
+//! a log a crash would leave no trace. A file over 1 MB is renamed to `.log.1`.
 
 use std::fmt::Display;
 use std::io::Write;
@@ -12,12 +12,12 @@ const MAX_BYTES: u64 = 1 << 20;
 static NAME: OnceLock<String> = OnceLock::new();
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// Папка журналов.
+/// The log folder.
 pub fn dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("tm").join("logs"))
 }
 
-/// Файл журнала этой программы.
+/// This program’s log file.
 pub fn path() -> Option<PathBuf> {
     Some(dir()?.join(format!("{}.log", NAME.get().map_or("tm", String::as_str))))
 }
@@ -32,14 +32,14 @@ fn stamp() -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds)
 }
 
-/// Дописывает строку в журнал. Ошибки самого журнала молча игнорируются: журнал не должен ронять программу.
+/// Appends a line to the log. Errors of the log itself are silently ignored: the log must not crash the program.
 pub fn write(level: &str, msg: impl Display) {
     let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     append(level, &msg.to_string());
 }
 
-/// Строка из окна (window.onerror): переводы строк — видимыми «⏎», чтобы нельзя было подделать
-/// соседние записи, и не больше 30 строк в минуту — поток ошибок не вытеснит настоящие.
+/// A line from the window (window.onerror): line breaks become a visible “⏎” so neighbouring entries
+/// cannot be forged, and no more than 30 lines a minute — a flood of errors does not push out the real ones.
 pub fn write_ui(msg: &str) {
     use std::time::{Duration, Instant};
     static WINDOW: Mutex<Option<(Instant, u32)>> = Mutex::new(None);
@@ -80,14 +80,14 @@ pub fn warn(msg: impl Display) {
     write("warn", msg);
 }
 
-/// Имя журнала и перехват паник. Вызывать один раз в начале `main`.
+/// Log name and panic hook. Call once at the start of `main`.
 pub fn init(name: &str) {
     let _ = NAME.set(name.to_string());
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // `tm … | head`: читатель закрыл трубу — это не сбой программы, в журнал не пишем
+        // `tm … | head`: the reader closed the pipe — not a program failure, do not log it
         let text = info.to_string();
-        // try_lock: паника могла случиться в самой записи журнала (замок уже наш) — не зависаем
+        // try_lock: the panic may have happened inside a log write (the lock is already ours) — do not hang
         if !text.contains("failed printing to std") {
             let guard = match LOCK.try_lock() {
                 Ok(g) => Some(g),
@@ -97,7 +97,7 @@ pub fn init(name: &str) {
             if let Some(_g) = guard {
                 let thread = std::thread::current().name().unwrap_or("?").to_string();
                 let bt = std::backtrace::Backtrace::force_capture();
-                append("panic", &format!("поток «{thread}»: {text}\n{bt}"));
+                append("panic", &format!("thread “{thread}”: {text}\n{bt}"));
             }
         }
         prev(info);
